@@ -1,0 +1,3 @@
+{
+  "plugins": ["header", "panel", "clock", "counter", "stats"]
+}
