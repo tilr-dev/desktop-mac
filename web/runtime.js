@@ -172,8 +172,13 @@ window.tilr = {
         if (match) names.add(match[1])
       }
       const notes = []
+      const started = Date.now()
       if (manifest) notes.push(await host.sync())
-      for (const name of names) notes.push(await host.reload(name))
+      for (const name of names) {
+        // A plugin that sync() just added was imported from disk a moment ago.
+        if (host.entries.get(name)?.loadedAt >= started) continue
+        notes.push(await host.reload(name))
+      }
       return notes.join('; ')
     },
   },
