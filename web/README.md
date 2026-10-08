@@ -36,8 +36,34 @@ Rules that make hot reload safe:
 ## Services
 
 - `ctx.ui.tile({ title })` → the tile's body element, removed when the plugin unloads.
+- `ctx.ui.style(css)` → a stylesheet that lives as long as the plugin. Use the theme's tokens
+  (`var(--accent)`), never literal colors.
 - `ctx.plugins` → the host: `list()`, `toggle(name)`, `reload(name)`, `sync()`.
   It emits `plugins/change` on every state change.
+- `ctx.theme` → the running theme: `sheet` (its CSSStyleSheet), `attach(shadowRoot)` (gives a
+  shadow root the theme's classes), `variant` (plugin name). Inject it only when you call it;
+  the theme's styles apply to the document anyway.
+
+## Themes: the style guide is a plugin
+
+The look lives in one CSS file per theme, nothing else: `plugins/theme/theme.css` (dark,
+default) and `plugins/theme-light/light.css`. A theme plugin is two lines:
+
+```js
+import { theme } from 'tilr'
+export default theme(import.meta.url, './my.css')
+```
+
+The contract a theme fulfils is the token set and the base classes in `theme.css`:
+tokens `--bg --panel --line --accent --on-accent --danger --text --muted --font --radius --gap`,
+classes `.tile` (with `> header`, `> .body`), `.big .muted .accent .danger`, `button`, `.switch`,
+and `#grid`. Plugins style themselves with these and define no colors of their own.
+
+To restyle Tilr, do not edit an existing theme: add `plugins/<my-theme>/` with your CSS and
+switch to it in the panel. Themes `provide: 'theme'`, and the host runs one provider per
+service: switching a theme on switches the running one off (the first listed in
+`plugins.json` wins at startup). Saving a theme's CSS hot-reloads it like any plugin: the
+theme is restarted, and plugins that inject it (the header) are remounted by cordis.
 
 ## Adding, removing, editing at runtime
 

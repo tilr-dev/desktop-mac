@@ -15,15 +15,12 @@ const ZONES = [
 const STORAGE_KEY = 'tilr-clock-zone'
 const HEIGHT = 32
 
+// Colors and the font are the theme's tokens; they inherit into the shadow root.
 const css = `
   :host {
-    --bg: #000;
-    --line: #1e1e2e;   /* surface0: bottom edge, dropdown border, hovered row */
-    --green: #6dd08c;
-    --muted: #9399b2;  /* subtext0: a dropdown row at rest */
     position: fixed; inset: 0 0 auto 0; z-index: 2147483647;
-    font: bold 13px/1 "0xProto Nerd Font", "0xProto Nerd Font Mono", ui-monospace, Menlo, monospace;
-    color: #fff; cursor: default; user-select: none; -webkit-user-select: none;
+    font: var(--font); line-height: 1; font-weight: bold;
+    color: var(--text); cursor: default; user-select: none; -webkit-user-select: none;
   }
   /* 32pt is the notch strip. Items sit 1px below the middle, hence the top padding. */
   .bar {
@@ -32,42 +29,45 @@ const css = `
     background: var(--bg); border-bottom: 1px solid var(--line);
   }
   .logo, .clock { display: flex; align-items: center; white-space: pre; }
-  .green { color: var(--green); }
   .tilde { margin-right: 3px; }
   .chevron { margin-left: 3px; }
-  /* the "g": a black glyph on a green block that hangs 2px lower than the text */
-  .block { position: relative; z-index: 0; padding: 0 3px 0 2px; color: #000; }
+  /* the "r": a glyph on an accent block that hangs 2px lower than the text */
+  .block { position: relative; z-index: 0; padding: 0 3px 0 2px; color: var(--on-accent); }
   .block::before {
     content: ""; position: absolute; z-index: -1; left: 0; right: 0;
-    top: calc(50% - 6.5px); height: 17px; border-radius: 2px; background: var(--green);
+    top: calc(50% - 6.5px); height: 17px; border-radius: 2px; background: var(--accent);
   }
-  /* digits over a thin green rule */
+  /* digits over a thin accent rule */
   .clock { position: relative; padding: 0 4px; }
   .clock::after {
     content: ""; position: absolute; left: 0; right: 0;
-    top: calc(50% + 9px); height: 2px; border-radius: 1px; background: var(--green);
+    top: calc(50% + 9px); height: 2px; border-radius: 1px; background: var(--accent);
   }
   /* the dropdown hangs off the bar's bottom line, right edges aligned with the clock */
   .menu {
     position: absolute; top: ${HEIGHT - 1}px; right: 25px; padding: 0 5px;
     display: flex; flex-direction: column;
-    background: var(--bg); border: 1px solid var(--line); color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius);
+    color: var(--muted);
   }
   .menu[hidden] { display: none; }
   .row { width: 170px; height: 22px; margin: 2px 0; display: flex; align-items: center; white-space: pre; }
-  .row:hover { background: var(--line); color: var(--green); }
+  .row:hover { background: var(--line); color: var(--accent); }
   .mark { font-size: 15px; margin: 0 12px 0 4px; }
 `
 
 export default {
   name: 'header',
+  // Needs the theme: its classes (.accent) reach the shadow root through ctx.theme.attach().
+  inject: ['theme'],
   apply(ctx) {
     const host = document.createElement('tilr-header')
     const root = host.attachShadow({ mode: 'open' })
+    ctx.theme.attach(root)
     root.innerHTML = `
       <style>${css}</style>
       <div class="bar">
-        <div class="logo"><span class="green tilde">~/</span><span>til</span><span class="block">r</span><span class="green chevron">❯</span></div>
+        <div class="logo"><span class="accent tilde">~/</span><span>til</span><span class="block">r</span><span class="accent chevron">❯</span></div>
         <div class="clock"></div>
       </div>
       <div class="menu" hidden></div>`

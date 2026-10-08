@@ -13,7 +13,7 @@ export default {
 
     let clicks = 0
     const render = () => {
-      line.innerHTML = `counter is <span class="green"></span>, <b></b> clicks since mount`
+      line.innerHTML = `counter is <span class="accent"></span>, <b></b> clicks since mount`
       line.querySelector('span').textContent = ctx.counter.value
       line.querySelector('b').textContent = clicks
     }

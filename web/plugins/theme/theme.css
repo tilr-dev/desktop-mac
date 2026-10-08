@@ -1,0 +1,62 @@
+/* Tilr default theme: dark, mint accent, zero radius, mono. The style guide in one file.
+   A theme provides these tokens and base classes; plugins use them and define no colors. */
+
+:root {
+  color-scheme: dark;
+  --bg: #000;            /* page */
+  --panel: #0a0a0f;      /* tiles, menus */
+  --line: #1e1e2e;       /* borders, hover rows */
+  --accent: #6dd08c;     /* the one accent color */
+  --on-accent: #000;     /* text drawn on the accent */
+  --danger: #ff5d5d;
+  --text: #e7eaee;
+  --muted: #9399b2;
+  --font: bold 13px/1.6 "0xProto Nerd Font", ui-monospace, Menlo, monospace;
+  --radius: 0;
+  --gap: 16px;
+}
+
+body {
+  margin: 0; height: 100dvh; box-sizing: border-box; padding: 24px; overflow: auto;
+  background: var(--bg); color: var(--text); font: var(--font);
+}
+
+/* layout */
+#grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--gap); }
+
+/* tile */
+.tile {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  min-height: 120px; display: flex; flex-direction: column;
+}
+.tile > header {
+  padding: 6px 12px; border-bottom: 1px solid var(--line);
+  color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+}
+.tile > .body { padding: 12px; flex: 1; }
+
+/* text */
+.big { font-size: 40px; font-weight: bold; line-height: 1.1; color: #fff; }
+.muted { color: var(--muted); }
+.accent { color: var(--accent); }
+.danger { color: var(--danger); }
+
+/* controls */
+button {
+  font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 2px 10px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: .4; cursor: default; }
+
+.switch {
+  appearance: none; width: 28px; height: 16px; margin: 0; position: relative; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg);
+}
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
+  background: var(--muted); border-radius: var(--radius); transition: left .12s;
+}
+.switch:checked { border-color: var(--accent); }
+.switch:checked::after { left: 14px; background: var(--accent); }
+.switch:disabled { opacity: .4; cursor: default; }
