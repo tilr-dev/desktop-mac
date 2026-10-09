@@ -8,6 +8,8 @@ final class Tab: NSObject, WKNavigationDelegate {
     private(set) var app: Site.App
     let site: SiteSchemeHandler
     let webView: WKWebView
+    /// The page's web views (WebViews.swift): subviews of `webView`, gone with the page.
+    let webViews: WebViewHost
     var watcher: FolderWatcher?
 
     /// A page finished loading.
@@ -26,21 +28,25 @@ final class Tab: NSObject, WKNavigationDelegate {
     private let consoleLimit: Int
     private let relay = ConsoleRelay()
 
-    /// `control`: with Tilr Control on, the page's console is caught for it.
-    init(app: Site.App, control: Config.Control?) {
+    /// `control`: with Tilr Control on, the page's console is caught for it. `browser`: how the
+    /// page's web views are made.
+    init(app: Site.App, control: Config.Control?, browser: Config.Browser) {
         self.app = app
         consoleLimit = control?.console ?? 0
         site = SiteSchemeHandler(root: app.root)
+        webViews = WebViewHost(settings: browser)
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(site, forURLScheme: SiteSchemeHandler.scheme)
+        let controller = configuration.userContentController
         if control != nil {
-            let controller = configuration.userContentController
             controller.addUserScript(WKUserScript(source: ConsoleRelay.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
             controller.add(relay, name: ConsoleRelay.name)
         }
+        controller.add(webViews, name: WebViewHost.name)
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
+        webViews.tab = self
         webView.navigationDelegate = self
         webView.underPageBackgroundColor = .black
         webView.isInspectable = true  // Safari → Develop → Tilr
@@ -119,6 +125,26 @@ final class Tab: NSObject, WKNavigationDelegate {
                 webView.reloadFromOrigin()
             }
         }
+    }
+
+    /// Dispatches a CustomEvent on the page's `window` (what the web views report through).
+    func send(event: String, detail: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: detail), let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent(\(Self.literal(event)), { detail: \(json) }))") { _, error in
+            if let error { print("\(self.app.name) \(event):", error.localizedDescription) }
+        }
+    }
+
+    /// A JS string literal.
+    static func literal(_ text: String) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: [text])
+        let array = String(data: data, encoding: .utf8)!
+        return String(array.dropFirst().dropLast())
+    }
+
+    /// The page is leaving (a reload, another URL): its web views have no page to follow.
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        webViews.removeAll()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

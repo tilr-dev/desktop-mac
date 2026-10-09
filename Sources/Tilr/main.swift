@@ -1,6 +1,9 @@
 import AppKit
 import WebKit
 
+// Prints reach a log file or a pipe as they happen (run.sh with its output redirected), not in blocks.
+setvbuf(stdout, nil, _IOLBF, 0)
+
 /// Keeps the one window (Shell) with a tab per app in the config, the palette and the menu.
 /// ctrl+alt+← / → cycle through the tabs, ctrl+alt+1..9 jump to one.
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -59,10 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let kept = apps.map { app in
             if let tab = tabs.first(where: { $0.app.name == app.name }) {
                 if tab.app.root != app.root { tab.show(app) }
+                tab.webViews.settings = config.browser
                 return tab
             }
             // Control is read at launch: a tab made later still follows that choice.
-            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control)
+            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser)
             tab.didLoad = { [weak self] in self?.loaded($0) }
             tab.show(app)
             return tab

@@ -12,9 +12,10 @@ struct Config: Decodable {
     var switching: Switching
     var controlPlane: ControlPlane
     var control: Control
+    var browser: Browser
 
     enum CodingKeys: String, CodingKey {
-        case site, apps, window, control
+        case site, apps, window, control, browser
         case switching = "switch"
         case controlPlane = "control_plane"
     }
@@ -87,6 +88,16 @@ struct Config: Decodable {
         var socket: String
         /// Console messages kept per app.
         var console: Int
+    }
+
+    /// The page's web views (WebViews.swift): a browser window of a plugin is a WKWebView of ours.
+    struct Browser: Decodable {
+        /// The User-Agent the views send; empty for WebKit's own.
+        var userAgent: String
+
+        enum CodingKeys: String, CodingKey {
+            case userAgent = "user_agent"
+        }
     }
 
     static let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -167,6 +178,15 @@ struct Config: Decodable {
           socket: ~/.config/tilr/control.sock
           # Console messages kept per app for the console command.
           console: 500
+
+        # The page's web views: a plugin's browser window is a WKWebView of the app's, placed over
+        # the window's content (the webviews service of the page). Applies to views made after
+        # the change.
+        browser:
+          # The User-Agent the views send. Empty: WebKit's own, which some sites take for an old
+          # browser; Safari's own string makes them behave, e.g.
+          # "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15".
+          user_agent: ""
 
         """
 

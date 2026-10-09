@@ -2,6 +2,8 @@
 
 WKWebView shell: one window, a tab per app from the config (no tab bar, switched by shortcut),
 each a folder served as `tilr://<name>/`.
+The page's web views (the `webviews` service of the web repo, a plugin's browser window) are
+WKWebViews of ours placed over the page (`Sources/Tilr/WebViews.swift`).
 Swift Package, AppKit, no Xcode project. `./run.sh` builds and starts the app; `./run.sh --probe`
 runs the self-check (page, palette, app switching, Space move) and quits — run it after changes.
 
