@@ -1,9 +1,9 @@
 import Foundation
 
-/// Where the pages come from. An app is a folder with an `index.html`, shown in a window of its
-/// own as `tilr://<name>/` (SiteSchemeHandler); distinct origins keep the apps' localStorage
+/// Where the pages come from. An app is a folder with an `index.html`, shown as a tab of the one
+/// window under `tilr://<name>/` (SiteSchemeHandler); distinct origins keep the apps' localStorage
 /// apart. The list: `--site DIR` (a single app), else `apps:` in the config, else `site:` in the
-/// config, else `~/tilr`. `--url URL` or TILR_URL shows a dev server in a single window instead.
+/// config, else `~/tilr`. `--url URL` or TILR_URL shows a dev server as the only app instead.
 enum Site {
     struct App: Equatable {
         let name: String
@@ -24,7 +24,7 @@ enum Site {
     static let devURL: URL? = (argument("--url") ?? ProcessInfo.processInfo.environment["TILR_URL"])
         .flatMap(URL.init(string:))
 
-    /// The apps to show, in window order. Never empty.
+    /// The apps to show, in tab order. Never empty.
     static func apps(config: Config) -> [App] {
         if let dir = argument("--site") { return [App(name: "app", root: folder(dir))] }
         if devURL != nil { return [App(name: "app", root: fallback)] }

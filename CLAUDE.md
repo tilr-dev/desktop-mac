@@ -1,6 +1,7 @@
 # Tilr for Mac
 
-WKWebView shell: one window per app from the config, each a folder served as `tilr://<name>/`.
+WKWebView shell: one window, a tab per app from the config (no tab bar, switched by shortcut),
+each a folder served as `tilr://<name>/`.
 Swift Package, AppKit, no Xcode project. `./run.sh` builds and starts the app; `./run.sh --probe`
 runs the self-check (page, palette, app switching, Space move) and quits — run it after changes.
 

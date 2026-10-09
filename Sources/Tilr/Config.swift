@@ -24,7 +24,7 @@ struct Config: Decodable {
         var site: String
     }
 
-    /// Per-window settings. `mode` applies at launch, the rest whenever the config changes.
+    /// The window. `mode` applies at launch, the rest whenever the config changes.
     struct Windows: Decodable {
         var mode: Mode
         var dragHeight: CGFloat
@@ -41,7 +41,7 @@ struct Config: Decodable {
         }
     }
 
-    /// Switching between the apps' windows.
+    /// Switching between the apps (the window's tabs).
     struct Switching: Decodable {
         var duration: Double
         var easing: Easing
@@ -97,7 +97,8 @@ struct Config: Decodable {
         # folder hot-reloads the page. Ignored when apps: is not empty.
         site: ~/tilr
 
-        # Several windows, each with its own folder and its own storage (tilr://<name>/):
+        # Several apps in the one window, each with its own folder and its own storage
+        # (tilr://<name>/); switch: below moves between them.
         # apps:
         #   - name: Dashboard
         #     site: ~/tilr
@@ -114,7 +115,7 @@ struct Config: Decodable {
           # Window and frameless modes: the window is the screen minus these margins, in points.
           inset: { x: 200, y: 150 }
 
-        # Switching between the apps' windows: the new one slides in, the old one slides out.
+        # Switching between the apps: the new page slides into the window, the old one slides out.
         switch:
           # Seconds; 0 switches without an animation.
           duration: 0.3
@@ -123,7 +124,7 @@ struct Config: Decodable {
           # Modifiers: cmd, shift, alt (opt), ctrl. Keys: a letter, a digit, left, right, up, down.
           next: ctrl+alt+right
           previous: ctrl+alt+left
-          # Modifiers only: with 1..9 they jump to the window at that place in apps.
+          # Modifiers only: with 1..9 they jump to the app at that place in apps.
           jump: ctrl+alt
 
         control_plane:

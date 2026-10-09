@@ -50,138 +50,131 @@ final class Window: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-/// One app: a window whose whole content is a web view showing the app's folder as
-/// `tilr://<name>/` (see Site), or the dev server. Owns the window's mode, its Space settings and
-/// the folder watcher. The AppDelegate keeps the list of shells and the menu; every shell gets
-/// the same commands, applied to the one whose window is key.
-final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
-    private(set) var app: Site.App
+/// The one window. The apps are its tabs (see Tab), stacked in the content view with one of them
+/// visible; a switch slides the next one in over the whole content, so the mode, the frame, the
+/// Space and always-on-top are shared and nothing shows that the apps are separate pages. Owns
+/// the window's mode, its Space settings and the drag in frameless mode.
+final class Shell: NSObject, NSWindowDelegate {
     /// `window:` from the config; the owner updates it when the config changes.
     var settings: Config.Windows
     let window = Window(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
-    let site: SiteSchemeHandler
-    let webView: WKWebView
-    var watcher: FolderWatcher?
+    /// Holds the tabs' web views, all the size of the content; only the current one is unhidden.
+    let content = NSView()
+    private(set) var tabs: [Tab] = []
+    private(set) var current: Tab?
     var mode: Mode
     var pending: Mode?
     var allSpaces = false
     var onTop = false
     private var dragMonitor: Any?
 
-    /// A page finished loading.
-    var didLoad: ((Shell) -> Void)?
-    /// The window became key or a toggle flipped; the menu mirrors both.
+    /// The window became key, a tab was chosen or a toggle flipped; the menu mirrors them.
     var changed: ((Shell) -> Void)?
-    /// The window closed; the owner drops the shell.
-    var closed: ((Shell) -> Void)?
 
-    init(app: Site.App, settings: Config.Windows) {
-        self.app = app
+    init(settings: Config.Windows) {
         self.settings = settings
         mode = settings.mode
-        site = SiteSchemeHandler(root: app.root)
-        let configuration = WKWebViewConfiguration()
-        configuration.setURLSchemeHandler(site, forURLScheme: SiteSchemeHandler.scheme)
-        webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
-        window.title = app.name
+        window.title = "Tilr"
         window.delegate = self
         window.backgroundColor = .black
         window.isReleasedWhenClosed = false
-        webView.navigationDelegate = self
-        webView.underPageBackgroundColor = .black
-        webView.isInspectable = true  // Safari → Develop → Tilr
-        window.contentView = webView
+        content.wantsLayer = true
+        content.clipsToBounds = true
+        content.layer?.backgroundColor = NSColor.black.cgColor
+        window.contentView = content
         installDrag()
     }
 
-    /// Shows the window in the config's mode and loads the page.
+    /// Shows the window in the config's mode.
     func open() {
         set(mode)
-        show(app)
     }
 
-    // MARK: Web content
+    // MARK: Tabs
 
-    /// The dev server, the site, or the placeholder while the folder has no `index.html`.
-    var pageURL: URL {
-        Site.devURL ?? (Site.hasIndex(app.root) ? app.origin : Site.placeholder(for: app.root))
-    }
-
-    /// Points the web view at the app's folder (or the dev server) and watches it. Called at
-    /// launch and whenever the config moves the app to another folder.
-    func show(_ app: Site.App) {
-        self.app = app
-        site.root = app.root
-        window.title = app.name
-        if Site.devURL == nil {
-            // The folder must exist for FSEvents to follow it; an index.html put there later is picked up.
-            try? FileManager.default.createDirectory(at: app.root, withIntermediateDirectories: true)
-            // An edit in the folder reloads the page or a plugin; a dev server has its own live reload.
-            watcher = FolderWatcher(app.root) { [weak self] in self?.siteChanged($0) }
+    /// Replaces the tabs with `new`, keeping the ones already there (by identity). The current
+    /// one stays if it is still listed; else the first one is shown.
+    func setTabs(_ new: [Tab]) {
+        for tab in tabs where !new.contains(where: { $0 === tab }) {
+            tab.webView.removeFromSuperview()
+            tab.watcher = nil
         }
-        print("\(app.name):", pageURL.absoluteString, Site.devURL == nil ? "← \(app.root.path)" : "")
-        reload()
-    }
-
-    func reload() {
-        webView.load(URLRequest(url: pageURL, cachePolicy: .reloadIgnoringLocalCacheData))
-    }
-
-    /// A change under `plugins/` goes to the page, which swaps just those plugins in place
-    /// (runtime.js). Anything else, or a page without that entry point, reloads the whole page.
-    func siteChanged(_ paths: [String]) {
-        let root = app.root.resolvingSymlinksInPath().path + "/"
-        let changed = paths.compactMap { path -> String? in
-            let full = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-            guard full.hasPrefix(root) else { return nil }
-            let relative = String(full.dropFirst(root.count))
-            // Editors' temporary files and .DS_Store are noise.
-            return relative.split(separator: "/").contains { $0.hasPrefix(".") } ? nil : relative
+        for tab in new where tab.webView.superview !== content {
+            tab.webView.frame = content.bounds
+            tab.webView.isHidden = true
+            content.addSubview(tab.webView)
         }
-        guard !changed.isEmpty else { return }
-        // The placeholder is on screen, or index.html itself changed: it may have appeared or
-        // gone, so pick the page again.
-        if webView.url?.scheme != SiteSchemeHandler.scheme || changed.contains("index.html") {
-            print("\(app.name): reload", changed)
-            reload()
-            return
-        }
-        let hot = changed.allSatisfy { $0.hasPrefix("plugins/") || $0 == "plugins.json" }
-        guard hot else {
-            print("\(app.name): reload", changed)
-            webView.reloadFromOrigin()
-            return
-        }
-        webView.callAsyncJavaScript(
-            "return window.tilr?.hmr ? await window.tilr.hmr.changed(paths) : null",
-            arguments: ["paths": changed], in: nil, in: .page
-        ) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let value):
-                if let note = value as? String {
-                    print("\(app.name) hmr:", note)
-                } else {
-                    print("\(app.name): reload", changed, "(page has no hot reload)")
-                    webView.reloadFromOrigin()
-                }
-            case .failure(let error):
-                print("\(app.name) hmr: failed:", error.localizedDescription)
-                webView.reloadFromOrigin()
-            }
+        tabs = new
+        if let current, tabs.contains(where: { $0 === current }) {
+            select(current)
+        } else if let first = tabs.first {
+            select(first)
+        } else {
+            current = nil
         }
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        window.makeFirstResponder(webView)
-        didLoad?(self)
+    /// Shows `tab` at once, with no slide.
+    func select(_ tab: Tab) {
+        settle()
+        for other in tabs {
+            other.webView.isHidden = other !== tab
+            other.webView.frame = content.bounds
+        }
+        current = tab
+        window.title = tab.app.name
+        window.makeFirstResponder(tab.webView)
+        changed?(self)
+    }
+
+    /// The slide under way, if any: the tab going out and the one coming in.
+    private var slide: (from: Tab, to: Tab)?
+    var sliding: Bool { slide != nil }
+
+    /// Switches to `tab` with a slide: `direction` 1 brings it in from the right (the way
+    /// `switch.next` goes), -1 from the left. Both pages move together inside the window, like
+    /// Spaces do, for `switching.duration` seconds; 0 switches at once. A switch that comes
+    /// while one is under way finishes that one first.
+    func select(_ tab: Tab, direction: Int, switching: Config.Switching) {
+        guard let from = current, from !== tab, switching.duration > 0 else { return select(tab) }
+        settle()
+        let bounds = content.bounds
+        let offset = CGFloat(direction) * bounds.width
+        tab.webView.frame = bounds.offsetBy(dx: offset, dy: 0)
+        tab.webView.isHidden = false
+        slide = (from, tab)
+        current = tab
+        window.title = tab.app.name
+        window.makeFirstResponder(tab.webView)
+        changed?(self)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = switching.duration
+            context.timingFunction = switching.easing.function
+            from.webView.animator().frame = bounds.offsetBy(dx: -offset, dy: 0)
+            tab.webView.animator().frame = bounds
+        }, completionHandler: { [weak self] in
+            // Another switch may have settled this one already.
+            guard let self, let slide, slide.to === tab else { return }
+            settle()
+        })
+    }
+
+    /// Ends the slide under way: the page that came in fills the content, the one that went out hides.
+    private func settle() {
+        guard let (from, to) = slide else { return }
+        slide = nil
+        from.webView.layer?.removeAllAnimations()
+        to.webView.layer?.removeAllAnimations()
+        from.webView.isHidden = true
+        from.webView.frame = content.bounds
+        to.webView.frame = content.bounds
     }
 
     // MARK: Window modes
 
     /// Dock and menu bar hidden only while a fullscreen-mode window is key. App-wide, so the key
-    /// window's shell applies it (windowDidBecomeKey).
+    /// window applies it (windowDidBecomeKey).
     var presentationOptions: NSApplication.PresentationOptions {
         mode == .fullscreen ? [.hideDock, .hideMenuBar] : []
     }
@@ -211,9 +204,12 @@ final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
             window.styleMask = [.borderless, .resizable]
             window.setFrame(windowFrame, display: true)
         }
+        // A style change swaps the content view's frame; the pages follow it.
+        settle()
+        tabs.forEach { $0.webView.frame = content.bounds }
         NSApp.presentationOptions = presentationOptions
         window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(webView)
+        if let current { window.makeFirstResponder(current.webView) }
     }
 
     /// Frameless mode has no title bar to grab, so a drag that starts in the top `drag_height`
@@ -245,14 +241,14 @@ final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
     func toggleOnTop() {
         onTop.toggle()
         window.level = onTop ? .screenSaver : .normal
-        print("\(app.name) always on top:", onTop)
+        print("always on top:", onTop)
         changed?(self)
     }
 
     func toggleAllSpaces() {
         allSpaces.toggle()
         applyCollectionBehavior()
-        print("\(app.name) show on all desktops:", allSpaces)
+        print("show on all desktops:", allSpaces)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -270,8 +266,7 @@ final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
     func windowWillClose(_ notification: Notification) {
         if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }
         dragMonitor = nil
-        watcher = nil
-        closed?(self)
+        tabs.forEach { $0.watcher = nil }
     }
 
     // MARK: Spaces
