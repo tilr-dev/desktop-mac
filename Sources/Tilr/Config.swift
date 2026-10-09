@@ -4,10 +4,21 @@ import Yams
 /// `~/.config/tilr/config.yml`. Written with the defaults below when missing, read again on
 /// every change. A broken file keeps the last good config and says why on stdout.
 struct Config: Decodable {
+    /// Folder with the page (`index.html`); `~` is expanded. Missing: `~/tilr`. Ignored when `apps` is set.
+    var site: String?
+    /// Several windows, one per app; each shows its own folder. Replaces `site`.
+    var apps: [App]?
     var controlPlane: ControlPlane
 
     enum CodingKeys: String, CodingKey {
+        case site, apps
         case controlPlane = "control_plane"
+    }
+
+    struct App: Decodable {
+        /// Window title, menu entry and the host of the app's origin (`tilr://<name>/`).
+        var name: String
+        var site: String
     }
 
     /// The command palette: `hotkey` opens it, `commands` are its rows, top to bottom.
@@ -29,6 +40,16 @@ struct Config: Decodable {
 
     static let defaultText = """
         # Tilr for Mac. The app reloads this file on every save.
+        # Folder with the page: an index.html plus whatever it loads. Until there is one, the app
+        # shows a placeholder naming the folder. A change in the folder hot-reloads the page.
+        site: ~/tilr
+        # Or several windows, each with its own folder and its own storage. Replaces site: when set.
+        # ctrl+alt+← / ctrl+alt+→ cycle through them, ctrl+alt+1..9 jump to one.
+        # apps:
+        #   - name: Dashboard
+        #     site: ~/tilr
+        #   - name: Notes
+        #     site: ~/tilr-notes
         control_plane:
           # Opens the palette. Modifiers: cmd, shift, alt (opt), ctrl.
           hotkey: cmd+shift+p

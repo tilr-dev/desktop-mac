@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Tilr</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+    background: #16181d; color: #d7dae0; font: 17px/1.4 system-ui, sans-serif; -webkit-user-select: none;
+  }
+  h1 { margin: 0; font-size: 64px; font-weight: 700; letter-spacing: -0.02em; }
+  h1 span { color: #6cb6ff; }
+  p { margin: 0; color: #8b93a1; }
+  code { font: 15px ui-monospace, Menlo, monospace; color: #d7dae0; }
+</style>
+<h1>Hello, <span>Tilr</span></h1>
+<p>No <code>index.html</code> in <code id="site"></code></p>
+<p>Point <code>site:</code> in <code>~/.config/tilr/config.yml</code> at the web folder, or put a page there.</p>
+<script>
+  document.getElementById('site').textContent = new URLSearchParams(location.search).get('site') ?? '?'
+</script>
+</html>

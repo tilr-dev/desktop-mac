@@ -1,224 +1,136 @@
 import AppKit
 import WebKit
 
-// Private SkyLight calls. AppKit has no public API to read or choose a window's Space.
-@_silgen_name("CGSMainConnectionID") func CGSMainConnectionID() -> Int32
-@_silgen_name("CGSGetActiveSpace") func CGSGetActiveSpace(_ cid: Int32) -> UInt64
-@_silgen_name("CGSCopyManagedDisplaySpaces") func CGSCopyManagedDisplaySpaces(_ cid: Int32) -> CFArray
-@_silgen_name("CGSCopySpacesForWindows")
-func CGSCopySpacesForWindows(_ cid: Int32, _ mask: Int32, _ windows: CFArray) -> CFArray
-@_silgen_name("CGSMoveWindowsToManagedSpace")
-func CGSMoveWindowsToManagedSpace(_ cid: Int32, _ windows: CFArray, _ space: UInt64)
-
-enum Spaces {
-    static let cid = CGSMainConnectionID()
-
-    /// Desktop Spaces (type 0, i.e. not fullscreen ones) per display, in Mission Control order.
-    static func desktopsByDisplay() -> [[UInt64]] {
-        let displays = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] ?? []
-        return displays.map { display in
-            (display["Spaces"] as? [[String: Any]] ?? [])
-                .filter { ($0["type"] as? Int) == 0 }
-                .compactMap { ($0["id64"] as? NSNumber)?.uint64Value }
-        }
-    }
-
-    static func active() -> UInt64 { CGSGetActiveSpace(cid) }
-
-    static func of(_ window: NSWindow) -> [UInt64] {
-        let ids = CGSCopySpacesForWindows(cid, 7, [window.windowNumber] as CFArray) as? [NSNumber] ?? []
-        return ids.map(\.uint64Value)
-    }
-
-    static func move(_ window: NSWindow, to space: UInt64) {
-        CGSMoveWindowsToManagedSpace(cid, [window.windowNumber] as CFArray, space)
-    }
-}
-
-enum Mode {
-    /// Covers the whole screen in the current Space, Dock and menu bar hidden.
-    case fullscreen
-    /// A normal window with a title bar.
-    case window
-    /// A window without a title bar; dragged by its top 32px (the page's header bar).
-    case frameless
-}
-
-/// Borderless windows refuse key status by default, which would leave the app without keyboard input.
-final class Window: NSWindow {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-}
-
-/// The whole UI is one web view. Like the iPad app, it shows a local folder served as
-/// `tilr://app/` (see Site), unless a dev server is given with `--url` or TILR_URL.
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate {
-    let window = Window(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
-    let webView: WKWebView = {
-        let configuration = WKWebViewConfiguration()
-        configuration.setURLSchemeHandler(SiteSchemeHandler(root: Site.root), forURLScheme: SiteSchemeHandler.scheme)
-        return WKWebView(frame: .zero, configuration: configuration)
-    }()
-    let pageURL = Site.devURL ?? SiteSchemeHandler.origin
-    var watcher: FolderWatcher?
+/// Keeps one Shell per app in the config, the palette and the menu. Commands go to the key
+/// window's shell. ctrl+alt+← / → cycle through the windows, ctrl+alt+1..9 jump to one.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var shells: [Shell] = []
     var configWatcher: FolderWatcher?
     var config: Config?
     let palette = Palette()
-    var mode = Mode.fullscreen
-    var pending: Mode?
-    var allSpaces = false
-    var onTop = false
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
 
+    /// The key window's shell, else the first one.
+    var current: Shell? { shells.first { $0.window.isKeyWindow } ?? shells.first }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         reloadConfig()
+        // A broken config at launch still gets the fallback window.
+        if shells.isEmpty { syncShells() }
         configWatcher = FolderWatcher(Config.dir) { [weak self] _ in self?.reloadConfig() }
         palette.run = { [weak self] in self?.perform($0.action) }
-        palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.onTop == true }
-        installDrag()
-        window.delegate = self
-        window.backgroundColor = .black
-        window.isReleasedWhenClosed = false
-
-        webView.navigationDelegate = self
-        webView.underPageBackgroundColor = .black
-        webView.isInspectable = true  // Safari → Develop → Tilr
-        window.contentView = webView
-
-        set(.fullscreen)
+        palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.current?.onTop == true }
         NSApp.activate(ignoringOtherApps: true)
-        print("page:", pageURL.absoluteString, Site.devURL == nil ? "← \(Site.root.path)" : "")
-        if Site.devURL == nil {
-            Site.seed()
-            // An edit in the folder reloads the page or a plugin; a dev server has its own live reload.
-            watcher = FolderWatcher(Site.root) { [weak self] in self?.siteChanged($0) }
-        }
-        reload()
-    }
-
-    // MARK: Web content
-
-    @objc func reload() {
-        webView.load(URLRequest(url: pageURL, cachePolicy: .reloadIgnoringLocalCacheData))
-    }
-
-    /// A change under `plugins/` goes to the page, which swaps just those plugins in place
-    /// (runtime.js). Anything else, or a page without that entry point, reloads the whole page.
-    func siteChanged(_ paths: [String]) {
-        let root = Site.root.resolvingSymlinksInPath().path + "/"
-        let changed = paths.compactMap { path -> String? in
-            let full = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-            guard full.hasPrefix(root) else { return nil }
-            let relative = String(full.dropFirst(root.count))
-            // Editors' temporary files and .DS_Store are noise.
-            return relative.split(separator: "/").contains { $0.hasPrefix(".") } ? nil : relative
-        }
-        guard !changed.isEmpty else { return }
-        let hot = changed.allSatisfy { $0.hasPrefix("plugins/") || $0 == "plugins.json" }
-        guard hot else {
-            print("site: reload", changed)
-            webView.reloadFromOrigin()
-            return
-        }
-        webView.callAsyncJavaScript(
-            "return window.tilr?.hmr ? await window.tilr.hmr.changed(paths) : null",
-            arguments: ["paths": changed], in: nil, in: .page
-        ) { [weak self] result in
-            switch result {
-            case .success(let value):
-                if let note = value as? String {
-                    print("hmr:", note)
-                } else {
-                    print("site: reload", changed, "(page has no hot reload)")
-                    self?.webView.reloadFromOrigin()
-                }
-            case .failure(let error):
-                print("hmr: failed:", error.localizedDescription)
-                self?.webView.reloadFromOrigin()
-            }
-        }
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        window.makeFirstResponder(webView)
-        if probing && !probed {
-            probed = true
-            Task { @MainActor in
-                await probeWeb()
-                probePalette()
-                probeSpaces()
-            }
-        }
-    }
-
-    // MARK: Window modes
-
-    func set(_ new: Mode) {
-        // Leaving native fullscreen (the green button) is animated; the switch finishes in
-        // windowDidExitFullScreen.
-        if window.styleMask.contains(.fullScreen) {
-            pending = new
-            window.toggleFullScreen(nil)
-            return
-        }
-        mode = new
-        applyCollectionBehavior()
-        let screen = window.screen ?? NSScreen.main!
-        let windowFrame = screen.visibleFrame.insetBy(dx: 200, dy: 150)
-        switch new {
-        case .fullscreen:
-            // Same Space as before, no animation: the window just covers the whole screen
-            // and the app hides the Dock and the menu bar while it is active.
-            window.styleMask = .borderless
-            NSApp.presentationOptions = [.hideDock, .hideMenuBar]
-            window.setFrame(screen.frame, display: true)
-        case .window:
-            NSApp.presentationOptions = []
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.setFrame(windowFrame, display: true)
-        case .frameless:
-            NSApp.presentationOptions = []
-            window.styleMask = [.borderless, .resizable]
-            window.setFrame(windowFrame, display: true)
-        }
-        window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(webView)
-    }
-
-    /// Frameless mode has no title bar to grab, so a drag that starts in the top 32px moves
-    /// the window. The events still reach the page, so the header's clock stays clickable.
-    var dragStart: (mouse: NSPoint, origin: NSPoint)?
-
-    func installDrag() {
-        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged]) { [weak self] event in
-            guard let self, mode == .frameless, event.window === window else { return event }
-            if event.type == .leftMouseDown {
-                let fromTop = window.frame.height - event.locationInWindow.y
-                dragStart = fromTop <= 32 ? (NSEvent.mouseLocation, window.frame.origin) : nil
-            } else if let start = dragStart {
-                let mouse = NSEvent.mouseLocation
-                window.setFrameOrigin(NSPoint(x: start.origin.x + mouse.x - start.mouse.x,
-                                              y: start.origin.y + mouse.y - start.mouse.y))
-            }
-            return event
-        }
-    }
-
-    func applyCollectionBehavior() {
-        var behavior: NSWindow.CollectionBehavior = [.fullScreenPrimary]
-        if allSpaces { behavior.insert(.canJoinAllSpaces) }
-        window.collectionBehavior = behavior
-    }
-
-    func windowDidExitFullScreen(_ notification: Notification) {
-        if let next = pending {
-            pending = nil
-            set(next)
-        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    // MARK: Apps
+
+    /// Opens a window per app in the config, repoints one whose folder moved, closes the ones
+    /// that left the config. Keeps the focus where it was.
+    func syncShells() {
+        let apps = Site.apps(config: config)
+        let focused = current
+        var kept: [Shell] = []
+        for app in apps {
+            if let shell = shells.first(where: { $0.app.name == app.name }) {
+                if shell.app.root != app.root { shell.show(app) }
+                kept.append(shell)
+            } else {
+                let shell = Shell(app: app)
+                shell.closed = { [weak self] in self?.forget($0) }
+                shell.changed = { [weak self] _ in self?.buildMenu() }
+                shell.didLoad = { [weak self] in self?.loaded($0) }
+                kept.append(shell)
+                shell.open()
+            }
+        }
+        // New windows first, then the old ones go: closing the last window quits the app.
+        let gone = shells.filter { shell in !kept.contains { $0 === shell } }
+        shells = kept
+        gone.forEach { $0.window.close() }
+        if let focused, shells.contains(where: { $0 === focused }) {
+            focus(focused)
+        } else if let first = shells.first {
+            focus(first)
+        }
+        buildMenu()
+        if apps.count > 1 { print("apps:", apps.map(\.name)) }
+    }
+
+    func forget(_ shell: Shell) {
+        shells.removeAll { $0 === shell }
+        buildMenu()
+    }
+
+    func focus(_ shell: Shell) {
+        shell.window.makeKeyAndOrderFront(nil)
+        shell.window.makeFirstResponder(shell.webView)
+    }
+
+    /// A switch in progress; another one waits for it to finish.
+    var sliding = false
+
+    /// Switches to `shell` with a slide: `direction` 1 brings it in from the right (the way
+    /// ctrl+alt+→ goes), -1 from the left. Both windows move together, like Spaces do. Without
+    /// an animation when the two windows are not both fullscreen-mode windows on the same screen
+    /// and Space.
+    func focus(_ shell: Shell, direction: Int) {
+        guard let from = current, from !== shell else { return focus(shell) }
+        let frame = from.window.frame
+        let canSlide = from.mode == .fullscreen && shell.mode == .fullscreen
+            && !from.window.styleMask.contains(.fullScreen) && !shell.window.styleMask.contains(.fullScreen)
+            && from.window.screen === shell.window.screen && Spaces.of(from.window) == Spaces.of(shell.window)
+        guard canSlide, !sliding else { return focus(shell) }
+        sliding = true
+        let offset = CGFloat(direction) * frame.width
+        shell.window.setFrame(frame.offsetBy(dx: offset, dy: 0), display: true)
+        shell.window.orderFront(nil)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.3
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            from.window.animator().setFrame(frame.offsetBy(dx: -offset, dy: 0), display: true)
+            shell.window.animator().setFrame(frame, display: true)
+        }, completionHandler: { [self] in
+            focus(shell)
+            // Back under the new window, ready for the next switch.
+            from.window.setFrame(frame, display: false)
+            sliding = false
+        })
+    }
+
+    /// ctrl+alt+→ and ctrl+alt+←: the next or previous window in config order, wrapping around.
+    func step(_ delta: Int) {
+        guard let current, let index = shells.firstIndex(where: { $0 === current }), shells.count > 1 else { return }
+        let next = shells[(index + delta + shells.count) % shells.count]
+        focus(next, direction: delta)
+        print("app:", next.app.name)
+    }
+
+    @objc func nextApp() { step(1) }
+    @objc func previousApp() { step(-1) }
+
+    /// ctrl+alt+N: slides towards the chosen window's place in the list.
+    @objc func switchApp(_ sender: NSMenuItem) {
+        guard let shell = sender.representedObject as? Shell, let current,
+              let from = shells.firstIndex(where: { $0 === current }), let to = shells.firstIndex(where: { $0 === shell })
+        else { return }
+        focus(shell, direction: to > from ? 1 : -1)
+    }
+
+    @objc func closeWindow() { current?.window.close() }
+
+    func loaded(_ shell: Shell) {
+        guard probing, !probed, shell === shells.first else { return }
+        probed = true
+        Task { @MainActor in
+            await probeWeb(shell)
+            probePalette(shell)
+            probeSpaces(shell)
+        }
+    }
 
     // MARK: Config and commands
 
@@ -226,33 +138,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard let loaded = Config.load() else { return }
         config = loaded
         palette.commands = loaded.controlPlane.commands
-        buildMenu()
         print("config:", loaded.controlPlane.commands.map(\.title))
+        syncShells()
     }
 
     func perform(_ action: Action) {
+        guard let shell = current else { return }
         switch action {
         case .quit: NSApp.terminate(nil)
-        case .fullscreen: set(.fullscreen)
-        case .window: set(.window)
-        case .frameless: set(.frameless)
-        case .alwaysOnTop: toggleOnTop()
-        case .reload: reload()
-        case .allDesktops: toggleAllSpaces()
-        case .nextDesktop: moveToNextSpace()
+        case .fullscreen: shell.set(.fullscreen)
+        case .window: shell.set(.window)
+        case .frameless: shell.set(.frameless)
+        case .alwaysOnTop: shell.toggleOnTop()
+        case .reload: shell.reload()
+        case .allDesktops: shell.toggleAllSpaces()
+        case .nextDesktop: shell.moveToNextSpace()
         }
     }
 
-    /// Above every other app's windows, floating panels included; stays on when the mode changes.
-    @objc func toggleOnTop() {
-        onTop.toggle()
-        window.level = onTop ? .screenSaver : .normal
-        buildMenu()
-        print("always on top:", onTop)
-    }
+    @objc func reload() { current?.reload() }
+    @objc func toggleAllSpaces() { current?.toggleAllSpaces() }
+    @objc func moveToNextSpace() { current?.moveToNextSpace() }
 
     @objc func openPalette() {
-        palette.isOpen ? palette.close() : palette.open(over: window)
+        guard let shell = current else { return }
+        palette.isOpen ? palette.close() : palette.open(over: shell.window)
     }
 
     @objc func runCommand(_ sender: NSMenuItem) {
@@ -263,7 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     /// Shortcuts live in the main menu rather than in a key monitor, so every plain key reaches
     /// the terminal. The Edit menu is what makes ⌘C / ⌘V work inside the web view. The
-    /// Commands menu mirrors the config's control plane, with each command's key.
+    /// Commands menu mirrors the config's control plane, with each command's key. The Apps menu
+    /// lists the windows; the key one is checked.
     func buildMenu() {
         let main = NSMenu()
         func item(
@@ -283,10 +194,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
         let plane = config?.controlPlane
         let hotkey = plane?.hotkey
+        let onTop = current?.onTop == true
         let commands = (plane?.commands ?? []).map { command in
             let entry = item(command.title, #selector(runCommand(_:)), command.key?.key ?? "", command.key?.modifiers ?? [])
             entry.representedObject = command
             if command.action == .alwaysOnTop { entry.state = onTop ? .on : .off }
+            return entry
+        }
+        let apps = shells.enumerated().map { index, shell in
+            // ctrl+alt+1..9; a tenth window and beyond has no key.
+            let entry = item(shell.app.name, #selector(switchApp(_:)), index < 9 ? String(index + 1) : "", [.control, .option])
+            entry.representedObject = shell
+            entry.state = shell === current ? .on : .off
             return entry
         }
         submenu("Tilr", [item("Quit Tilr", #selector(NSApplication.terminate(_:)), "q")])
@@ -309,39 +228,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             item("Show on All Desktops", #selector(toggleAllSpaces), "a", [.command, .shift]),
             item("Move to Next Desktop", #selector(moveToNextSpace), "s", [.command, .shift]),
         ])
+        // \u{F703} / \u{F702} are NSRightArrowFunctionKey / NSLeftArrowFunctionKey.
+        submenu("Apps", [
+            item("Next App", #selector(nextApp), "\u{F703}", [.control, .option]),
+            item("Previous App", #selector(previousApp), "\u{F702}", [.control, .option]),
+            item("Close Window", #selector(closeWindow), "w"),
+            .separator(),
+        ] + apps)
         NSApp.mainMenu = main
-    }
-
-    @objc func toggleAllSpaces() {
-        allSpaces.toggle()
-        applyCollectionBehavior()
-        print("show on all desktops:", allSpaces)
-    }
-
-    // MARK: Spaces
-
-    /// Desktop Spaces of the display the window is on, and the window's index among them.
-    func desktops() -> (all: [UInt64], index: Int?) {
-        let current = Spaces.of(window).first
-        let all = Spaces.desktopsByDisplay().first { list in current.map(list.contains) ?? false }
-            ?? Spaces.desktopsByDisplay().first ?? []
-        return (all, current.flatMap(all.firstIndex(of:)))
-    }
-
-    @objc func moveToNextSpace() {
-        let (all, index) = desktops()
-        guard let index, all.count > 1 else {
-            // In native fullscreen the window is a Space of its own and is not on any desktop.
-            print("move to next desktop: skipped (window is not on a desktop, or there is only one)")
-            return
-        }
-        let target = (index + 1) % all.count
-        Spaces.move(window, to: all[target])
-        // The window server applies the move asynchronously.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
-            let moved = Spaces.of(window) == [all[target]]
-            print("move to desktop \(target + 1):", moved ? "ok" : "FAILED")
-        }
     }
 
     // MARK: Probe
@@ -349,7 +243,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     /// `--probe`, web part: reports what loaded, clicks through the header's clock menu from JS and,
     /// with `--snapshot PATH`, saves pictures of the top corners of the page.
     @MainActor
-    func probeWeb() async {
+    func probeWeb(_ shell: Shell) async {
+        let webView = shell.webView
         let args = CommandLine.arguments
         let path = args.firstIndex(of: "--snapshot").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
         func js(_ source: String) async -> String {
@@ -369,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
         // Lets fonts and layout settle before measuring.
         try? await Task.sleep(nanoseconds: 700_000_000)
+        print("apps:", shells.map { "\($0.app.name) → \($0.app.origin.absoluteString)" })
         print("page:", webView.url?.absoluteString ?? "none")
         let root = "document.querySelector('tilr-header')?.shadowRoot"
         print("header:", await js("""
@@ -390,11 +286,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
               before === null ? localStorage.removeItem('tilr-clock-zone') : localStorage.setItem('tilr-clock-zone', before);
               return result; })()
             """))
+        // Several windows: switching must land on the next one in config order.
+        if shells.count > 1 {
+            focus(shell)
+            nextApp()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            print("next app:", current?.app.name ?? "none", current === shells[1] && !sliding ? "ok" : "FAILED")
+            previousApp()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            print("previous app:", current?.app.name ?? "none", current === shell && !sliding ? "ok" : "FAILED",
+                  "frames:", shells.allSatisfy { $0.window.frame == shell.window.frame } ? "aligned" : "FAILED")
+        }
     }
 
     /// `--probe`, palette part: opens it, filters, closes. Nothing is run.
-    func probePalette() {
-        palette.open(over: window)
+    func probePalette(_ shell: Shell) {
+        palette.open(over: shell.window)
         print("palette:", palette.shown.map(\.title), "open:", palette.isOpen)
         palette.type("win")
         print("palette \"win\":", palette.shown.map(\.title))
@@ -403,11 +310,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     /// `--probe`, window part: reports the fullscreen frame and whether a Space move sticks, then quits.
-    func probeSpaces() {
+    func probeSpaces(_ shell: Shell) {
+        let window = shell.window
         func after(_ seconds: Double, _ body: @escaping () -> Void) {
             DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: body)
         }
-        let (all, index) = desktops()
+        let (all, index) = shell.desktops()
         print("screen frame:", (window.screen ?? NSScreen.main!).frame)
         print("window frame:", window.frame)
         print("presentation options:", NSApp.currentSystemPresentationOptions.rawValue)
@@ -419,10 +327,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
         let target = all[(index + 1) % all.count]
         Spaces.move(window, to: target)
-        after(0.5) { [self] in
+        after(0.5) {
             print("space move:", Spaces.of(window) == [target] ? "ok" : "FAILED", "->", Spaces.of(window))
             Spaces.move(window, to: all[index])
-            after(0.5) { [self] in
+            after(0.5) {
                 print("space move back:", Spaces.of(window) == [all[index]] ? "ok" : "FAILED")
                 NSApp.terminate(nil)
             }

@@ -1,3 +1,0 @@
-{
-  "plugins": ["theme", "theme-light", "header", "panel", "clock", "counter", "stats"]
-}

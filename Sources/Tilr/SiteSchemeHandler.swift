@@ -1,21 +1,25 @@
 import UniformTypeIdentifiers
 import WebKit
 
-/// Serves a directory to the web view as `tilr://app/...`, so a built SPA
+/// Serves a directory to the web view as `tilr://<host>/...`, so a built SPA
 /// (module scripts, fetch, absolute `/assets` paths) works the way it would
-/// behind a web server — none of that is allowed from `file://`.
+/// behind a web server — none of that is allowed from `file://`. The host is
+/// ignored: each web view has its own handler, and the host (the app's name,
+/// see Site.App) only keeps the apps' origins, and so their storage, apart.
 ///
 /// Known limits:
 /// - No `Range` support: every response is the whole file. `<video>`/`<audio>`
 ///   from the site will not seek and may not play at all; add 206 handling if needed.
 /// - Files are read synchronously on the main thread, so a huge asset stalls the UI.
-/// - A custom scheme is not a secure context: no `crypto.subtle`, service workers,
-///   or `getUserMedia`. A loopback HTTP server would be needed for those.
+/// - The page is a secure context (`window.isSecureContext`, `navigator.clipboard`,
+///   `crypto.subtle`): WebKit treats a scheme with a WKURLSchemeHandler as potentially
+///   trustworthy (`schemeIsHandledBySchemeHandler` in SecurityOrigin.cpp). Verified in the
+///   Mac app 2026-10-08.
 final class SiteSchemeHandler: NSObject, WKURLSchemeHandler {
     static let scheme = "tilr"
-    static let origin = URL(string: "\(scheme)://app/")!
 
-    let root: URL
+    /// Changed when the config names another folder; the next request reads from there.
+    var root: URL
 
     init(root: URL) {
         self.root = root
