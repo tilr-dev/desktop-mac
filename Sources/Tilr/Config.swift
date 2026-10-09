@@ -11,9 +11,10 @@ struct Config: Decodable {
     var window: Windows
     var switching: Switching
     var controlPlane: ControlPlane
+    var control: Control
 
     enum CodingKeys: String, CodingKey {
-        case site, apps, window
+        case site, apps, window, control
         case switching = "switch"
         case controlPlane = "control_plane"
     }
@@ -78,6 +79,14 @@ struct Config: Decodable {
         var action: Action
         /// Optional shortcut that runs the command without opening the palette.
         var key: Shortcut?
+    }
+
+    /// Tilr Control (Control.swift): the socket an agent drives the app through. At launch.
+    struct Control: Decodable {
+        /// Empty: no server.
+        var socket: String
+        /// Console messages kept per app.
+        var console: Int
     }
 
     static let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -149,6 +158,15 @@ struct Config: Decodable {
             - title: Always on Top
               action: always-on-top
               key: cmd+shift+t
+
+        # Tilr Control: a socket through which an agent, `tilr ctl` or `tilr mcp` drives the app:
+        # lists and switches the apps, takes a snapshot of the page, reads its console, calls the
+        # page's services (switches plugins, opens and moves windows). Only this user can open it;
+        # whoever can is in charge of the pages. Empty: no server. Applies at launch.
+        control:
+          socket: ~/.config/tilr/control.sock
+          # Console messages kept per app for the console command.
+          console: 500
 
         """
 

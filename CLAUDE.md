@@ -16,3 +16,6 @@ runs the self-check (page, palette, app switching, Space move) and quits — run
 - A setting applies on config reload (the file is watched) unless its comment in the defaults
   says "at launch".
 - Keep `./run.sh --probe` passing; extend it when a feature can be checked from code.
+- To see and drive the running app, use Tilr Control (`Sources/Tilr/Control.swift`): `tilr ctl
+  snapshot PATH`, `tilr ctl console`, `tilr ctl call SERVICE.METHOD …` (the CLI of the web repo),
+  or the `tilr` MCP server. Restart the app after a Swift change (`./run.sh`).

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The defaults until config.yml is read; the last good config after that.
     var config = Config.fallback
     let palette = Palette()
+    var control: ControlServer?
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
 
@@ -30,7 +31,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         palette.run = { [weak self] in self?.perform($0.action) }
         palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.shell.onTop == true }
+        if !config.control.socket.isEmpty {
+            control = ControlServer(
+                path: (config.control.socket as NSString).expandingTildeInPath,
+                tabs: { [unowned self] in tabs },
+                current: { [unowned self] in current },
+                select: { [unowned self] tab in shell.select(tab); buildMenu() }
+            )
+            control?.start()
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        control?.stop()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -47,7 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if tab.app.root != app.root { tab.show(app) }
                 return tab
             }
-            let tab = Tab(app: app)
+            // Control is read at launch: a tab made later still follows that choice.
+            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control)
             tab.didLoad = { [weak self] in self?.loaded($0) }
             tab.show(app)
             return tab

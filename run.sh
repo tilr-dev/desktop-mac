@@ -33,10 +33,16 @@ echo "site folder: $site"
 swift build -c release
 app=build/Tilr.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+# A new file, not a copy over the old one: the kernel caches a bundle's code signature by inode,
+# and a binary overwritten in place is killed at launch from the Dock ("Code Signature Invalid").
+rm -f "$app/Contents/MacOS/Tilr"
 cp .build/release/Tilr "$app/Contents/MacOS/"
 cp Info.plist "$app/Contents/"
 rm -rf "$app/Contents/Resources/web"
 cp placeholder.html "$app/Contents/Resources/"
+codesign --force --sign - "$app" 2>/dev/null || true
+# One Tilr at a time: the one running holds the control socket and the window.
+pkill -x Tilr 2>/dev/null && sleep 0.5 || true
 
 # Run the binary directly so stdout stays in this terminal.
 exec "$app/Contents/MacOS/Tilr" "$@"

@@ -13,13 +13,34 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// A page finished loading.
     var didLoad: ((Tab) -> Void)?
 
-    init(app: Site.App) {
+    struct ConsoleEntry {
+        /// Seconds since 1970.
+        let time: Double
+        /// log, info, warn, error, debug, pageerror.
+        let type: String
+        let text: String
+    }
+
+    /// The page's console, oldest first, the last `consoleLimit` entries (Tilr Control's `console`).
+    var console: [ConsoleEntry] = []
+    private let consoleLimit: Int
+    private let relay = ConsoleRelay()
+
+    /// `control`: with Tilr Control on, the page's console is caught for it.
+    init(app: Site.App, control: Config.Control?) {
         self.app = app
+        consoleLimit = control?.console ?? 0
         site = SiteSchemeHandler(root: app.root)
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(site, forURLScheme: SiteSchemeHandler.scheme)
+        if control != nil {
+            let controller = configuration.userContentController
+            controller.addUserScript(WKUserScript(source: ConsoleRelay.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            controller.add(relay, name: ConsoleRelay.name)
+        }
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        relay.tab = self
         webView.navigationDelegate = self
         webView.underPageBackgroundColor = .black
         webView.isInspectable = true  // Safari → Develop → Tilr
@@ -48,6 +69,11 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     func reload() {
         webView.load(URLRequest(url: pageURL, cachePolicy: .reloadIgnoringLocalCacheData))
+    }
+
+    func log(type: String, text: String) {
+        console.append(ConsoleEntry(time: Date().timeIntervalSince1970, type: type, text: text))
+        if console.count > consoleLimit { console.removeFirst(console.count - consoleLimit) }
     }
 
     /// A change under `plugins/` goes to the page, which swaps just those plugins in place
