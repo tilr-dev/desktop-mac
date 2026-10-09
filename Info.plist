@@ -21,6 +21,9 @@
         <!-- http in the page (a radio stream, a plain-http site), not in the app itself -->
         <key>NSAllowsArbitraryLoadsInWebContent</key>
         <true/>
+        <!-- http streams in the app's audio players (Audio.swift) -->
+        <key>NSAllowsArbitraryLoadsForMedia</key>
+        <true/>
     </dict>
     <key>NSHighResolutionCapable</key>
     <true/>

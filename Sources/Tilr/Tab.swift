@@ -10,6 +10,8 @@ final class Tab: NSObject, WKNavigationDelegate {
     let webView: WKWebView
     /// The page's web views (WebViews.swift): subviews of `webView`, gone with the page.
     let webViews: WebViewHost
+    /// The page's audio players (Audio.swift): they outlive the page, a reload keeps them playing.
+    let audio = AudioHost()
     var watcher: FolderWatcher?
 
     /// A page finished loading.
@@ -43,10 +45,13 @@ final class Tab: NSObject, WKNavigationDelegate {
             controller.add(relay, name: ConsoleRelay.name)
         }
         controller.add(webViews, name: WebViewHost.name)
+        controller.add(audio, name: AudioHost.name)
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         webViews.tab = self
+        audio.send = { [weak self] in self?.send(event: AudioHost.event, detail: $0) }
+        audio.siteFile = { [weak self] in self?.siteFile($0) }
         webView.navigationDelegate = self
         webView.underPageBackgroundColor = .black
         webView.isInspectable = true  // Safari → Develop → Tilr
@@ -142,7 +147,17 @@ final class Tab: NSObject, WKNavigationDelegate {
         return String(array.dropFirst().dropLast())
     }
 
+    /// `tilr://<host>/<path>` → the file under the folder of the app with that host (this tab's
+    /// app first, then the others), for what cannot load the scheme itself (AVPlayer).
+    func siteFile(_ url: URL) -> URL? {
+        guard url.scheme == SiteSchemeHandler.scheme, let host = url.host else { return nil }
+        let others = (NSApp.delegate as? AppDelegate)?.tabs.map(\.app) ?? []
+        guard let owner = ([app] + others).first(where: { $0.host == host }) else { return nil }
+        return AudioHost.file(in: owner.root, path: url.path)
+    }
+
     /// The page is leaving (a reload, another URL): its web views have no page to follow.
+    /// The audio players stay (AudioHost).
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         webViews.removeAll()
     }
