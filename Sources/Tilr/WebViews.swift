@@ -143,7 +143,9 @@ final class ChildWebView: WKWebView {
         return super.hitTest(point)
     }
 
-    /// The layer's mask: everything but the holes (an even-odd path), none without holes.
+    /// The layer's mask: everything but the holes (an even-odd path of the bounds and the holes
+    /// made disjoint: two holes that overlap, a float and a menu over it, would mask the overlap
+    /// back in), none without holes.
     private func mask() {
         guard let layer else { return }
         guard !holes.isEmpty else { layer.mask = nil; return }
@@ -155,10 +157,10 @@ final class ChildWebView: WKWebView {
         // The holes are from the top left (the view is flipped); so is the layer, unless AppKit
         // left its geometry the Core Animation way, from the bottom left.
         let flipped = layer.isGeometryFlipped || layer.contentsAreFlipped()
-        for hole in holes {
-            let rect = flipped ? hole : CGRect(x: hole.minX, y: layer.bounds.height - hole.maxY, width: hole.width, height: hole.height)
-            path.addRect(rect.intersection(layer.bounds))
+        let rects = holes.map { hole in
+            (flipped ? hole : CGRect(x: hole.minX, y: layer.bounds.height - hole.maxY, width: hole.width, height: hole.height)).intersection(layer.bounds)
         }
+        for rect in disjoint(rects) { path.addRect(rect) }
         shape.path = path
         layer.mask = shape
     }
@@ -333,4 +335,27 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
         alert.addButton(withTitle: "Cancel")
         completionHandler(alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil)
     }
+}
+
+/// `rects` as rects that do not overlap and cover the same area: each one less the ones before
+/// it (a rect less another is up to four: the strips above and below it, left and right of it).
+func disjoint(_ rects: [CGRect]) -> [CGRect] {
+    var out: [CGRect] = []
+    for rect in rects where !rect.isEmpty {
+        var pieces = [rect]
+        for taken in out {
+            pieces = pieces.flatMap { piece -> [CGRect] in
+                let cut = piece.intersection(taken)
+                if cut.isNull || cut.isEmpty { return [piece] }
+                return [
+                    CGRect(x: piece.minX, y: piece.minY, width: piece.width, height: cut.minY - piece.minY),
+                    CGRect(x: piece.minX, y: cut.maxY, width: piece.width, height: piece.maxY - cut.maxY),
+                    CGRect(x: piece.minX, y: cut.minY, width: cut.minX - piece.minX, height: cut.height),
+                    CGRect(x: cut.maxX, y: cut.minY, width: piece.maxX - cut.maxX, height: cut.height),
+                ].filter { $0.width > 0 && $0.height > 0 }
+            }
+        }
+        out += pieces
+    }
+    return out
 }
