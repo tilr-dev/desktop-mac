@@ -15,8 +15,10 @@ import WebKit
 ///
 /// and the app answers with a `tilr-webview` CustomEvent on the page's `window`, `detail` being
 /// `{ id, url, title, loading, progress, canGoBack, canGoForward, error }` on every change of the
-/// view's state, or `{ id, type: 'open', open: url }` when the view's page asks for a new
-/// window (`target=_blank`, `window.open`). Views go when the page navigates (a reload), and
+/// view's state, `{ id, type: 'open', open: url }` when the view's page asks for a new window
+/// (`target=_blank`, `window.open`), or `{ id, type: 'press' }` on a mouse button down in the
+/// view (the page never sees it: the view takes the event; the page focuses the window on it).
+/// Views go when the page navigates (a reload), and
 /// with the tab. The views are above the page, in an overlay of their own (so that ordering
 /// them never touches WebKit's subviews); a view is masked out at its holes and lets the mouse
 /// through there, so a float the page draws over a tiled view's host is seen and clicked as the
@@ -111,10 +113,27 @@ final class PassthroughView: NSView {
 final class ChildWebView: WKWebView {
     var z = 0
     var holes: [CGRect] = [] { didSet { if holes != oldValue { mask() } } }
+    /// A mouse button went down in the view (any button): the page's window wants the focus.
+    var pressed: (() -> Void)?
 
     override func layout() {
         super.layout()
         mask()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        pressed?()
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        pressed?()
+        super.rightMouseDown(with: event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        pressed?()
+        super.otherMouseDown(with: event)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -167,6 +186,10 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView = ChildWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.wantsLayer = true
+        webView.pressed = { [weak self] in
+            guard let self else { return }
+            self.report(["id": self.id, "type": "press"])
+        }
         if !settings.userAgent.isEmpty { webView.customUserAgent = settings.userAgent }
         webView.navigationDelegate = self
         webView.uiDelegate = self
