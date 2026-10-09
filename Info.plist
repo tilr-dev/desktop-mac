@@ -18,6 +18,9 @@
     <dict>
         <key>NSAllowsLocalNetworking</key>
         <true/>
+        <!-- http in the page (a radio stream, a plain-http site), not in the app itself -->
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
     </dict>
     <key>NSHighResolutionCapable</key>
     <true/>
