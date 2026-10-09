@@ -25,14 +25,11 @@ enum Site {
         .flatMap(URL.init(string:))
 
     /// The apps to show, in window order. Never empty.
-    static func apps(config: Config?) -> [App] {
+    static func apps(config: Config) -> [App] {
         if let dir = argument("--site") { return [App(name: "app", root: folder(dir))] }
         if devURL != nil { return [App(name: "app", root: fallback)] }
-        if let list = config?.apps, !list.isEmpty {
-            return list.map { App(name: $0.name, root: folder($0.site)) }
-        }
-        if let dir = config?.site { return [App(name: "app", root: folder(dir))] }
-        return [App(name: "app", root: fallback)]
+        if !config.apps.isEmpty { return config.apps.map { App(name: $0.name, root: folder($0.site)) } }
+        return [App(name: "app", root: folder(config.site))]
     }
 
     static func hasIndex(_ root: URL) -> Bool {

@@ -6,7 +6,8 @@ import WebKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var shells: [Shell] = []
     var configWatcher: FolderWatcher?
-    var config: Config?
+    /// The defaults until config.yml is read; the last good config after that.
+    var config = Config.fallback
     let palette = Palette()
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
@@ -15,10 +16,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var current: Shell? { shells.first { $0.window.isKeyWindow } ?? shells.first }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Config.writeDefaults()
         reloadConfig()
-        // A broken config at launch still gets the fallback window.
+        // A broken config at launch still gets the default window.
         if shells.isEmpty { syncShells() }
-        configWatcher = FolderWatcher(Config.dir) { [weak self] _ in self?.reloadConfig() }
+        // default.yml is ours; only the user's file matters.
+        configWatcher = FolderWatcher(Config.dir) { [weak self] paths in
+            if paths.contains(where: { $0.hasSuffix("/config.yml") }) { self?.reloadConfig() }
+        }
         palette.run = { [weak self] in self?.perform($0.action) }
         palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.current?.onTop == true }
         NSApp.activate(ignoringOtherApps: true)
@@ -36,10 +41,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var kept: [Shell] = []
         for app in apps {
             if let shell = shells.first(where: { $0.app.name == app.name }) {
+                shell.settings = config.window
                 if shell.app.root != app.root { shell.show(app) }
                 kept.append(shell)
             } else {
-                let shell = Shell(app: app)
+                let shell = Shell(app: app, settings: config.window)
                 shell.closed = { [weak self] in self?.forget($0) }
                 shell.changed = { [weak self] _ in self?.buildMenu() }
                 shell.didLoad = { [weak self] in self?.loaded($0) }
@@ -74,13 +80,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var sliding = false
 
     /// Switches to `shell` with a slide: `direction` 1 brings it in from the right (the way
-    /// ctrl+alt+→ goes), -1 from the left. Both windows move together, like Spaces do. Without
-    /// an animation when the two windows are not both fullscreen-mode windows on the same screen
-    /// and Space.
+    /// `switch.next` goes), -1 from the left. Both windows move together, like Spaces do, for
+    /// `switch.duration` seconds. Without an animation when that is 0, or when the two windows
+    /// are not both fullscreen-mode windows on the same screen and Space.
     func focus(_ shell: Shell, direction: Int) {
         guard let from = current, from !== shell else { return focus(shell) }
         let frame = from.window.frame
-        let canSlide = from.mode == .fullscreen && shell.mode == .fullscreen
+        let switching = config.switching
+        let canSlide = switching.duration > 0 && from.mode == .fullscreen && shell.mode == .fullscreen
             && !from.window.styleMask.contains(.fullScreen) && !shell.window.styleMask.contains(.fullScreen)
             && from.window.screen === shell.window.screen && Spaces.of(from.window) == Spaces.of(shell.window)
         guard canSlide, !sliding else { return focus(shell) }
@@ -89,8 +96,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shell.window.setFrame(frame.offsetBy(dx: offset, dy: 0), display: true)
         shell.window.orderFront(nil)
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.3
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.duration = switching.duration
+            context.timingFunction = switching.easing.function
             from.window.animator().setFrame(frame.offsetBy(dx: -offset, dy: 0), display: true)
             shell.window.animator().setFrame(frame, display: true)
         }, completionHandler: { [self] in
@@ -101,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
     }
 
-    /// ctrl+alt+→ and ctrl+alt+←: the next or previous window in config order, wrapping around.
+    /// `switch.next` and `switch.previous`: the next or previous window in config order, wrapping around.
     func step(_ delta: Int) {
         guard let current, let index = shells.firstIndex(where: { $0 === current }), shells.count > 1 else { return }
         let next = shells[(index + delta + shells.count) % shells.count]
@@ -112,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func nextApp() { step(1) }
     @objc func previousApp() { step(-1) }
 
-    /// ctrl+alt+N: slides towards the chosen window's place in the list.
+    /// `switch.jump` + N: slides towards the chosen window's place in the list.
     @objc func switchApp(_ sender: NSMenuItem) {
         guard let shell = sender.representedObject as? Shell, let current,
               let from = shells.firstIndex(where: { $0 === current }), let to = shells.firstIndex(where: { $0 === shell })
@@ -138,7 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let loaded = Config.load() else { return }
         config = loaded
         palette.commands = loaded.controlPlane.commands
-        print("config:", loaded.controlPlane.commands.map(\.title))
+        print("config:", loaded.controlPlane.commands.map(\.title), "switch in \(loaded.switching.duration)s")
         syncShells()
     }
 
@@ -192,18 +199,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             parent.submenu = menu
             main.addItem(parent)
         }
-        let plane = config?.controlPlane
-        let hotkey = plane?.hotkey
+        let plane = config.controlPlane
+        let switching = config.switching
         let onTop = current?.onTop == true
-        let commands = (plane?.commands ?? []).map { command in
+        let commands = plane.commands.map { command in
             let entry = item(command.title, #selector(runCommand(_:)), command.key?.key ?? "", command.key?.modifiers ?? [])
             entry.representedObject = command
             if command.action == .alwaysOnTop { entry.state = onTop ? .on : .off }
             return entry
         }
         let apps = shells.enumerated().map { index, shell in
-            // ctrl+alt+1..9; a tenth window and beyond has no key.
-            let entry = item(shell.app.name, #selector(switchApp(_:)), index < 9 ? String(index + 1) : "", [.control, .option])
+            // switch.jump + 1..9; a tenth window and beyond has no key.
+            let entry = item(shell.app.name, #selector(switchApp(_:)), index < 9 ? String(index + 1) : "", switching.jump.modifiers)
             entry.representedObject = shell
             entry.state = shell === current ? .on : .off
             return entry
@@ -219,7 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("Select All", #selector(NSText.selectAll(_:)), "a"),
         ])
         submenu("Commands", [
-            item("Control Plane", #selector(openPalette), hotkey?.key ?? "p", hotkey?.modifiers ?? [.command, .shift]),
+            item("Control Plane", #selector(openPalette), plane.hotkey.key, plane.hotkey.modifiers),
             .separator(),
         ] + commands)
         submenu("View", [
@@ -228,10 +235,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("Show on All Desktops", #selector(toggleAllSpaces), "a", [.command, .shift]),
             item("Move to Next Desktop", #selector(moveToNextSpace), "s", [.command, .shift]),
         ])
-        // \u{F703} / \u{F702} are NSRightArrowFunctionKey / NSLeftArrowFunctionKey.
         submenu("Apps", [
-            item("Next App", #selector(nextApp), "\u{F703}", [.control, .option]),
-            item("Previous App", #selector(previousApp), "\u{F702}", [.control, .option]),
+            item("Next App", #selector(nextApp), switching.next.key, switching.next.modifiers),
+            item("Previous App", #selector(previousApp), switching.previous.key, switching.previous.modifiers),
             item("Close Window", #selector(closeWindow), "w"),
             .separator(),
         ] + apps)

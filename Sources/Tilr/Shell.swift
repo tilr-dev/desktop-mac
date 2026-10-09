@@ -35,12 +35,12 @@ enum Spaces {
     }
 }
 
-enum Mode {
+enum Mode: String, Decodable {
     /// Covers the whole screen in the current Space, Dock and menu bar hidden.
     case fullscreen
     /// A normal window with a title bar.
     case window
-    /// A window without a title bar; dragged by its top 32px (the page's header bar).
+    /// A window without a title bar; dragged by its top `drag_height` points (the page's header bar).
     case frameless
 }
 
@@ -56,11 +56,13 @@ final class Window: NSWindow {
 /// the same commands, applied to the one whose window is key.
 final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private(set) var app: Site.App
+    /// `window:` from the config; the owner updates it when the config changes.
+    var settings: Config.Windows
     let window = Window(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
     let site: SiteSchemeHandler
     let webView: WKWebView
     var watcher: FolderWatcher?
-    var mode = Mode.fullscreen
+    var mode: Mode
     var pending: Mode?
     var allSpaces = false
     var onTop = false
@@ -73,8 +75,10 @@ final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
     /// The window closed; the owner drops the shell.
     var closed: ((Shell) -> Void)?
 
-    init(app: Site.App) {
+    init(app: Site.App, settings: Config.Windows) {
         self.app = app
+        self.settings = settings
+        mode = settings.mode
         site = SiteSchemeHandler(root: app.root)
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(site, forURLScheme: SiteSchemeHandler.scheme)
@@ -91,9 +95,9 @@ final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
         installDrag()
     }
 
-    /// Shows the window in fullscreen mode and loads the page.
+    /// Shows the window in the config's mode and loads the page.
     func open() {
-        set(.fullscreen)
+        set(mode)
         show(app)
     }
 
@@ -193,7 +197,7 @@ final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
         mode = new
         applyCollectionBehavior()
         let screen = window.screen ?? NSScreen.main!
-        let windowFrame = screen.visibleFrame.insetBy(dx: 200, dy: 150)
+        let windowFrame = screen.visibleFrame.insetBy(dx: settings.inset.x, dy: settings.inset.y)
         switch new {
         case .fullscreen:
             // Same Space as before, no animation: the window just covers the whole screen
@@ -212,8 +216,8 @@ final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
         window.makeFirstResponder(webView)
     }
 
-    /// Frameless mode has no title bar to grab, so a drag that starts in the top 32px moves
-    /// the window. The events still reach the page, so the header's clock stays clickable.
+    /// Frameless mode has no title bar to grab, so a drag that starts in the top `drag_height`
+    /// points moves the window. The events still reach the page, so the header's clock stays clickable.
     private var dragStart: (mouse: NSPoint, origin: NSPoint)?
 
     private func installDrag() {
@@ -221,7 +225,7 @@ final class Shell: NSObject, NSWindowDelegate, WKNavigationDelegate {
             guard let self, mode == .frameless, event.window === window else { return event }
             if event.type == .leftMouseDown {
                 let fromTop = window.frame.height - event.locationInWindow.y
-                dragStart = fromTop <= 32 ? (NSEvent.mouseLocation, window.frame.origin) : nil
+                dragStart = fromTop <= settings.dragHeight ? (NSEvent.mouseLocation, window.frame.origin) : nil
             } else if let start = dragStart {
                 let mouse = NSEvent.mouseLocation
                 window.setFrameOrigin(NSPoint(x: start.origin.x + mouse.x - start.mouse.x,

@@ -1,17 +1,20 @@
 import AppKit
 import Yams
 
-/// `~/.config/tilr/config.yml`. Written with the defaults below when missing, read again on
-/// every change. A broken file keeps the last good config and says why on stdout.
+/// Settings, Sublime Text style. `~/.config/tilr/default.yml` holds every key with its default;
+/// the app writes it on each launch. `config.yml` next to it holds the user's overrides and is
+/// read again on every save: a map there is merged key by key, a list or a value replaces the
+/// default whole. A broken config.yml keeps the last good config and says why on stdout.
 struct Config: Decodable {
-    /// Folder with the page (`index.html`); `~` is expanded. Missing: `~/tilr`. Ignored when `apps` is set.
-    var site: String?
-    /// Several windows, one per app; each shows its own folder. Replaces `site`.
-    var apps: [App]?
+    var site: String
+    var apps: [App]
+    var window: Windows
+    var switching: Switching
     var controlPlane: ControlPlane
 
     enum CodingKeys: String, CodingKey {
-        case site, apps
+        case site, apps, window
+        case switching = "switch"
         case controlPlane = "control_plane"
     }
 
@@ -21,9 +24,52 @@ struct Config: Decodable {
         var site: String
     }
 
+    /// Per-window settings. `mode` applies at launch, the rest whenever the config changes.
+    struct Windows: Decodable {
+        var mode: Mode
+        var dragHeight: CGFloat
+        var inset: Inset
+
+        enum CodingKeys: String, CodingKey {
+            case mode, inset
+            case dragHeight = "drag_height"
+        }
+
+        struct Inset: Decodable {
+            var x: CGFloat
+            var y: CGFloat
+        }
+    }
+
+    /// Switching between the apps' windows.
+    struct Switching: Decodable {
+        var duration: Double
+        var easing: Easing
+        var next: Shortcut
+        var previous: Shortcut
+        /// Modifiers only; with 1..9 they jump to the window at that place in `apps`.
+        var jump: Shortcut
+    }
+
+    enum Easing: String, Decodable {
+        case easeInOut = "ease-in-out"
+        case easeIn = "ease-in"
+        case easeOut = "ease-out"
+        case linear
+
+        var function: CAMediaTimingFunction {
+            switch self {
+            case .easeInOut: CAMediaTimingFunction(name: .easeInEaseOut)
+            case .easeIn: CAMediaTimingFunction(name: .easeIn)
+            case .easeOut: CAMediaTimingFunction(name: .easeOut)
+            case .linear: CAMediaTimingFunction(name: .linear)
+            }
+        }
+    }
+
     /// The command palette: `hotkey` opens it, `commands` are its rows, top to bottom.
     struct ControlPlane: Decodable {
-        var hotkey: Shortcut?
+        var hotkey: Shortcut
         var commands: [Command]
     }
 
@@ -37,21 +83,51 @@ struct Config: Decodable {
     static let dir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/tilr", isDirectory: true)
     static let file = dir.appendingPathComponent("config.yml")
+    static let defaultsFile = dir.appendingPathComponent("default.yml")
 
+    /// Every setting with its default. Written to `default.yml` for reference; what config.yml
+    /// does not override comes from here.
     static let defaultText = """
-        # Tilr for Mac. The app reloads this file on every save.
-        # Folder with the page: an index.html plus whatever it loads. Until there is one, the app
-        # shows a placeholder naming the folder. A change in the folder hot-reloads the page.
+        # Tilr for Mac: every setting and its default. The app writes this file on each launch, so
+        # edits here are lost. To change a setting, put the key into config.yml next to this file:
+        # a map is merged key by key, a list or a value replaces the default whole.
+
+        # The page: a folder with an index.html plus whatever it loads, served as tilr://app/.
+        # Until there is one, the app shows a placeholder naming the folder. A change in the
+        # folder hot-reloads the page. Ignored when apps: is not empty.
         site: ~/tilr
-        # Or several windows, each with its own folder and its own storage. Replaces site: when set.
-        # ctrl+alt+← / ctrl+alt+→ cycle through them, ctrl+alt+1..9 jump to one.
+
+        # Several windows, each with its own folder and its own storage (tilr://<name>/):
         # apps:
         #   - name: Dashboard
         #     site: ~/tilr
         #   - name: Notes
         #     site: ~/tilr-notes
+        apps: []
+
+        window:
+          # fullscreen covers the screen with the Dock and the menu bar hidden; window has a title
+          # bar; frameless has none. The mode at launch; the Commands menu switches it later.
+          mode: fullscreen
+          # Frameless mode: a drag that starts within this many points from the top moves the window.
+          drag_height: 32
+          # Window and frameless modes: the window is the screen minus these margins, in points.
+          inset: { x: 200, y: 150 }
+
+        # Switching between the apps' windows: the new one slides in, the old one slides out.
+        switch:
+          # Seconds; 0 switches without an animation.
+          duration: 0.3
+          # ease-in-out, ease-in, ease-out or linear.
+          easing: ease-in-out
+          # Modifiers: cmd, shift, alt (opt), ctrl. Keys: a letter, a digit, left, right, up, down.
+          next: ctrl+alt+right
+          previous: ctrl+alt+left
+          # Modifiers only: with 1..9 they jump to the window at that place in apps.
+          jump: ctrl+alt
+
         control_plane:
-          # Opens the palette. Modifiers: cmd, shift, alt (opt), ctrl.
+          # Opens the palette.
           hotkey: cmd+shift+p
           # Rows of the palette, top to bottom. action is one of:
           #   quit, fullscreen, window, frameless, always-on-top, reload, all-desktops, next-desktop
@@ -75,18 +151,52 @@ struct Config: Decodable {
 
         """
 
-    static func load() -> Config? {
+    /// The first config.yml: a pointer to the defaults and the one setting most people change.
+    static let userText = """
+        # Tilr for Mac. The app reloads this file on every save. Every setting and its default is in
+        # default.yml next to this file; a key put here overrides it (a map key by key, a list or a
+        # value whole).
+        site: ~/tilr
+
+        """
+
+    /// The defaults alone, for before the config is read. They are part of the program, so a
+    /// failure to parse them is a programming error.
+    static let fallback: Config = try! YAMLDecoder().decode(Config.self, from: defaultText)
+
+    /// Writes `default.yml`, and `config.yml` when there is none yet. Once, at launch.
+    static func writeDefaults() {
         let files = FileManager.default
+        try? files.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? defaultText.write(to: defaultsFile, atomically: true, encoding: .utf8)
         if !files.fileExists(atPath: file.path) {
-            try? files.createDirectory(at: dir, withIntermediateDirectories: true)
-            try? defaultText.write(to: file, atomically: true, encoding: .utf8)
+            try? userText.write(to: file, atomically: true, encoding: .utf8)
         }
+    }
+
+    /// The defaults with config.yml's overrides merged in.
+    static func load() -> Config? {
         do {
-            return try YAMLDecoder().decode(Config.self, from: String(contentsOf: file, encoding: .utf8))
+            var merged = try Yams.compose(yaml: defaultText)!
+            // A missing or empty (comments only) file overrides nothing.
+            let userText = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            if let overrides = try Yams.compose(yaml: userText) {
+                merged = merge(merged, overrides)
+            }
+            return try YAMLDecoder().decode(Config.self, from: merged)
         } catch {
             print("config: \(file.path): \(error)")
             return nil
         }
+    }
+
+    /// Maps merge key by key, anything else is replaced by `over`.
+    private static func merge(_ base: Node, _ over: Node) -> Node {
+        guard case .mapping(var result) = base, case .mapping(let overrides) = over else { return over }
+        for pair in overrides {
+            result[pair.key] = result[pair.key].map { merge($0, pair.value) } ?? pair.value
+        }
+        return .mapping(result)
     }
 }
 
@@ -97,29 +207,40 @@ enum Action: String, Decodable {
     case nextDesktop = "next-desktop"
 }
 
-/// `cmd+shift+p` → key "p" with ⌘⇧.
+/// `cmd+shift+p` → key "p" with ⌘⇧. Arrows and a few other keys by name; `ctrl+alt` alone is
+/// modifiers without a key (`switch.jump`).
 struct Shortcut: Decodable {
     var key: String
     var modifiers: NSEvent.ModifierFlags
 
+    /// Function and control keys, as NSMenuItem.keyEquivalent wants them.
+    static let named: [String: String] = [
+        "left": "\u{F702}", "right": "\u{F703}", "up": "\u{F700}", "down": "\u{F701}",
+        "enter": "\r", "return": "\r", "tab": "\t", "space": " ", "esc": "\u{1B}", "escape": "\u{1B}",
+        "delete": "\u{7F}", "backspace": "\u{7F}",
+    ]
+
     init(from decoder: Decoder) throws {
         let text = try decoder.singleValueContainer().decode(String.self)
-        var parts = text.lowercased().split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard let key = parts.popLast(), !key.isEmpty else {
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "empty shortcut"))
+        let parts = text.lowercased().split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
+        func fail(_ why: String) -> DecodingError {
+            DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "\(why) in \"\(text)\""))
         }
+        var key = ""
         var modifiers: NSEvent.ModifierFlags = []
-        for part in parts {
+        for (i, part) in parts.enumerated() {
             switch part {
             case "cmd", "command": modifiers.insert(.command)
             case "shift": modifiers.insert(.shift)
             case "alt", "opt", "option": modifiers.insert(.option)
             case "ctrl", "control": modifiers.insert(.control)
             default:
-                throw DecodingError.dataCorrupted(.init(
-                    codingPath: decoder.codingPath, debugDescription: "unknown modifier \"\(part)\" in \"\(text)\""))
+                guard i == parts.count - 1 else { throw fail("unknown modifier \"\(part)\"") }
+                key = Self.named[part] ?? part
+                guard key.count == 1 else { throw fail("unknown key \"\(part)\"") }
             }
         }
+        guard !key.isEmpty || !modifiers.isEmpty else { throw fail("empty shortcut") }
         self.key = key
         self.modifiers = modifiers
     }
