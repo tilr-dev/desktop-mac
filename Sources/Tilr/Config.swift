@@ -94,9 +94,12 @@ struct Config: Decodable {
     struct Browser: Decodable {
         /// The User-Agent the views send; empty for WebKit's own.
         var userAgent: String
+        /// Bytes a tunnel reads from a connection at a time (Tunnel.swift).
+        var tunnelChunk: Int
 
         enum CodingKeys: String, CodingKey {
             case userAgent = "user_agent"
+            case tunnelChunk = "tunnel_chunk"
         }
     }
 
@@ -187,6 +190,10 @@ struct Config: Decodable {
           # browser; Safari's own string makes them behave, e.g.
           # "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15".
           user_agent: ""
+          # A profile's tunnel (a tilr server's /socks, bridged to a local SOCKS port for WebKit):
+          # bytes read from a connection at a time, the most one WebSocket message carries; the
+          # next read waits until they are sent. Applies to tunnels started after the change.
+          tunnel_chunk: 65536
 
         """
 

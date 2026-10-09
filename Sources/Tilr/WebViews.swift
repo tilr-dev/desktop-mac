@@ -1,11 +1,17 @@
 import AppKit
+import Network
 import WebKit
 
 /// The page's web views (the `webviews` plugin of the web repo, its native backend): a WKWebView
 /// per view, a subview of the tab's web view, placed where the page says the view's host element
 /// is. The page posts `{ op, id, … }` to `webkit.messageHandlers.tilrWebViews`:
 ///
-///   create   url            a new view, loading `url`
+///   create   url profile?   a new view, loading `url`; `profile` `{ id, proxy?, localhost? }` gives
+///            it a data store of its own (see Profiles.swift): `id` a UUID naming the store, `proxy`
+///            `{ kind: 'socks5' | 'http', host, port, user?, pass?, match?, exclude? }` or
+///            `{ kind: 'tunnel', url, token, match?, exclude? }` (a tilr server's `/socks`, bridged
+///            by a local listener, Tunnel.swift), `localhost` the host a loopback address goes
+///            to; the view loads once the store has the proxy
 ///   place    x y width height visible z holes   the host's rect in the page (CSS px, from the
 ///            top left); `z` orders the views as the page stacks their hosts; `holes` (rects
 ///            relative to the view) are where the page draws a window over the host
@@ -14,9 +20,11 @@ import WebKit
 ///   dispose
 ///
 /// and the app answers with a `tilr-webview` CustomEvent on the page's `window`, `detail` being
-/// `{ id, url, title, loading, progress, canGoBack, canGoForward, error }` on every change of the
-/// view's state, `{ id, type: 'open', open: url }` when the view's page asks for a new window
-/// (`target=_blank`, `window.open`), or `{ id, type: 'press' }` on a mouse button down in the
+/// `{ id, url, title, loading, progress, canGoBack, canGoForward, error, proxy? }` on every change
+/// of the view's state (`proxy` `{ kind, error? }` for a view with one: `error` is a tunnel's last
+/// failed handshake, `'401 bad token'`, gone after one that went through; WebKit tells nothing
+/// of a socks5 or http proxy), `{ id, type: 'open', open: url }` when the view's page asks for a
+/// new window (`target=_blank`, `window.open`), or `{ id, type: 'press' }` on a mouse button down in the
 /// view (the page never sees it: the view takes the event; the page focuses the window on it).
 /// Views go when the page navigates (a reload), and
 /// with the tab. The views are above the page, in an overlay of their own (so that ordering
@@ -53,7 +61,10 @@ final class WebViewHost: NSObject, WKScriptMessageHandler {
         switch op {
         case "create":
             views[id]?.remove()
-            let view = ChildView(id: id, settings: settings, parent: overlay(in: tab.webView)) { [weak tab] detail in
+            // The page's origin is what a tunnel's handshake shows the server (tilr://<app>).
+            let origin = tab.app.origin.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let lease = Profiles.shared.join(Profile(body["profile"]), origin: origin, chunk: settings.tunnelChunk)
+            let view = ChildView(id: id, settings: settings, lease: lease, parent: overlay(in: tab.webView)) { [weak tab] detail in
                 tab?.send(event: WebViewHost.event, detail: detail)
             }
             views[id] = view
@@ -168,6 +179,8 @@ final class ChildWebView: WKWebView {
 
 /// One view: the WKWebView, its place, and the reports to the page. KVO on the web view's
 /// url / title / loading / progress / history, coalesced into one report per run of the loop.
+/// A view with a profile has the profile's store; with a proxy, it loads nothing before the
+/// store has the proxy (a tunnel's listener has a port), so no connection of it goes direct.
 final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
     let id: String
     let webView: ChildWebView
@@ -176,14 +189,22 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
     private var observers: [NSKeyValueObservation] = []
     private var error: String?
     private var pending = false
+    private let lease: Lease
+    /// A tunnel's last failed handshake (or its listener's failure); nil once one went through.
+    private var proxyError: String?
+    /// Until the store has the proxy: the URL to load then.
+    private var held = true
+    private var waiting: String?
 
-    init(id: String, settings: Config.Browser, parent: NSView, report: @escaping ([String: Any]) -> Void) {
+    init(id: String, settings: Config.Browser, lease: Lease, parent: NSView, report: @escaping ([String: Any]) -> Void) {
         self.id = id
         self.parent = parent
         self.report = report
+        self.lease = lease
         let configuration = WKWebViewConfiguration()
-        // The default store: cookies and logins shared by every view, kept across launches.
-        configuration.websiteDataStore = .default()
+        // The profile's store, or the default one: cookies and logins shared by every view
+        // without a profile. Both kept across launches.
+        configuration.websiteDataStore = lease.store
         configuration.preferences.isElementFullscreenEnabled = true
         webView = ChildWebView(frame: .zero, configuration: configuration)
         super.init()
@@ -208,6 +229,24 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
             webView.observe(\.canGoBack, changeHandler: changed),
             webView.observe(\.canGoForward, changeHandler: changed),
         ]
+        lease.status = { [weak self] error in
+            guard let self, proxyError != error else { return }
+            proxyError = error
+            schedule()
+        }
+        lease.ready { [weak self] failure in
+            guard let self else { return }
+            held = false
+            if let failure {
+                // No proxy, no load: the page would go direct.
+                proxyError = failure
+                error = "proxy: \(failure)"
+                waiting = nil
+                return schedule()
+            }
+            if let waiting { load(waiting) }
+            waiting = nil
+        }
     }
 
     func load(_ text: String) {
@@ -216,8 +255,23 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
             schedule()
             return
         }
+        if held {
+            waiting = text
+            return
+        }
         error = nil
-        webView.load(URLRequest(url: url))
+        webView.load(URLRequest(url: local(url) ?? url))
+    }
+
+    /// `url` at the profile's `localhost` host when it is at a loopback one (`localhost`, `127.*`,
+    /// `[::1]`, which WebKit never sends through a proxy), port, path and query kept; else nil.
+    private func local(_ url: URL) -> URL? {
+        guard let to = lease.profile?.localhost, ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host?.lowercased() else { return nil }
+        let loopback = host == "localhost" || host == "::1" || host == "[::1]" || IPv4Address(host)?.rawValue.first == 127
+        guard loopback, to.lowercased() != host, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.host = to
+        return components.url
     }
 
     /// `rect` is the host's place in the page: CSS px from the top left, which is the web view's
@@ -233,6 +287,7 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func remove() {
+        lease.end()
         observers.removeAll()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -253,7 +308,7 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     private var state: [String: Any] {
-        [
+        var state: [String: Any] = [
             "id": id,
             "url": webView.url?.absoluteString ?? "",
             "title": webView.title ?? "",
@@ -263,6 +318,10 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
             "canGoForward": webView.canGoForward,
             "error": error ?? NSNull(),
         ]
+        if let proxy = lease.profile?.proxy {
+            state["proxy"] = proxyError.map { ["kind": proxy.name, "error": $0] } ?? ["kind": proxy.name]
+        }
+        return state
     }
 
     private func failed(_ error: Error) {
@@ -289,9 +348,15 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
         failed(error)
     }
 
-    /// Links to other apps (mailto:, a custom scheme) go to the system; the web stays here.
+    /// Links to other apps (mailto:, a custom scheme) go to the system; the web stays here. A page
+    /// at a loopback address goes to the profile's `localhost` host instead, when it has one.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url, let scheme = url.scheme?.lowercased() else { return decisionHandler(.allow) }
+        if navigationAction.targetFrame?.isMainFrame == true, let moved = local(url) {
+            decisionHandler(.cancel)
+            webView.load(URLRequest(url: moved))
+            return
+        }
         if ["http", "https", "about", "blob", "data", "javascript", "file"].contains(scheme) { return decisionHandler(.allow) }
         NSWorkspace.shared.open(url)
         decisionHandler(.cancel)
