@@ -6,7 +6,9 @@ import WebKit
 /// is. The page posts `{ op, id, … }` to `webkit.messageHandlers.tilrWebViews`:
 ///
 ///   create   url            a new view, loading `url`
-///   place    x y width height visible   the host's rect in the page (CSS px, from the top left)
+///   place    x y width height visible z holes   the host's rect in the page (CSS px, from the
+///            top left); `z` orders the views as the page stacks their hosts; `holes` (rects
+///            relative to the view) are where the page draws a window over the host
 ///   navigate url
 ///   back | forward | reload | stop
 ///   dispose
@@ -15,7 +17,10 @@ import WebKit
 /// `{ id, url, title, loading, progress, canGoBack, canGoForward, error }` on every change of the
 /// view's state, or `{ id, type: 'open', open: url }` when the view's page asks for a new
 /// window (`target=_blank`, `window.open`). Views go when the page navigates (a reload), and
-/// with the tab. A view is above the page: what the page draws over its host is covered.
+/// with the tab. The views are above the page, in an overlay of their own (so that ordering
+/// them never touches WebKit's subviews); a view is masked out at its holes and lets the mouse
+/// through there, so a float the page draws over a tiled view's host is seen and clicked as the
+/// page stacks it. What the page draws over a host and does not report (a menu) stays covered.
 final class WebViewHost: NSObject, WKScriptMessageHandler {
     static let name = "tilrWebViews"
     static let event = "tilr-webview"
@@ -24,9 +29,21 @@ final class WebViewHost: NSObject, WKScriptMessageHandler {
     /// `browser:` in the config; read when a view is made.
     var settings: Config.Browser
     private var views: [String: ChildView] = [:]
+    /// The views' container over the page's web view, made with the first view.
+    private var overlay: PassthroughView?
 
     init(settings: Config.Browser) {
         self.settings = settings
+    }
+
+    private func overlay(in page: NSView) -> PassthroughView {
+        if let overlay, overlay.superview === page { return overlay }
+        overlay?.removeFromSuperview()
+        let made = PassthroughView(frame: page.bounds)
+        made.autoresizingMask = [.width, .height]
+        page.addSubview(made)
+        overlay = made
+        return made
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -34,14 +51,19 @@ final class WebViewHost: NSObject, WKScriptMessageHandler {
         switch op {
         case "create":
             views[id]?.remove()
-            let view = ChildView(id: id, settings: settings, parent: tab.webView) { [weak tab] detail in
+            let view = ChildView(id: id, settings: settings, parent: overlay(in: tab.webView)) { [weak tab] detail in
                 tab?.send(event: WebViewHost.event, detail: detail)
             }
             views[id] = view
             view.load(body["url"] as? String ?? "about:blank")
         case "place":
             guard let x = body["x"] as? Double, let y = body["y"] as? Double, let width = body["width"] as? Double, let height = body["height"] as? Double else { return }
-            views[id]?.place(CGRect(x: x, y: y, width: width, height: height), visible: body["visible"] as? Bool ?? true)
+            let holes = (body["holes"] as? [[String: Any]] ?? []).compactMap { hole -> CGRect? in
+                guard let x = hole["x"] as? Double, let y = hole["y"] as? Double, let width = hole["width"] as? Double, let height = hole["height"] as? Double else { return nil }
+                return CGRect(x: x, y: y, width: width, height: height)
+            }
+            views[id]?.place(CGRect(x: x, y: y, width: width, height: height), visible: body["visible"] as? Bool ?? true, z: body["z"] as? Int ?? 0, holes: holes)
+            overlay?.order()
         case "navigate":
             views[id]?.load(body["url"] as? String ?? "about:blank")
         case "back": views[id]?.webView.goBack()
@@ -63,11 +85,71 @@ final class WebViewHost: NSObject, WKScriptMessageHandler {
     }
 }
 
+/// The views' container: itself invisible to the mouse (a hit on none of its subviews goes to
+/// the page), and it keeps its subviews in the order of their `z`.
+final class PassthroughView: NSView {
+    /// From the top left, as the page's coordinates are.
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+
+    /// Subviews sorted by `z`, lowest first (at the bottom); only when the order is wrong.
+    func order() {
+        let ordered = subviews.sorted { ($0 as? ChildWebView)?.z ?? 0 < ($1 as? ChildWebView)?.z ?? 0 }
+        guard ordered.elementsEqual(subviews, by: ===) else { return sortSubviews({ a, b, _ in
+            let za = (a as? ChildWebView)?.z ?? 0, zb = (b as? ChildWebView)?.z ?? 0
+            return za < zb ? .orderedAscending : za > zb ? .orderedDescending : .orderedSame
+        }, context: nil) }
+    }
+}
+
+/// The web view of a child: its order among the views, and the holes, where the page's windows
+/// above its host are: masked out, and the mouse goes through to the page there.
+final class ChildWebView: WKWebView {
+    var z = 0
+    var holes: [CGRect] = [] { didSet { if holes != oldValue { mask() } } }
+
+    override func layout() {
+        super.layout()
+        mask()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let superview else { return super.hitTest(point) }
+        let inside = convert(point, from: superview)
+        if holes.contains(where: { $0.contains(inside) }) { return nil }
+        return super.hitTest(point)
+    }
+
+    /// The layer's mask: everything but the holes (an even-odd path), none without holes.
+    private func mask() {
+        guard let layer else { return }
+        guard !holes.isEmpty else { layer.mask = nil; return }
+        let shape = (layer.mask as? CAShapeLayer) ?? CAShapeLayer()
+        shape.frame = layer.bounds
+        shape.fillRule = .evenOdd
+        let path = CGMutablePath()
+        path.addRect(layer.bounds)
+        // The holes are from the top left (the view is flipped); so is the layer, unless AppKit
+        // left its geometry the Core Animation way, from the bottom left.
+        let flipped = layer.isGeometryFlipped || layer.contentsAreFlipped()
+        for hole in holes {
+            let rect = flipped ? hole : CGRect(x: hole.minX, y: layer.bounds.height - hole.maxY, width: hole.width, height: hole.height)
+            path.addRect(rect.intersection(layer.bounds))
+        }
+        shape.path = path
+        layer.mask = shape
+    }
+}
+
 /// One view: the WKWebView, its place, and the reports to the page. KVO on the web view's
 /// url / title / loading / progress / history, coalesced into one report per run of the loop.
 final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
     let id: String
-    let webView: WKWebView
+    let webView: ChildWebView
     private weak var parent: NSView?
     private let report: ([String: Any]) -> Void
     private var observers: [NSKeyValueObservation] = []
@@ -82,8 +164,9 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
         // The default store: cookies and logins shared by every view, kept across launches.
         configuration.websiteDataStore = .default()
         configuration.preferences.isElementFullscreenEnabled = true
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = ChildWebView(frame: .zero, configuration: configuration)
         super.init()
+        webView.wantsLayer = true
         if !settings.userAgent.isEmpty { webView.customUserAgent = settings.userAgent }
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -114,11 +197,14 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     /// `rect` is the host's place in the page: CSS px from the top left, which is the web view's
     /// coordinate system (WKWebView is flipped on macOS; the check keeps it right either way).
-    func place(_ rect: CGRect, visible: Bool) {
+    /// `holes` are relative to the view, from its top left, as the view's own flipped bounds.
+    func place(_ rect: CGRect, visible: Bool, z: Int, holes: [CGRect]) {
         guard let parent else { return }
         let y = parent.isFlipped ? rect.minY : parent.bounds.height - rect.minY - rect.height
         webView.frame = CGRect(x: rect.minX, y: y, width: rect.width, height: rect.height)
         webView.isHidden = !visible
+        webView.z = z
+        webView.holes = holes
     }
 
     func remove() {
