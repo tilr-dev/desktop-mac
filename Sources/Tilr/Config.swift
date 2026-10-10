@@ -13,9 +13,11 @@ struct Config: Decodable {
     var controlPlane: ControlPlane
     var control: Control
     var browser: Browser
+    var sshAgent: SSHAgent
 
     enum CodingKeys: String, CodingKey {
         case site, apps, window, control, browser
+        case sshAgent = "ssh_agent"
         case switching = "switch"
         case controlPlane = "control_plane"
     }
@@ -100,6 +102,21 @@ struct Config: Decodable {
         enum CodingKeys: String, CodingKey {
             case userAgent = "user_agent"
             case tunnelChunk = "tunnel_chunk"
+        }
+    }
+
+    /// The user's SSH agent for the page (Agent.swift), forwarded to a tilr server's panes.
+    struct SSHAgent: Decodable {
+        /// The agent's socket; empty: found automatically (AgentHost.resolve).
+        var socket: String
+        /// Connections to the agent one page may have open.
+        var maxStreams: Int
+        /// Bytes read from the agent at a time, the most one `data` event carries.
+        var chunk: Int
+
+        enum CodingKeys: String, CodingKey {
+            case socket, chunk
+            case maxStreams = "max_streams"
         }
     }
 
@@ -194,6 +211,23 @@ struct Config: Decodable {
           # bytes read from a connection at a time, the most one WebSocket message carries; the
           # next read waits until they are sent. Applies to tunnels started after the change.
           tunnel_chunk: 65536
+
+        # The user's SSH agent, for the page to forward to a tilr server's panes (like ssh -A).
+        # The agent is exposed to whatever the page forwards it to; an agent that asks per
+        # signature (1Password, when set up so) still asks.
+        ssh_agent:
+          # The agent's socket, ~ expanded. Empty: the first of these that exists:
+          # SSH_AUTH_SOCK of the app's environment, IdentityAgent in ~/.ssh/config (the first
+          # one for all hosts), 1Password's agent
+          # (~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock), then
+          # `launchctl getenv SSH_AUTH_SOCK` (the system's agent). An app started from Finder
+          # does not get the shell's environment, hence the list. Applies to connections opened
+          # after the change.
+          socket: ""
+          # Connections to the agent one page may have open at a time; an open over it fails.
+          max_streams: 64
+          # Bytes read from the agent at a time, the most one event to the page carries.
+          chunk: 65536
 
         """
 

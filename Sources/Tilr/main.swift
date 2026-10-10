@@ -63,10 +63,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let tab = tabs.first(where: { $0.app.name == app.name }) {
                 if tab.app.root != app.root { tab.show(app) }
                 tab.webViews.settings = config.browser
+                tab.agent.settings = config.sshAgent
                 return tab
             }
             // Control is read at launch: a tab made later still follows that choice.
-            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser)
+            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser, sshAgent: config.sshAgent)
             tab.didLoad = { [weak self] in self?.loaded($0) }
             tab.show(app)
             return tab
@@ -263,6 +264,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               before === null ? localStorage.removeItem('tilr-clock-zone') : localStorage.setItem('tilr-clock-zone', before);
               return result; })()
             """))
+        // The SSH agent bridge (Agent.swift): a probe answers either way; with an agent, a
+        // connection asks it for its identities (00 00 00 01 0b) and expects the answer (type 0c).
+        let agent = try? await webView.callAsyncJavaScript("""
+            const next = (match) => new Promise(resolve => {
+              const timer = setTimeout(() => { removeEventListener('tilr-agent', on); resolve(null); }, 3000);
+              const on = (e) => { if (!match(e.detail)) return; clearTimeout(timer); removeEventListener('tilr-agent', on); resolve(e.detail); };
+              addEventListener('tilr-agent', on);
+            });
+            const post = (m) => webkit.messageHandlers.tilrAgent.postMessage(m);
+            const ready = next(d => d.type === 'ready'); post({ op: 'probe' });
+            const r = await ready;
+            if (!r) return 'FAILED no ready event';
+            if (!r.available) return 'ready ' + JSON.stringify(r) + ' (no agent: round-trip skipped)';
+            const id = 'probe-' + Date.now();
+            const opened = next(d => d.id === id); post({ op: 'open', id });
+            const o = await opened;
+            if (o?.type !== 'open') return 'ready ' + JSON.stringify(r) + ' open FAILED ' + JSON.stringify(o);
+            const answer = next(d => d.id === id); post({ op: 'data', id, data: btoa('\\x00\\x00\\x00\\x01\\x0b') });
+            const a = await answer;
+            post({ op: 'close', id });
+            const bytes = a?.type === 'data' ? atob(a.data) : '';
+            const ok = bytes.length >= 5 && bytes.charCodeAt(4) === 0x0c;
+            return 'ready ' + JSON.stringify(r) + ' identities ' + (ok ? 'ok, ' + bytes.length + ' bytes' : 'FAILED ' + JSON.stringify(a));
+            """, contentWorld: .page) as? String
+        print("ssh agent:", agent ?? "FAILED js error")
         // Several apps: switching must land on the next tab in config order, in the one window,
         // in every mode; the pages must then be at rest with only the current one showing.
         if tabs.count > 1 {

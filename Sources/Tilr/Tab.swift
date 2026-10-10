@@ -12,6 +12,8 @@ final class Tab: NSObject, WKNavigationDelegate {
     let webViews: WebViewHost
     /// The page's audio players (Audio.swift): they outlive the page, a reload keeps them playing.
     let audio = AudioHost()
+    /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
+    let agent: AgentHost
     var watcher: FolderWatcher?
 
     /// A page finished loading.
@@ -32,11 +34,12 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     /// `control`: with Tilr Control on, the page's console is caught for it. `browser`: how the
     /// page's web views are made.
-    init(app: Site.App, control: Config.Control?, browser: Config.Browser) {
+    init(app: Site.App, control: Config.Control?, browser: Config.Browser, sshAgent: Config.SSHAgent) {
         self.app = app
         consoleLimit = control?.console ?? 0
         site = SiteSchemeHandler(root: app.root)
         webViews = WebViewHost(settings: browser)
+        agent = AgentHost(settings: sshAgent)
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(site, forURLScheme: SiteSchemeHandler.scheme)
         let controller = configuration.userContentController
@@ -46,12 +49,14 @@ final class Tab: NSObject, WKNavigationDelegate {
         }
         controller.add(webViews, name: WebViewHost.name)
         controller.add(audio, name: AudioHost.name)
+        controller.add(agent, name: AgentHost.name)
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         webViews.tab = self
         audio.send = { [weak self] in self?.send(event: AudioHost.event, detail: $0) }
         audio.siteFile = { [weak self] in self?.siteFile($0) }
+        agent.send = { [weak self] in self?.send(event: AgentHost.event, detail: $0) }
         webView.navigationDelegate = self
         webView.underPageBackgroundColor = .black
         webView.isInspectable = true  // Safari → Develop → Tilr
@@ -156,10 +161,11 @@ final class Tab: NSObject, WKNavigationDelegate {
         return AudioHost.file(in: owner.root, path: url.path)
     }
 
-    /// The page is leaving (a reload, another URL): its web views have no page to follow.
-    /// The audio players stay (AudioHost).
+    /// The page is leaving (a reload, another URL): its web views have no page to follow, its
+    /// agent connections no page to report to. The audio players stay (AudioHost).
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         webViews.removeAll()
+        agent.closeAll()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
