@@ -35,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A broken config at launch keeps the defaults. The mode is read here, once; the rest
         // of window: applies on every config change.
         if let loaded = Config.load() { config = loaded }
+        LocalServerHost.shared.didUpdate = { [weak self] in
+            self?.tabs.forEach { $0.send(event: "tilr-local-server-ready", detail: [:]) }
+        }
+        LocalServerHost.shared.start(settings: config.localServer,
+                                    origins: Site.apps(config: config).map { "tilr://\($0.host)" },
+                                    allowed: Config.isDefaultDir && !probing)
         debug = DebugMode(settings: config.debug)
         debug.tabs = { [unowned self] in tabs }
         debug.changed = { [unowned self] in buildMenu() }
@@ -183,6 +189,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the terminal. The Edit menu is what makes ⌘C / ⌘V work inside the web view. The
     /// Commands menu mirrors the config's control plane, with each command's key. The Apps menu
     /// lists the tabs; the current one is checked.
+    @objc func showLocalServer() { LocalServerHost.shared.showStatus() }
+    @objc func checkServerUpdates() { LocalServerHost.shared.checkUpdates(userInitiated: true) }
+
     func buildMenu() {
         let main = NSMenu()
         func item(
@@ -224,7 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             check.isEnabled = false
             check.toolTip = "Updates are available in signed release builds."
         }
-        var appItems: [NSMenuItem] = [check, .separator()]
+        var appItems: [NSMenuItem] = [check,
+                                    item("Local Server…", #selector(showLocalServer), ""),
+                                    item("Check for Server Updates…", #selector(checkServerUpdates), ""), .separator()]
         appItems.append(item("Quit Tilr", #selector(NSApplication.terminate(_:)), "q"))
         submenu("Tilr", appItems)
         submenu("Edit", [

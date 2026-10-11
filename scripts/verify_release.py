@@ -10,6 +10,7 @@ import tempfile
 
 from publish import validate_manifest, digest
 from release import ROOT
+from bundle_server import verify_server
 
 
 def run(*args, **kwargs):
@@ -41,8 +42,15 @@ def verify(directory, launch=False):
                         "SUPublicEDKey": meta["public_key"]}
             if any(info.get(key) != value for key, value in expected.items()):
                 raise ValueError("DMG's embedded application differs from release metadata")
+            if meta.get("packaging") == 1:
+                from release_packaging import audit
+                audit(app, meta["arch"])
             binary = app / "Contents/MacOS/Tilr"
             run("lipo", "-verify_arch", meta["arch"], binary)
+            verify_server(app, meta["version"], meta["build"], meta["arch"])
+            server = app / "Contents/Helpers/tilr-server"
+            run("lipo", "-verify_arch", meta["arch"], server)
+            run("codesign", "--verify", "--strict", server)
             if digest(binary) != digest(directory / "Tilr.app/Contents/MacOS/Tilr"):
                 raise ValueError("DMG contains a different application executable")
             if launch:

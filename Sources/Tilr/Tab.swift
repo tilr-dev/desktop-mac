@@ -14,6 +14,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     let audio = AudioHost()
     /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
     let agent: AgentHost
+    private let localServer = LocalServerBridge()
     var watcher: FolderWatcher?
 
     /// A page finished loading.
@@ -59,9 +60,11 @@ final class Tab: NSObject, WKNavigationDelegate {
         controller.add(webViews, name: WebViewHost.name)
         controller.add(audio, name: AudioHost.name)
         controller.add(agent, name: AgentHost.name)
+        controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
+        localServer.tab = self
         webViews.tab = self
         audio.send = { [weak self] in self?.send(event: AudioHost.event, detail: $0) }
         audio.siteFile = { [weak self] in self?.siteFile($0) }

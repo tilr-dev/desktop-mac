@@ -1,15 +1,18 @@
 # Tilr Mac releases
 
-**Current default workflow:** see [PRODUCTION.md](PRODUCTION.md): `setup-release.command` configures credentials only; `release.command` builds only; `release_all.py --publish-only` publishes existing tested artifacts without rebuilding. The combined `--publish` mode below remains an explicit shortcut.
+**Current default workflow:** see [PRODUCTION.md](PRODUCTION.md): `setup-release.command` configures credentials only; `release.command` builds only; `upload.command` publishes the last completed tested pair without rebuilding. Use `release.command --status` to inspect local versions/builds, and `--version` / `--build` to choose them. Full commands and the independent server workflow are in PRODUCTION.md. The combined `--publish` mode below remains an explicit shortcut.
 
 The standard release is **two separate DMGs**, Apple Silicon (`arm64`) and Intel
 (`x86_64`), so the user can choose on the website. Agent setup, permissions,
 non-interactive execution and recovery are documented in [AGENT_RELEASE.md](AGENT_RELEASE.md).
 
-After the one-time setup, the standard command is:
+After the one-time setup, the standard workflow is:
 
 ```sh
-python3 scripts/release_all.py --version 0.1.0 --build 1 --channel stable --publish
+./release.command --status
+./release.command
+# Test the printed release artifacts, then:
+./upload.command
 ```
 
 Both builds finish before either is published. Each has its own Sparkle feed;
@@ -18,7 +21,7 @@ instead of version/build to check the agent's actual release permissions first.
 
 The first release is the native viewer with a bundled welcome page. It requires
 macOS 14 or later, not Node, npm, Homebrew or Xcode on the recipient's machine.
-There is no local terminal server or preinstalled web/plugin workspace yet.
+The app bundles a local terminal server; its subsequent updates use an independent signed feed. No preinstalled web/plugin workspace is included.
 Existing `site:`, `apps:`, `--site` and `--url` configurations still work.
 
 Install by opening the DMG and dragging Tilr into Applications. Launch the copy

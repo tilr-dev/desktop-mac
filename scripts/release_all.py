@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Non-interactive agent entry point: two separate Mac builds, then optional publication."""
-import argparse
+from release_console import ArgumentParser, success, failure
 import base64
 import fcntl
 import json
@@ -46,7 +46,7 @@ def run(command, **kwargs):
 def preflight(config, publish, build=True):
     required = ["codesign", "xcrun", "hdiutil"]
     if build:
-        required += ["swift", "ditto", "lipo"]
+        required += ["swift", "ditto", "lipo", "strip"]
     if publish:
         required += ["wrangler", "curl", "node"]
     missing = [name for name in required if not shutil.which(name)]
@@ -84,7 +84,7 @@ def preflight(config, publish, build=True):
         env = os.environ.copy()
         env["CLOUDFLARE_ACCOUNT_ID"] = "8e0530af975a33f2f739127f75084531"
         run(["wrangler", "r2", "bucket", "info", "tilr-cdn"], env=env)
-    print("Release runner preflight passed.")
+    success("Release runner preflight passed.")
 
 
 def completed(directory, version, build, arch, feed, key):
@@ -125,7 +125,7 @@ def execute(version, build, channel, config, publish=False, resume=False, notes=
     return outputs
 
 
-def automatic_release(root=ROOT, version=None):
+def automatic_release(root=ROOT, version=None, build=None, reserve=True):
     """Reserve a fresh build under the coordinator lock, including failed attempts."""
     info = plistlib.loads((root / "Info.plist").read_bytes())
     versions = [str(info["CFBundleShortVersionString"])]
@@ -149,7 +149,12 @@ def automatic_release(root=ROOT, version=None):
     # Keep the marketing version; only the build increments on each run.
     chosen = version or max(versions, key=lambda value: (version_key(value), len(value)))
     version_key(chosen)
-    build = max(builds) + 1
+    next_build = max(builds) + 1
+    if build is not None and build < next_build:
+        raise ValueError(f"Build must be at least {next_build}; older numbers are already used or reserved")
+    build = build if build is not None else next_build
+    if not reserve:
+        return chosen, build
     state.parent.mkdir(parents=True, exist_ok=True)
     temporary = state.with_suffix(".tmp")
     temporary.write_text(json.dumps(dict(version=chosen, build=build), indent=2) + "\n")
@@ -157,8 +162,48 @@ def automatic_release(root=ROOT, version=None):
     return chosen, build
 
 
+
+def show_status(root=ROOT):
+    info = plistlib.loads((root / "Info.plist").read_bytes())
+    version, build = automatic_release(root, reserve=False)
+    print(f"Source Info.plist: {info['CFBundleShortVersionString']}, build {info['CFBundleVersion']}")
+    print(f"Current release version: {version}; highest local/reserved build: {build - 1}")
+    print(f"Next automatic build: {version}, build {build}")
+    latest = root / "build/latest-app-release.json"
+    if latest.exists():
+        saved = json.loads(latest.read_text())
+        print(f"Last completed pair: {saved['version']}, build {saved['build']}, {saved['channel']}")
+    else:
+        print("No completed pair recorded by release.command yet.")
+    pin = json.loads((root / "server-release.json").read_text())
+    print(f"Bundled server pin: {pin['version']}, build {pin['build']}, protocol {pin['protocolVersion']}")
+    print("Local history only; installed app and public feeds may differ.", flush=True)
+
+
+def ensure_server(root=ROOT, runner=run):
+    """Build missing pinned artifacts; never overwrite or rebuild an existing server."""
+    pin = json.loads((root / "server-release.json").read_text())
+    directory = Path(os.environ.get("TILR_SERVER_RELEASE_ROOT", root / "build/server-releases"))
+    missing = []
+    for arch in ARCHES:
+        output = directory / f"{pin['version']}-{pin['build']}-{arch}"
+        if not output.exists():
+            missing.append(arch)
+        elif not (output / "release.json").exists():
+            raise ValueError(f"Incomplete pinned server artifact: {output}. Inspect and move it aside before retrying.")
+    if missing:
+        if directory.resolve() != (root / "build/server-releases").resolve():
+            raise ValueError("Pinned server missing from TILR_SERVER_RELEASE_ROOT; provide completed artifacts there")
+        command = [sys.executable, root / "scripts/release_server.py", "--version", pin["version"], "--build", str(pin["build"])]
+        for arch in missing:
+            command += ["--arch", arch]
+        runner(command)
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = ArgumentParser(description=__doc__)
+    parser.add_argument("--status", action="store_true", help="Show local versions and next build without reserving or signing")
+    parser.add_argument("--latest", action="store_true", help="Publish the last successfully completed app pair")
     parser.add_argument("--auto", action="store_true", help="Build with saved signing settings and reserve the next local build number; no prompts")
     parser.add_argument("--version")
     parser.add_argument("--build", type=int)
@@ -169,7 +214,18 @@ def main():
     parser.add_argument("--notes", type=Path)
     parser.add_argument("--check", action="store_true", help="Check runner access without building a release")
     args = parser.parse_args()
-    if args.auto and (args.build is not None or args.resume or args.publish or args.publish_only or args.check):
+    if args.status:
+        show_status()
+        return
+    if args.latest:
+        if not args.publish_only or args.version or args.build is not None or args.auto:
+            parser.error("--latest requires --publish-only and no explicit version/build")
+        latest = ROOT / "build/latest-app-release.json"
+        if not latest.exists():
+            raise ValueError("No completed app pair recorded yet. Run ./release.command first, or use ./upload.command --version VERSION --build BUILD for existing artifacts.")
+        saved = json.loads(latest.read_text())
+        args.version, args.build, args.channel = saved["version"], saved["build"], saved["channel"]
+    if args.auto and (args.resume or args.publish or args.publish_only or args.check):
         parser.error("--auto is build-only; use explicit version/build for resume, checks or publication")
     if not args.auto and not args.check and (not args.version or not re.fullmatch(r"\d+(\.\d+){0,2}", args.version) or not args.build or args.build < 1):
         parser.error("Provide numeric --version and positive --build, or use --check")
@@ -180,12 +236,16 @@ def main():
     (ROOT / "build").mkdir(exist_ok=True)
     with (ROOT / "build/release-all.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.auto:
+            show_status()
         preflight(config, publishing, build=not args.publish_only)
         if args.check:
             return
         if args.auto:
-            args.version, args.build = automatic_release(version=args.version)
+            args.version, args.build = automatic_release(version=args.version, build=args.build)
             print(f"Building Tilr {args.version}, build {args.build}, channel {args.channel}.", flush=True)
+            ensure_server()
+        print(f"Selected app: {args.version}, build {args.build}, channel {args.channel}.", flush=True)
         outputs = execute(args.version, args.build, args.channel, config, publishing, args.resume,
                           args.notes.resolve() if args.notes else None, publish_only=args.publish_only)
         if publishing:
@@ -194,18 +254,24 @@ def main():
                 downloads[arch] = json.loads((output / "published.json").read_text())["download"]
             summary = ROOT / "build/releases" / f"{args.version}-{args.build}-{args.channel}-downloads.json"
             summary.write_text(json.dumps(dict(version=args.version, build=args.build, downloads=downloads), indent=2) + "\n")
-            print(f"Both architectures published. Website download links: {summary}")
+            success(f"Both architectures published. Website download links: {summary}")
             for arch, url in downloads.items():
-                print(f"{arch}: {url}")
+                success(f"{arch}: {url}")
         else:
-            print("Both notarized builds are ready. Nothing published.")
+            latest = ROOT / "build/latest-app-release.json"
+            temporary = latest.with_suffix(".tmp")
+            temporary.write_text(json.dumps(dict(version=args.version, build=args.build, channel=args.channel), indent=2) + "\n")
+            temporary.replace(latest)
+            success("Both notarized builds are ready. Nothing published.")
             for output in outputs:
-                print(f"Output: {output}")
-            print(f"Publish after testing: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel {args.channel} --publish-only")
+                success(f"Output: {output}")
+            print("Publish this completed pair after testing: ./upload.command")
+            print(f"Or explicitly: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel {args.channel} --publish-only")
 
 
 if __name__ == "__main__":
     try:
         main()
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"Release stopped: {error}")
+        failure(f"Release stopped: {error}")
+        raise SystemExit(1)

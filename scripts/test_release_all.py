@@ -1,4 +1,5 @@
 import plistlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -89,6 +90,52 @@ class AutomaticReleaseTests(unittest.TestCase):
     def test_reservations_increment_even_without_completed_outputs(self):
         self.assertEqual(release_all.automatic_release(self.root), ("0.1", 2))
         self.assertEqual(release_all.automatic_release(self.root), ("0.1", 3))
+
+    def test_status_does_not_reserve(self):
+        self.assertEqual(release_all.automatic_release(self.root, reserve=False), ("0.1", 2))
+        self.assertFalse((self.root / "build/release-auto.json").exists())
+
+    def test_explicit_build_is_reserved_and_next_run_increments(self):
+        self.assertEqual(release_all.automatic_release(self.root, build=20), ("0.1", 20))
+        self.assertEqual(release_all.automatic_release(self.root), ("0.1", 21))
+        with self.assertRaisesRegex(ValueError, "already used or reserved"):
+            release_all.automatic_release(self.root, build=20)
+
+    def test_missing_pinned_server_builds_only_missing_arch(self):
+        (self.root / "server-release.json").write_text(json.dumps(dict(version="0.1.0", build=1)))
+        existing = self.root / "build/server-releases/0.1.0-1-arm64"
+        existing.mkdir(parents=True)
+        (existing / "release.json").write_text("{}")
+        calls = []
+        with patch.dict(release_all.os.environ, {}, clear=True):
+            release_all.ensure_server(self.root, runner=lambda cmd: calls.append(cmd))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-2:], ["--arch", "x86_64"])
+        (existing / "release.json").unlink()
+        with patch.dict(release_all.os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "Incomplete"):
+            release_all.ensure_server(self.root, runner=lambda cmd: self.fail("Must not build"))
+
+    def test_latest_upload_uses_completed_pair_without_building(self):
+        saved = self.root / "build/latest-app-release.json"
+        saved.parent.mkdir()
+        saved.write_text(json.dumps(dict(version="0.2.0", build=9, channel="beta")))
+        outputs = []
+        for arch in release_all.ARCHES:
+            output = self.root / arch
+            output.mkdir()
+            (output / "published.json").write_text(json.dumps(dict(download="https://example.com/" + arch)))
+            outputs.append(output)
+        (self.root / "build/releases").mkdir()
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.sys, "argv", ["release_all.py", "--latest", "--publish-only"]), \
+             patch.object(release_all, "settings", return_value={}), \
+             patch.object(release_all, "preflight"), \
+             patch.object(release_all, "execute", return_value=outputs) as execute, \
+             patch.object(release_all, "ensure_server") as server:
+            release_all.main()
+        self.assertEqual(execute.call_args.args[:3], ("0.2.0", 9, "beta"))
+        self.assertTrue(execute.call_args.kwargs["publish_only"])
+        server.assert_not_called()
 
     def test_incomplete_and_preview_outputs_are_not_reused(self):
         for name in ("0.1.0-8-arm64", "0.1.0-10-arm64-preview", "0.1.0-7-x86_64"):

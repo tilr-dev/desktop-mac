@@ -1,6 +1,6 @@
 # Releases operated by an agent
 
-**Current default workflow:** see [PRODUCTION.md](PRODUCTION.md): `setup-release.command` configures credentials only; `release.command` builds only; `release_all.py --publish-only` publishes existing tested artifacts without rebuilding. The combined `--publish` mode below remains an explicit shortcut.
+**Current default workflow:** see [PRODUCTION.md](PRODUCTION.md): `setup-release.command` configures credentials only; `release.command` builds only; `upload.command` publishes the last completed tested app pair without rebuilding; explicit `release_all.py --publish-only` remains supported. `release.command --status` displays local history without Keychain access or build reservations. The combined `--publish` mode below remains an explicit shortcut.
 
 ## Product decision
 

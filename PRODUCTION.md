@@ -4,6 +4,290 @@ The default process separates building from publishing. The files tested locally
 are the exact signed, notarized DMGs later uploaded; publishing never rebuilds them.
 There are two downloads: Apple Silicon (`arm64`) and Intel (`x86_64`).
 
+## Быстрый рабочий процесс
+
+Обычные команды запускайте из Terminal на релизном Mac:
+
+```sh
+cd /Users/dan/projects/tilr/apps/mac
+./release.command --status
+./release.command
+# Проверить собранные артефакты, затем:
+./upload.command
+```
+
+- `--status` ничего не собирает, не резервирует build и не обращается к Keychain.
+  Показывает значения исходного `Info.plist`, текущую релизную версию, наибольший
+  локальный/зарезервированный build, следующий build, последнюю успешно собранную
+  пару DMG и закреплённую версию сервера. Это **локальная история**, а не проверка
+  установленного приложения или актуального CDN. Версию установленного приложения
+  смотрите в About Tilr; сервер — в Tilr → Local Server….
+- `release.command` собирает текущие исходники приложения. Маркетинговую версию
+  сохраняет, build увеличивает. После проверки доступа резервирует номер, собирает
+  отсутствующие артефакты закреплённого сервера, затем обе подписанные и
+  нотарифицированные DMG. Уже собранный сервер использует без пересборки.
+  Ничего не публикует. Незавершённые артефакты не перезаписывает.
+- `upload.command` публикует **приложение** из последней успешно завершённой пары,
+  записанной в `build/latest-app-release.json`. Не компилирует и не меняет файлы.
+  Использует сохранённый канал stable/beta; печатает выбранные version/build/channel
+  и после проверки CDN — две ссылки. Если новой записи ещё нет, используйте явные
+  version/build. Неудачная следующая сборка не меняет указатель: перед upload
+  проверьте `--status`, чтобы не выбрать предыдущую успешную сборку.
+
+### Версия, build и канал
+
+```sh
+./release.command --version 0.3.0           # новая версия, следующий build
+./release.command --build 20               # текущая версия, вручную build 20
+./release.command --version 0.3.0 --build 21
+./release.command --channel beta            # отдельная beta-сборка
+./upload.command                            # канал последней готовой сборки
+./upload.command --version 0.3.0 --build 21 --channel stable
+```
+
+Числа здесь — примеры. Явный build должен быть больше всех известных локальных
+номеров, включая неудачные попытки и preview. Build не сбрасывается при смене
+версии. Новая версия запоминается при резервировании сборки. `Info.plist` исходников
+не переписывается: нужные номера подставляются в собранное приложение.
+Проверьте номера на CDN при переносе на другой Mac: автоматическая нумерация
+не читает публичные feeds. Сохраняйте каталог `build` с историей и артефактами.
+
+После сбоя новый запуск `release.command` возьмёт следующий номер. Чтобы повторить
+именно старый, используйте `release_all.py --version … --build … --resume`:
+он повторно использует только завершённые проверенные артефакты. Незавершённый
+каталог сначала изучите и переместите в архив. После сбоя upload повторите ту же
+явную команду upload; не пересобирайте уже опубликованные файлы с тем же номером.
+
+### Отдельный серверный релиз
+
+У сервера собственные version/build. App build 21 не означает server build 21.
+`server-release.json` определяет, какой готовый сервер входит в новую DMG.
+Изменение исходников сервера само по себе не меняет закреплённый артефакт:
+для нового сервера назначьте новый server build и соберите его отдельно.
+
+```sh
+# Пример нового серверного релиза; номера независимы от приложения:
+python3 scripts/release_server.py --version 0.1.1 --build 2
+# После проверки этих артефактов:
+python3 scripts/release_server.py --version 0.1.1 --build 2 --publish-only
+```
+
+Для beta добавляйте `--channel beta` при публикации сервера. Публикация приложения
+не публикует серверный feed; сервер внутри DMG запускается и без него. Для первого
+релиза обоих каналов отдельно опубликуйте закреплённый сервер, затем приложение.
+Чтобы включить новый сервер в последующие DMG, обновите version/build/protocolVersion
+в `server-release.json` и запустите `release.command`. Уже установленные приложения
+получают совместимый сервер через Check for Server Updates…, без обновления DMG.
+
+### Проверка и ограничения доступа
+
+После сборки выполните команды из раздела 3 для **выведенных каталогов**, проверьте
+запуск приложения и состояние Local Server. Полный тест обновления требует
+реальной установки/Sparkle и проверки сохранения терминальных сессий. Затем upload.
+`upload.command` проверяет артефакты и публикацию, но не заменяет ручную проверку UI.
+
+При `Developer ID identity is unavailable` используйте обычный Terminal релизного
+Mac с существующим сертификатом и приватным ключом. Не создавайте новый ключ из-за
+ограничений агента. `release.command` и `upload.command` добавляют Homebrew в PATH.
+Разовая настройка — `setup-release.command`, доступ к Cloudflare — `wrangler login`.
+Процесс сборки не останавливает development-сервер. Если он занимает порт 7890,
+остановите именно его в терминале запуска (Ctrl+C) перед запуском новой версии.
+
+## Compact packaging and delta updates (implemented)
+
+New application releases contain only their target architecture, including all
+five Sparkle executables. `release_packaging.py` thins the copied framework before
+inside-out signing and audits every Mach-O in the finished app. Public releases
+are arm64 or x86_64; universal packaging is no longer an option. Release receipts
+with `packaging: 1` trigger the same audit during publication and DMG verification.
+Existing releases remain byte-for-byte unchanged.
+
+Our Swift executable and newly built server executable are stripped with `strip -x`
+**before signing**. Originals are kept in each release's `symbols/` directory outside
+the shipped app. An existing SwiftPM `Tilr.dSYM` is also copied there. Keep these
+files for diagnostics: an unstripped executable alone does not supply source-level
+debug information when the compiler did not generate it. Sparkle exports are not
+stripped. Server artifacts are never stripped or re-signed when bundled into an app.
+The first compact server is pinned as **0.1.0 build 2**, independently of app numbers.
+
+Each app release writes `sizes.json` with logical file bytes (excluding duplicate
+symlink targets), DMG bytes and all Mach-O architectures. Server releases write their
+own `sizes.json`. These measurements are not filesystem allocated-space totals.
+
+Delta generation defaults to two previous source builds, configured by
+`maximum_deltas` in `release-packaging.json`; set it to 0 for full-only updates.
+The publisher uses only locally retained completed DMGs with matching architecture,
+feed and public key, also referenced by the current published feed. It verifies the
+original checksum and the feed's EdDSA signature before passing archives to
+Sparkle. Keep `build/releases/` history on the release machine. If suitable local
+history is absent, publication proceeds with a full DMG, without a delta.
+
+Sparkle decides whether a useful delta can be generated; two is an upper bound,
+not a promise. The full DMG remains in every new update item for first installations
+and fallback. Server updates continue to download the full server binary.
+No ARM/Intel or stable/beta mixing occurs. Generated patches are retained in
+`deltas/`, their sizes/source versions in `delta-sizes.json`. They are verified with
+`sign_update`, uploaded to immutable URLs and downloaded/checksummed before the
+feed is changed. Resume also verifies publicly referenced deltas. A cached 404 on
+a delta stops publication before the feed update: retry the same upload after CDN
+propagation. A changed file at an existing URL is an error, never an overwrite.
+
+Use a new app build for the optimized release:
+
+```sh
+./release.command --status
+./release.command --channel beta
+# Verify/test the printed artifacts, including an actual Sparkle upgrade.
+./upload.command
+```
+
+The bundled server starts offline without its public feed; to expose its independent
+update, publish the completed server separately, on the desired server channel:
+
+```sh
+python3 scripts/release_server.py --version 0.1.0 --build 2 --channel beta --publish-only
+```
+
+For stable app distribution build another new app build with `--channel stable`;
+the channel is embedded in the signed bundle. Server beta and app beta are separate
+settings: testing server beta requires `local_server.update_channel: beta`.
+
+Verification so far: local tests cover both Sparkle architectures and ad-hoc
+signatures, real BinaryDelta create/apply and the reconstructed bundle signature,
+feed history isolation, rejected malformed patches, missing public patches, and
+publication ordering. The actual stripped ARM server preserves its version and
+state-format reporting. This does **not** establish Developer ID notarization,
+Intel runtime, live CDN delta delivery, a GUI Sparkle fallback, or shell PID
+survival through an optimized release. Verify those on the release/test Macs before
+production handoff. Source-level changes here publish nothing automatically.
+
+## Two independent update tracks, with a bundled server
+
+- **Mac application**: existing Sparkle feeds under `/mac/<arch>/appcast.xml`.
+- **Server**: signed JSON feeds under `/server/macos/<arch>/<stable|beta>.json`.
+  The app downloads and installs server updates itself; Sparkle does not install
+  the server. Server version/build numbers are independent of app version/build.
+
+The bundle contains an offline bootstrap server, pinned in `server-release.json`.
+An app build copies that exact completed server artifact unchanged, including its
+signature and manifest; it neither compiles the server nor changes its version.
+A newer compatible installed server wins over an older bundle. Incompatible
+protocols/app-build ranges and reused server numbers with changed contents fail
+without stopping or downgrading the installed server. Installing a fresh app
+therefore never requires a network connection; checking for updates is optional.
+No JavaScript `tilr` CLI, Node, npm or Git is shipped.
+
+### Build and publish a server independently
+
+The server build machine needs Rust, Zig 0.15.2, protoc, Apple signing/notarization
+credentials from `release.local.json`, and the Rust targets:
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+python3 scripts/release_server.py --version 0.1.0 --build 1
+# Test both completed artifacts, then publish without rebuilding:
+python3 scripts/release_server.py --version 0.1.0 --build 1 --publish-only
+```
+
+`--arch arm64` or `--arch x86_64` selects one architecture; the default is both.
+`--channel beta` selects the server beta feed independently of the app channel.
+`--min-app-build` / `--max-app-build` constrain native-client compatibility when
+needed. The protocol version is read from the server source at build time.
+`--preview` creates ad-hoc local artifacts which cannot be published or bundled
+in a public app. Build output is `build/server-releases/<version>-<build>-<arch>`
+(with `-preview` for previews). A failed/incomplete directory is never reused;
+inspect and move it aside before retrying the same unpublished number.
+
+The server executable is Developer ID signed and notarized before its completion
+receipt is written. Publication checks the receipt/checksum, preserves immutable
+binary URLs, verifies the public download, then publishes the signed feed last.
+It retains previous compatible releases instead of making older clients download
+an incompatible latest server. Feed signatures use Ed25519 (CryptoKit at runtime),
+with the existing release key initially shared with the app. The build-time
+`sign_update` utility only signs bytes; the server updater is not a Sparkle updater.
+All feeds are signed with explicit component/architecture/channel metadata.
+Publish from one release runner: the local lock does not serialize different Macs,
+and publishing the two architecture feeds is not atomic. A failed public check
+requires retrying the same `--publish-only`, not replacing a binary at its URL.
+No app DMG or Sparkle feed is published by this command.
+
+### Bundle a server in an application release
+
+Set `server-release.json` to the desired **server** version, build and protocol.
+Run the existing application release command below. It consumes the corresponding
+completed artifacts from `build/server-releases/`; `TILR_SERVER_RELEASE_ROOT` may
+point to the same downloaded artifacts on another build machine. Public app
+builds require public server artifacts. Preview app builds may use preview server
+artifacts when no public artifact for the pin exists. App releases remain two
+separate architecture DMGs; universal server artifacts are not used.
+
+The app records its supported server protocol, bundled server identity, server
+feed base URL and public verification key in its signed Info.plist. Downloads
+are selected by server build within the supported protocol, architecture and app
+build range; hashes/signatures and reload-state compatibility are verified before
+replacement. A server whose state cannot migrate live is left running; after a
+user stops that service, installation can proceed without a live-state migration.
+The next application build can still bundle an older compatible server; it will
+not undo an independent server update.
+
+### Runtime and controls
+
+The default instance installs into
+`~/Library/Application Support/dev.tilr.mac/server/` and creates
+`~/Library/LaunchAgents/dev.tilr.server.plist`. It listens on loopback port 7890,
+with private managed state/token and runtime files. The job runs the signed
+`tilr-server` directly (no shell wrapper); panes get the user's login environment
+because the server starts their shell as a login shell (server 0.1.0 build 3+).
+A job written by an earlier Tilr (`/bin/zsh -lc 'exec …'`, otherwise identical)
+is migrated: the plist is rewritten; a running job is left running with its
+terminals and picks up the new definition at its next bootstrap (next login), a
+stopped one is booted out and bootstrapped at once. Any other differing plist is
+still refused. Standalone installations are
+not adopted or stopped; conflicting ports/services produce a visible error.
+The generated `origins.toml` allows configured Tilr app origins. Config changes
+are applied on app launch through a session-preserving reload.
+
+`Tilr > Check for Updates…` checks the **application**.
+`Tilr > Check for Server Updates…` checks the **server** and offers Update Server.
+`Tilr > Local Server…` shows the installed version/channel and any available update.
+Opening it performs an authenticated connection check off the UI thread and shows
+«Запущен» with the actual running version, or «Не запущен или недоступен» when the
+server cannot be reached. «Обновить статус» repeats the check; connection failure
+is not treated as proof that the process has exited.
+By default server checks run at launch and every 24 hours; installation requires
+pressing Update Server. `local_server.update_channel`, `auto_check`,
+`check_interval`, network timeouts and size limits are documented in `default.yml`.
+A network/feed failure leaves the local server and credentials usable.
+The managed server's `update` command points to this independent server updater.
+The separate Linux/standalone server updater is unchanged.
+
+Installation replaces the binary atomically at a fixed path and waits for an
+authenticated response with the expected running version. It never stops a
+running supervisor to upgrade. The server's reload preserves sessions; the old
+binary and its receipt remain as `tilr-server.previous` and
+`app-managed.previous.json` for manual recovery, not automatic live rollback. A
+transaction journal reconciles interruptions before/after binary replacement on
+the next launch, even when that app bundles an older server. Closing the app leaves terminals running until logout.
+The server plugin receives credentials only through its trusted top-level
+`tilr://` bridge; remote profiles/defaults are preserved. Existing external site
+folders still need the rebuilt server plugin; no separate web-site updater is
+introduced. Test/probe/custom-config instances never manage the production server.
+
+### Verification
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_*.py'
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilr-server-installation-tests
+/tmp/tilr-server-installation-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o /tmp/tilr-server-update-tests
+/tmp/tilr-server-update-tests
+```
+
+Before public handoff, test first install, a server-only upgrade with an open
+shell, an app-only Sparkle upgrade retaining the newer server, and offline launch
+on both architectures. Check pane/shell PID survival and actual running versions.
+Compilation and simulated launchd unit checks do not establish GUI/Sparkle behavior.
+
 ## 1. Set up the release Mac once
 
 Use a normal Terminal on the Mac holding the Rexuni Developer ID private key:
@@ -150,8 +434,8 @@ Run `./release.command` without input. It reuses signing settings already saved 
 `release.local.json`. Setup is one-time. The highest marketing version from Info.plist
 and local history is retained; the highest build number is incremented. Reservations
 in `build/release-auto.json` prevent failed attempts from reusing numbers. Both
-architectures share one number. No previous artifacts are reused; nothing is published.
-Selection happens under the release lock. Keep local history/state when moving to
+architectures share one number. Application artifacts are always rebuilt; completed pinned server artifacts are reused unchanged. Nothing is published.
+Selection happens under the release lock. `--build N` can reserve an explicit higher number; `--status` only shows local history without reserving anything. Keep local history/state when moving to
 another release machine: automatic numbering does not query public feeds.
 
 Change the marketing version once with `./release.command --version 0.2.0`; it is

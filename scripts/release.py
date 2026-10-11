@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build a standalone DMG; public releases require signing, notarization and Sparkle."""
-import argparse
+from release_console import ArgumentParser, success, failure
 import base64
 import hashlib
 import json
@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from release_packaging import thin_tree, strip_executable, audit, size_report
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -20,10 +21,12 @@ def run(*args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
 
-def embed_framework(app, framework, identity="-"):
+def embed_framework(app, framework, identity="-", arch=None):
     target = app / "Contents/Frameworks/Sparkle.framework"
     target.parent.mkdir(parents=True, exist_ok=True)
     run("ditto", framework, target)
+    if arch:
+        thin_tree(target, arch)
     # Sign nested code from the inside out, preserving Sparkle's layout and symlinks.
     nested = [p for p in target.rglob("*") if not p.is_symlink()
               and p.suffix in (".xpc", ".app")]
@@ -40,10 +43,10 @@ def sign(path, identity):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
     parser.add_argument("--build", required=True, type=int)
-    parser.add_argument("--arch", choices=["arm64", "x86_64", "universal"], default="arm64")
+    parser.add_argument("--arch", choices=["arm64", "x86_64"], default="arm64")
     parser.add_argument("--preview", action="store_true", help="Ad-hoc local preview, NOT a public release")
     parser.add_argument("--publish", action="store_true", help="Publish the notarized DMG and Sparkle feed to Tilr CDN")
     parser.add_argument("--notes", type=Path, help="Plain-text release notes to embed in the feed")
@@ -119,7 +122,21 @@ def main():
             info.update(SUFeedURL=feed, SUPublicEDKey=key)
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump(info, file)
-        embed_framework(app, framework, identity)
+        symbols = output / "symbols"
+        strip_executable(contents / "MacOS/Tilr", symbols)
+        dsym = binary_dir / "Tilr.dSYM"
+        if dsym.exists():
+            run("ditto", dsym, symbols / dsym.name)
+        embed_framework(app, framework, identity, args.arch)
+        from bundle_server import bundle_server
+        server = bundle_server(app, args.arch, args.build, preview=args.preview)
+        info.update(TilrServerProtocolVersion=server["protocolVersion"],
+                    TilrBundledServerBuild=server["build"], TilrBundledServerVersion=server["version"])
+        if feed and key:
+            info.update(TilrServerFeedBaseURL="https://cdn.tilr.dev/server/macos", TilrServerPublicKey=key)
+        with (contents / "Info.plist").open("wb") as file:
+            plistlib.dump(info, file)
+        audit(app, args.arch)
         sign(app, identity)
         run("codesign", "--verify", "--deep", "--strict", "--verbose=2", app)
         if not args.preview:
@@ -140,17 +157,18 @@ def main():
             run("xcrun", "stapler", "staple", dmg)
             run("xcrun", "stapler", "validate", dmg)
         run("hdiutil", "verify", dmg)
+        size_report(output / "Tilr.app", dmg, args.arch, output / "sizes.json")
         checksum = subprocess.check_output(["shasum", "-a", "256", dmg.name], cwd=output, text=True)
         (output / (dmg.name + ".sha256")).write_text(checksum)
         with dmg.open("rb") as archive:
             sha256 = hashlib.file_digest(archive, "sha256").hexdigest()
         (output / "release.json").write_text(json.dumps({
-            "version": args.version, "build": args.build, "arch": args.arch,
+            "version": args.version, "build": args.build, "arch": args.arch, "packaging": 1,
             "preview": args.preview, "dmg": dmg.name,
             "sha256": sha256,
             "feed": feed, "public_key": key,
         }, indent=2) + "\n")
-    print(f"\n{'LOCAL PREVIEW — not notarized' if args.preview else 'SIGNED AND NOTARIZED'}: {dmg}")
+    success(f"\n{'LOCAL PREVIEW — not notarized' if args.preview else 'SIGNED AND NOTARIZED'}: {dmg}")
     if args.publish:
         import sys
         command = [sys.executable, ROOT / "scripts/publish.py", output, "--publish"]
@@ -160,4 +178,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        failure(f"Release stopped: {error}")
+        raise SystemExit(1)

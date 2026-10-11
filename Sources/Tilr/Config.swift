@@ -15,18 +15,47 @@ struct Config: Decodable {
     var browser: Browser
     var sshAgent: SSHAgent
     var debug: Debug
+    var localServer: LocalServer
 
     enum CodingKeys: String, CodingKey {
         case site, apps, window, control, browser, debug
         case sshAgent = "ssh_agent"
         case switching = "switch"
         case controlPlane = "control_plane"
+        case localServer = "local_server"
     }
 
     struct App: Decodable {
         /// Window title, menu entry and the host of the app's origin (`tilr://<name>/`).
         var name: String
         var site: String
+    }
+
+    /// The bundled server, installed at launch for the default production instance only.
+    struct LocalServer: Decodable {
+        var enabled: Bool
+        var port: UInt16
+        var commandTimeout: Double
+        var startupTimeout: Double
+        var retryInterval: Double
+        var updateChannel: String
+        var autoCheck: Bool
+        var checkInterval: Double
+        var downloadTimeout: Double
+        var maxFeedBytes: Int64
+        var maxDownloadBytes: Int64
+        enum CodingKeys: String, CodingKey {
+            case enabled, port
+            case commandTimeout = "command_timeout"
+            case startupTimeout = "startup_timeout"
+            case retryInterval = "retry_interval"
+            case updateChannel = "update_channel"
+            case autoCheck = "auto_check"
+            case checkInterval = "check_interval"
+            case downloadTimeout = "download_timeout"
+            case maxFeedBytes = "max_feed_bytes"
+            case maxDownloadBytes = "max_download_bytes"
+        }
     }
 
     /// The window. `mode` applies at launch, the rest whenever the config changes.
@@ -194,6 +223,30 @@ struct Config: Decodable {
         #   - name: Notes
         #     site: apps/notes
         apps: []
+
+        # Bundled terminal server. These settings apply at launch, in the default
+        # production instance only; --probe and separate --config instances never install it.
+        local_server:
+          enabled: true
+          # Loopback port; 1..65535. Do not change while the managed service is loaded.
+          port: 7890
+          # Seconds allowed for each installation/check command.
+          command_timeout: 15
+          # Seconds to wait for the server to accept an authenticated connection.
+          startup_timeout: 30
+          # Seconds between startup checks.
+          retry_interval: 0.25
+          # Independent of the application's Sparkle channel: stable or beta.
+          update_channel: stable
+          # Check at launch and periodically. Installation requires the Update button.
+          auto_check: true
+          # Seconds between server update checks.
+          check_interval: 86400
+          # Seconds allowed for a server feed or binary download.
+          download_timeout: 300
+          # Maximum signed feed size and binary download size, in bytes.
+          max_feed_bytes: 1048576
+          max_download_bytes: 268435456
 
         window:
           # fullscreen covers the screen with the Dock and the menu bar hidden; window has a title
