@@ -53,6 +53,11 @@ import Darwin
         _ = try install.install()
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "one")
         expect(commands.filter { $0.contains("bootstrap") }.count == 1)
+        func plistJob() throws -> [String: Any] {
+            try PropertyListSerialization.propertyList(from: Data(contentsOf: install.plist), format: nil) as! [String: Any]
+        }
+        // Login Items attribute the job to the app (macOS 13+).
+        expect(try plistJob()["AssociatedBundleIdentifiers"] as? [String] == [ServerInstallation.appBundleIdentifier])
         let inode = try fm.attributesOfItem(atPath: install.binary.path)[.systemFileNumber] as! NSNumber
         _ = try install.install()
         expect(try fm.attributesOfItem(atPath: install.binary.path)[.systemFileNumber] as! NSNumber == inode)
@@ -140,6 +145,44 @@ import Darwin
         let launchd = commands.filter { $0.first == "launchctl" && $0[1] != "print" }.map { $0[1] }
         expect(launchd == ["bootout", "bootstrap"])
         expect(loaded && jobState == "state = running")
+        // A direct job written before the app association (key missing or another value) is
+        // rewritten the same way: running left alone, stopped replaced.
+        for associated in [nil, ["dev.tilr.old"]] as [[String]?] {
+            var unassociated = try plistJob()
+            unassociated["AssociatedBundleIdentifiers"] = associated
+            let unassociatedPlist = try PropertyListSerialization.data(fromPropertyList: unassociated, format: .xml, options: 0)
+            try unassociatedPlist.write(to: install.plist)
+            jobState = "state = running"
+            commands.removeAll()
+            _ = try install.install()
+            expect(try plistJob()["AssociatedBundleIdentifiers"] as? [String] == [ServerInstallation.appBundleIdentifier])
+            expect(!commands.contains { ["bootout", "bootstrap", "kickstart", "kill"].contains($0.dropFirst().first ?? "") })
+            try unassociatedPlist.write(to: install.plist)
+            jobState = "state = not running"
+            commands.removeAll()
+            _ = try install.install()
+            expect(try plistJob()["AssociatedBundleIdentifiers"] as? [String] == [ServerInstallation.appBundleIdentifier])
+            expect(commands.filter { $0.first == "launchctl" && $0[1] != "print" }.map { $0[1] } == ["bootout", "bootstrap"])
+        }
+        // A zsh-wrapped job from before the association migrates too.
+        var wrappedOld = wrapped
+        wrappedOld.removeValue(forKey: "AssociatedBundleIdentifiers")
+        try PropertyListSerialization.data(fromPropertyList: wrappedOld, format: .xml, options: 0).write(to: install.plist)
+        _ = try install.install()
+        expect(try programArguments().first == install.binary.path)
+        expect(try plistJob()["AssociatedBundleIdentifiers"] as? [String] == [ServerInstallation.appBundleIdentifier])
+        // Only owned keys may differ: another environment, or another binary, is refused.
+        var otherEnv = try plistJob()
+        otherEnv.removeValue(forKey: "AssociatedBundleIdentifiers")
+        otherEnv["EnvironmentVariables"] = ["TILR_STATE_DIR": "/elsewhere"]
+        let before = try Data(contentsOf: install.plist)
+        try PropertyListSerialization.data(fromPropertyList: otherEnv, format: .xml, options: 0).write(to: install.plist)
+        rejects { _ = try install.install() }
+        var otherBinary = try PropertyListSerialization.propertyList(from: before, format: nil) as! [String: Any]
+        otherBinary["ProgramArguments"] = ["/usr/local/bin/other-server", "--listen", "127.0.0.1:0"]
+        try PropertyListSerialization.data(fromPropertyList: otherBinary, format: .xml, options: 0).write(to: install.plist)
+        rejects { _ = try install.install() }
+        try before.write(to: install.plist)
         var foreign = wrapped
         foreign["ProgramArguments"] = ["/bin/zsh", "-lc", "exec /usr/local/bin/other-server"]
         let valid = try Data(contentsOf: install.plist)
@@ -150,7 +193,7 @@ import Darwin
         try PropertyListSerialization.data(fromPropertyList: renamed, format: .xml, options: 0).write(to: install.plist)
         rejects { _ = try install.install() }
         try valid.write(to: install.plist)
-        print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped job migration: passed")
+        print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped and unassociated job migration, app association: passed")
         if let payload = CommandLine.arguments.dropFirst().first {
             var real = ServerInstallation(source: URL(fileURLWithPath: payload),
                 root: temp.appendingPathComponent("real"), agents: temp.appendingPathComponent("real-agents"),

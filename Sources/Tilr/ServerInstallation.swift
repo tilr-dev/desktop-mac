@@ -167,16 +167,19 @@ struct ServerInstallation {
             "RunAtLoad": true, "KeepAlive": ["SuccessfulExit": false],
             "StandardOutPath": root.appendingPathComponent("server.log").path,
             "StandardErrorPath": root.appendingPathComponent("server.log").path,
+            // macOS 13+: Login Items and the background-activity notice show the app (name, icon)
+            // instead of the signing team. Only the default instance installs the server.
+            "AssociatedBundleIdentifiers": [Self.appBundleIdentifier],
         ]
         let jobState = try launchctl(["print", service])
         var loaded = jobState.status == 0
         let running = loaded && jobState.text.contains("state = running")
-        // An earlier Tilr's job, the server started through `/bin/zsh -lc`: rewritten, not refused.
+        // An earlier Tilr's job (through `/bin/zsh -lc`, or without the app association): rewritten, not refused.
         var migrate = false
         if fm.fileExists(atPath: plist.path) {
             let old = try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil)
             if let old = old as? NSDictionary, old.isEqual(to: job) {
-            } else if let old = old as? [String: Any], Self.isShellWrapped(old, wanted: job, binary: binary) {
+            } else if let old = old as? [String: Any], Self.isEarlierJob(old, wanted: job, binary: binary) {
                 migrate = true
             } else {
                 throw Failure("Local server service settings changed. The running service was left untouched: \(plist.path)")
@@ -249,14 +252,26 @@ struct ServerInstallation {
         return wanted
     }
 
-    /// Whether `old` is the job an earlier Tilr wrote for `binary`: the same as `wanted` but for
-    /// ProgramArguments, which ran the binary through `/bin/zsh -lc`.
-    static func isShellWrapped(_ old: [String: Any], wanted: [String: Any], binary: URL) -> Bool {
-        guard let args = old["ProgramArguments"] as? [String], args.first == "/bin/zsh",
-              args.dropFirst().first == "-lc", args.contains(binary.path) else { return false }
+    /// The app the job is attributed to in Login Items; a bare test executable has no bundle.
+    static var appBundleIdentifier: String { Bundle.main.bundleIdentifier ?? "dev.tilr.mac" }
+
+    /// Keys an earlier Tilr wrote differently for the same job; every other key must match.
+    static let ownedKeys = ["ProgramArguments", "AssociatedBundleIdentifiers"]
+
+    /// Whether `old` is the job an earlier Tilr wrote for `binary`: the same Label and every key
+    /// but `ownedKeys` as `wanted`, its ProgramArguments either `wanted`'s or the binary run
+    /// through `/bin/zsh -lc`; AssociatedBundleIdentifiers missing or different.
+    static func isEarlierJob(_ old: [String: Any], wanted: [String: Any], binary: URL) -> Bool {
+        guard let label = old["Label"] as? String, label == wanted["Label"] as? String,
+              let args = old["ProgramArguments"] as? [String] else { return false }
+        let direct = args == (wanted["ProgramArguments"] as? [String])
+        let wrapped = args.first == "/bin/zsh" && args.dropFirst().first == "-lc" && args.contains(binary.path)
+        guard direct || wrapped else { return false }
         var rest = old, wantedRest = wanted
-        rest.removeValue(forKey: "ProgramArguments")
-        wantedRest.removeValue(forKey: "ProgramArguments")
+        for key in ownedKeys {
+            rest.removeValue(forKey: key)
+            wantedRest.removeValue(forKey: key)
+        }
         return NSDictionary(dictionary: rest).isEqual(to: wantedRest)
     }
 

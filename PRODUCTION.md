@@ -238,6 +238,10 @@ The default instance installs into
 with private managed state/token and runtime files. The job runs the signed
 `tilr-server` directly (no shell wrapper); panes get the user's login environment
 because the server starts their shell as a login shell (server 0.1.0 build 3+).
+The plist's `AssociatedBundleIdentifiers` (the app's bundle id, `dev.tilr.mac`) makes Login
+Items and the "Background Items Added" notice show the job as Tilr rather than the signing team
+(macOS 13+; the binary and the app must share a Team ID); a job lacking the key is migrated like
+a zsh one below.
 A job written by an earlier Tilr (`/bin/zsh -lc 'exec …'`, otherwise identical)
 is migrated: the plist is rewritten; a running job is left running with its
 terminals and picks up the new definition at its next bootstrap (next login), a
