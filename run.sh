@@ -80,6 +80,12 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 rm -f "$app/Contents/MacOS/Tilr"
 cp .build/release/Tilr "$app/Contents/MacOS/"
 cp Info.plist "$app/Contents/"
+# Dock's "Assign To" is keyed by bundle id, not --config. Isolate test windows
+# from the user's All Desktops / desktop assignment as well as their data.
+if [ -n "$testing" ]; then
+  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Info.plist)
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${bundle_id}.test" "$app/Contents/Info.plist"
+fi
 mkdir -p "$app/Contents/Frameworks"
 rm -rf "$app/Contents/Frameworks/Sparkle.framework"
 ditto .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework "$app/Contents/Frameworks/Sparkle.framework"

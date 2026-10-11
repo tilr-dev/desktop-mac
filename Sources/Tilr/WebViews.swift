@@ -39,6 +39,19 @@ final class WebViewHost: NSObject, WKScriptMessageHandler {
     /// `browser:` in the config; read when a view is made.
     var settings: Config.Browser
     private var views: [String: ChildView] = [:]
+
+    /// Agent access stays on the native control socket, never on the website's JS bridge.
+    func browserList() -> [[String: Any]] {
+        views.values.sorted { $0.id < $1.id }.map {
+            ["id": $0.id, "url": $0.webView.url?.absoluteString ?? "", "title": $0.webView.title ?? "",
+             "loading": $0.webView.isLoading, "visible": !$0.webView.isHidden]
+        }
+    }
+
+    func browser(_ id: String) throws -> ChildView {
+        guard let view = views[id] else { throw ControlServer.Failure(message: "no browser \(id); call browser_list") }
+        return view
+    }
     /// The views' container over the page's web view, made with the first view.
     private var overlay: PassthroughView?
 
@@ -184,6 +197,7 @@ final class ChildWebView: WKWebView {
 final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
     let id: String
     let webView: ChildWebView
+    let automation: BrowserAutomation
     private weak var parent: NSView?
     private let report: ([String: Any]) -> Void
     private var observers: [NSKeyValueObservation] = []
@@ -202,12 +216,15 @@ final class ChildView: NSObject, WKNavigationDelegate, WKUIDelegate {
         self.report = report
         self.lease = lease
         let configuration = WKWebViewConfiguration()
+        automation = BrowserAutomation(timeout: settings.automationTimeout, privateInput: settings.automationPrivateInput, inputInterval: settings.automationInputInterval)
+        automation.install(configuration.userContentController)
         // The profile's store, or the default one: cookies and logins shared by every view
         // without a profile. Both kept across launches.
         configuration.websiteDataStore = lease.store
         configuration.preferences.isElementFullscreenEnabled = true
         webView = ChildWebView(frame: .zero, configuration: configuration)
         super.init()
+        automation.webView = webView
         webView.wantsLayer = true
         webView.pressed = { [weak self] in
             guard let self else { return }

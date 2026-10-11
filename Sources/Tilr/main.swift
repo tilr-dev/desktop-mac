@@ -130,10 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard probing, !probed, tab === tabs.first else { return }
         probed = true
         Task { @MainActor in
+            await probeBrowserAutomation(settings: config.browser)
             await probeReloadHistory()
             await probeWeb(tab)
             probePalette()
-            probeSpaces()
+            await probeSpaces()
         }
     }
 
@@ -473,37 +474,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// `--probe`, window part: reports the fullscreen frame and whether a Space move sticks, then quits.
-    func probeSpaces() {
+    @MainActor
+    func probeSpaces() async {
         let window = shell.window
-        func after(_ seconds: Double, _ body: @escaping () -> Void) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: body)
-        }
-        guard Spaces.available else {
+        guard Spaces.available, Spaces.moveBackend != "unavailable" else {
             print("space move: unavailable")
             NSApp.terminate(nil)
             return
         }
         let (all, index) = shell.desktops()
+        print("Spaces probe bundle:", Bundle.main.bundleIdentifier ?? "none", "Dock All Desktops:", Shell.assignedToAllDesktops)
+        guard Spaces.of(window).count == 1 else {
+            print("space move: FAILED precondition: window belongs to multiple/no desktops; use ./run.sh --test --probe to isolate Dock assignment")
+            control?.stop()
+            Instance.terminating()
+            exit(EXIT_FAILURE)
+        }
         print("screen frame:", (window.screen ?? NSScreen.main!).frame)
         print("window frame:", window.frame)
         print("presentation options:", NSApp.currentSystemPresentationOptions.rawValue)
-        print("desktops:", all, "window on index:", index.map(String.init) ?? "nil")
+        print("desktops:", all, "membership:", Spaces.of(window), "backend:", Spaces.moveBackend,
+              "collection behavior:", window.collectionBehavior.rawValue)
         guard let index, all.count > 1 else {
-            print("space move: skipped (need 2+ desktops)")
+            print("space move: skipped (requires window on one desktop and 2+ desktops)")
             NSApp.terminate(nil)
             return
         }
         let target = all[(index + 1) % all.count]
-        Spaces.move(window, to: target)
-        after(0.5) {
-            print("space move:", Spaces.of(window) == [target] ? "ok" : "FAILED", "->", Spaces.of(window))
-            Spaces.move(window, to: all[index])
-            after(0.5) {
-                print("space move back:", Spaces.of(window) == [all[index]] ? "ok" : "FAILED")
-                NSApp.terminate(nil)
+        var failures: [String] = []
+        for (label, destination) in [("space move", target), ("space move back", all[index])] {
+            do {
+                try await Spaces.move(window, to: destination, timeout: config.window.spaceMoveTimeout, interval: config.window.spaceMoveInterval)
+                print("\(label): ok ->", Spaces.of(window))
+            } catch {
+                failures.append(error.localizedDescription)
+                print("\(label): FAILED:", error.localizedDescription)
             }
         }
+        if !failures.isEmpty {
+            control?.stop()
+            Instance.terminating()
+            exit(EXIT_FAILURE)
+        }
+        NSApp.terminate(nil)
     }
+
 }
 
 let app = NSApplication.shared

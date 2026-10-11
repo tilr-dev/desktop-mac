@@ -66,10 +66,14 @@ struct Config: Decodable {
         var inset: Inset
         /// At launch: come to the front; false shows the window behind the active app.
         var activateAtLaunch: Bool
+        var spaceMoveTimeout: Double
+        var spaceMoveInterval: Double
 
         enum CodingKeys: String, CodingKey {
             case mode, inset
             case activateAtLaunch = "activate_at_launch"
+            case spaceMoveTimeout = "space_move_timeout"
+            case spaceMoveInterval = "space_move_interval"
             case dragHeight = "drag_height"
             case resizeBorder = "resize_border"
         }
@@ -133,10 +137,17 @@ struct Config: Decodable {
         var userAgent: String
         /// Bytes a tunnel reads from a connection at a time (Tunnel.swift).
         var tunnelChunk: Int
+        /// Seconds before an agent's asynchronous JS operation times out.
+        var automationTimeout: Double
+        var automationPrivateInput: Bool
+        var automationInputInterval: Double
 
         enum CodingKeys: String, CodingKey {
             case userAgent = "user_agent"
             case tunnelChunk = "tunnel_chunk"
+            case automationTimeout = "automation_timeout"
+            case automationPrivateInput = "automation_private_input"
+            case automationInputInterval = "automation_input_interval"
         }
     }
 
@@ -262,6 +273,10 @@ struct Config: Decodable {
           # The app comes to the front when it starts; false shows the window behind the active app
           # without taking focus (the test instance of ./run.sh --test sets it). At launch.
           activate_at_launch: true
+          # Seconds to wait for WindowServer to confirm a desktop move.
+          space_move_timeout: 3
+          # Seconds between desktop membership checks during a move.
+          space_move_interval: 0.05
 
         # Switching between the apps: the new page slides into the window, the old one slides out.
         switch:
@@ -318,6 +333,12 @@ struct Config: Decodable {
           # browser; Safari's own string makes them behave, e.g.
           # "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15".
           user_agent: ""
+          # Seconds allowed for one browser automation JavaScript operation.
+          automation_timeout: 10
+          # Seconds between checks that native input focus reached the browser.
+          automation_input_interval: 0.05
+          # Allow guarded WebKit SPI for native hover; unavailable if disabled.
+          automation_private_input: true
           # A profile's tunnel (a tilr server's /socks, bridged to a local SOCKS port for WebKit):
           # bytes read from a connection at a time, the most one WebSocket message carries; the
           # next read waits until they are sent. Applies to tunnels started after the change.

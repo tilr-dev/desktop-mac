@@ -220,8 +220,10 @@ final class ControlServer {
             return ["value": try await evaluate(try tab(), body: body, arguments: ["service": service, "method": method, "args": args])]
         case "debug":
             return try await debugCommand(try tab(), request)
+        case "browser":
+            return try await browserCommand(try tab(), request)
         default:
-            throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug")
+            throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug, browser")
         }
     }
 

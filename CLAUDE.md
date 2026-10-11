@@ -29,7 +29,7 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
   says "at launch".
 - Keep `./run.sh --probe` passing; extend it when a feature can be checked from code.
 - **Testing**: Test in a separate instance: `./run.sh --test` (config `~/Library/Application Support/dev.tilr.mac.test`, its own
-  socket, storage and window). Never restart or kill the user's Tilr for a check; the user's
+  socket, storage and window). Test bundles use the production bundle identifier plus `.test` so they do not inherit the user’s Dock “Assign To” setting. Never restart or kill the user's Tilr for a check; the user's
   instance is restarted only by the user or on their explicit ask. Drive the test instance with
   `tilr ctl --socket ~/Library/Application Support/dev.tilr.mac.test/control.sock …` or `TILR_CONTROL=…`.
 - **Private API**: Public API by default. A private/underscored API (`_foo`, `CGS*`,
@@ -39,7 +39,8 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
 
   | File | Symbol | Feature | Fallback |
   |---|---|---|---|
-  | `Shell.swift` | `CGSMainConnectionID`, `CGSGetActiveSpace`, `CGSCopyManagedDisplaySpaces`, `CGSCopySpacesForWindows`, `CGSMoveWindowsToManagedSpace` (resolved with `dlsym`, enum `Spaces`) | `next-desktop` (move the window to the next Space), `--probe`'s Space move | unavailable, app runs: a missing symbol makes `Spaces.available` false, `next-desktop` prints "Space move unavailable on this macOS", the probe prints "space move: unavailable" |
+  | `Shell.swift` | `CGSMainConnectionID`, `CGSGetActiveSpace`, `CGSCopyManagedDisplaySpaces`, `CGSCopySpacesForWindows`; `SLSBridgedMoveWindowsToManagedSpaceOperation.initWithWindows:spaceID:` / `performWithWMBridgeDelegate` (symbol/class/method/ABI guards); `CGSMoveWindowsToManagedSpace` only before macOS 14.5 | `next-desktop`, `--probe` round trip | explicit unavailable on unsupported systems; async result verified by exact desktop membership, timeout reports failure; no SIP changes |
+  | `BrowserAutomation.swift` | `WKWebView._simulateMouseMove:` (`NSSelectorFromString`, `responds(to:)`) | native browser hover; enabled by `browser.automation_private_input` | explicit unavailable error; click uses public AppKit input, scroll uses DOM `scrollBy` |
   | `Debug.swift` | `WKWebView._webProcessIdentifier` (`NSSelectorFromString` + `responds(to:)`, `value(forKey:)`) | debug mode's sampler: the pages' WebContent pids | every WebContent process by name (`proc_listpids` + `proc_name`) |
 
 - To see and drive the running app, use Tilr Control (`Sources/Tilr/Control.swift`): `tilr ctl

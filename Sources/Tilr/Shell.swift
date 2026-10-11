@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import ObjectiveC
 
 // Private SkyLight calls: AppKit has no public API to read or choose a window's Space. Resolved
 // at run time (dlsym), so a macOS without one of them runs the app with Spaces unavailable.
@@ -8,6 +9,9 @@ enum Spaces {
     private typealias ActiveSpace = @convention(c) (Int32) -> UInt64
     private typealias ManagedDisplaySpaces = @convention(c) (Int32) -> Unmanaged<CFArray>?
     private typealias SpacesForWindows = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+    private typealias BridgeMove = @convention(c) (UnsafeMutableRawPointer, Selector) -> Void
+    private typealias Allocate = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer?
+    private typealias InitializeMove = @convention(c) (UnsafeMutableRawPointer, Selector, CFArray, UInt64) -> Unmanaged<AnyObject>?
     private typealias MoveWindows = @convention(c) (Int32, CFArray, UInt64) -> Void
 
     private struct Calls {
@@ -15,7 +19,7 @@ enum Spaces {
         let active: ActiveSpace
         let displays: ManagedDisplaySpaces
         let spaces: SpacesForWindows
-        let move: MoveWindows
+        let move: MoveWindows?
     }
 
     /// nil when a symbol is missing on this macOS.
@@ -27,13 +31,13 @@ enum Spaces {
         guard let main = symbol("CGSMainConnectionID", MainConnection.self),
               let active = symbol("CGSGetActiveSpace", ActiveSpace.self),
               let displays = symbol("CGSCopyManagedDisplaySpaces", ManagedDisplaySpaces.self),
-              let spaces = symbol("CGSCopySpacesForWindows", SpacesForWindows.self),
-              let move = symbol("CGSMoveWindowsToManagedSpace", MoveWindows.self)
+              let spaces = symbol("CGSCopySpacesForWindows", SpacesForWindows.self)
         else {
             print("spaces: unavailable on this macOS (SkyLight calls missing)")
             return nil
         }
-        return Calls(cid: main(), active: active, displays: displays, spaces: spaces, move: move)
+        return Calls(cid: main(), active: active, displays: displays, spaces: spaces,
+                     move: symbol("CGSMoveWindowsToManagedSpace", MoveWindows.self))
     }()
 
     static var available: Bool { calls != nil }
@@ -57,10 +61,79 @@ enum Spaces {
         return ids.map(\.uint64Value)
     }
 
-    static func move(_ window: NSWindow, to space: UInt64) {
-        guard let calls else { return }
-        calls.move(calls.cid, [window.windowNumber] as CFArray, space)
+    /// Newer macOS uses a bridged operation. The legacy function still resolves there,
+    /// but its presence alone does not mean that it can move a window.
+    private struct Bridge {
+        let cls: AnyClass
+        let allocate: Allocate
+        let initialize: InitializeMove
+        let perform: BridgeMove
     }
+
+    private static let bridge: Bridge? = {
+        guard let cls = NSClassFromString("SLSBridgedMoveWindowsToManagedSpaceOperation"),
+              let alloc = class_getClassMethod(cls, NSSelectorFromString("alloc")),
+              let initializer = class_getInstanceMethod(cls, NSSelectorFromString("initWithWindows:spaceID:")),
+              let perform = class_getInstanceMethod(cls, NSSelectorFromString("performWithWMBridgeDelegate")),
+              method_getNumberOfArguments(perform) == 2,
+              method_getNumberOfArguments(initializer) == 4 else { return nil }
+        let returnType = method_copyReturnType(perform)
+        defer { free(returnType) }
+        guard String(cString: returnType) == "v" else { return nil }
+        // Refuse an ABI we have not checked rather than casting a changed signature.
+        func type(_ index: UInt32?) -> String {
+            let value = index.map { method_copyArgumentType(initializer, $0) } ?? method_copyReturnType(initializer)
+            guard let value else { return "" }
+            defer { free(value) }
+            return String(cString: value)
+        }
+        guard type(nil) == "@", type(2) == "@", type(3) == "Q" else { return nil }
+        return Bridge(cls: cls,
+                      allocate: unsafeBitCast(method_getImplementation(alloc), to: Allocate.self),
+                      initialize: unsafeBitCast(method_getImplementation(initializer), to: InitializeMove.self),
+                      perform: unsafeBitCast(method_getImplementation(perform), to: BridgeMove.self))
+    }()
+
+    static var moveBackend: String {
+        if bridge != nil { return "bridged" }
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        if (os.majorVersion < 14 || (os.majorVersion == 14 && os.minorVersion < 5)), calls?.move != nil { return "legacy" }
+        return "unavailable"
+    }
+
+    @MainActor
+    static func move(_ window: NSWindow, to space: UInt64, timeout: Double, interval: Double) async throws {
+        guard let calls, moveBackend != "unavailable" else {
+            throw ControlServer.Failure(message: "Space move unavailable on this macOS")
+        }
+        guard !window.collectionBehavior.contains(.canJoinAllSpaces), !window.styleMask.contains(.fullScreen) else {
+            throw ControlServer.Failure(message: "Space move requires a window on one desktop (not all-desktops or native fullscreen)")
+        }
+        guard desktopsByDisplay().contains(where: { $0.contains(space) }) else {
+            throw ControlServer.Failure(message: "target desktop no longer exists")
+        }
+        guard timeout.isFinite, interval.isFinite, timeout > 0, interval > 0, interval <= timeout else {
+            throw ControlServer.Failure(message: "invalid window.space_move_timeout / space_move_interval")
+        }
+        let windows = [window.windowNumber] as CFArray
+        if let bridge {
+            guard let allocated = bridge.allocate(bridge.cls, NSSelectorFromString("alloc")),
+                  let operation = bridge.initialize(allocated, NSSelectorFromString("initWithWindows:spaceID:"), windows, space)?.takeRetainedValue() else {
+                throw ControlServer.Failure(message: "Space move operation unavailable")
+            }
+            bridge.perform(Unmanaged.passUnretained(operation).toOpaque(), NSSelectorFromString("performWithWMBridgeDelegate"))
+        } else { calls.move?(calls.cid, windows, space) }
+        // Submission is asynchronous. Membership is the actual success condition;
+        // never report success merely because the call returned.
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if Set(of(window)) == Set([space]) { return }
+            try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+        } while Date() < deadline
+        if Set(of(window)) == Set([space]) { return }
+        throw ControlServer.Failure(message: "Space move failed: backend=\(moveBackend), target=\(space), actual=\(of(window))")
+    }
+
 }
 
 enum Mode: String, Decodable {
@@ -321,26 +394,43 @@ final class Shell: NSObject, NSWindowDelegate {
 
     /// Desktop Spaces of the display the window is on, and the window's index among them.
     func desktops() -> (all: [UInt64], index: Int?) {
-        let current = Spaces.of(window).first
+        let membership = Spaces.of(window)
+        let current = membership.count == 1 ? membership.first : nil
         let all = Spaces.desktopsByDisplay().first { list in current.map(list.contains) ?? false }
             ?? Spaces.desktopsByDisplay().first ?? []
         return (all, current.flatMap(all.firstIndex(of:)))
     }
 
+    /// Dock assignment is independent of NSWindow.collectionBehavior and applies to
+    /// every copy sharing the app's bundle identifier.
+    static var assignedToAllDesktops: Bool {
+        guard let identifier = Bundle.main.bundleIdentifier else { return false }
+        return UserDefaults(suiteName: "com.apple.spaces")?.dictionary(forKey: "app-bindings")?[identifier] as? String == "AllSpaces"
+    }
+
+    private var movingSpace = false
+
     func moveToNextSpace() {
-        guard Spaces.available else { return print("Space move unavailable on this macOS") }
+        guard !movingSpace else { return }
+        guard !allSpaces, !Self.assignedToAllDesktops else {
+            print("move to next desktop: unavailable while Show on All Desktops or Dock → Options → Assign To → All Desktops is enabled")
+            return
+        }
+        guard Spaces.available, Spaces.moveBackend != "unavailable" else { return print("Space move unavailable on this macOS") }
         let (all, index) = desktops()
         guard let index, all.count > 1 else {
-            // In native fullscreen the window is a Space of its own and is not on any desktop.
-            print("move to next desktop: skipped (window is not on a desktop, or there is only one)")
+            print("move to next desktop: skipped (window must be on one desktop, with 2+ desktops available)")
             return
         }
         let target = (index + 1) % all.count
-        Spaces.move(window, to: all[target])
-        // The window server applies the move asynchronously.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
-            let moved = Spaces.of(window) == [all[target]]
-            print("move to desktop \(target + 1):", moved ? "ok" : "FAILED")
+        movingSpace = true
+        let timing = settings
+        Task { @MainActor [self] in
+            defer { movingSpace = false }
+            do {
+                try await Spaces.move(window, to: all[target], timeout: timing.spaceMoveTimeout, interval: timing.spaceMoveInterval)
+                print("move to desktop \(target + 1): ok")
+            } catch { print("move to desktop \(target + 1): \(error.localizedDescription)") }
         }
     }
 }
