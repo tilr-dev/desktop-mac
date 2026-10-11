@@ -31,22 +31,31 @@ final class Tab: NSObject, WKNavigationDelegate {
     var console: [ConsoleEntry] = []
     private let consoleLimit: Int
     private let relay = ConsoleRelay()
+    private let catchesConsole: Bool
+
+    /// The page has finished loading and no navigation is under way: JavaScript may be
+    /// evaluated (during a navigation it can hang the call). Debug mode's `status` and `record`
+    /// read it.
+    private(set) var isLoaded = false
 
     /// `control`: with Tilr Control on, the page's console is caught for it. `browser`: how the
-    /// page's web views are made.
-    init(app: Site.App, control: Config.Control?, browser: Config.Browser, sshAgent: Config.SSHAgent) {
+    /// page's web views are made. `collector`: debug mode's script (Debug.swift), nil while off.
+    init(app: Site.App, control: Config.Control?, browser: Config.Browser, sshAgent: Config.SSHAgent, collector: String? = nil) {
         self.app = app
         consoleLimit = control?.console ?? 0
+        catchesConsole = control != nil
         site = SiteSchemeHandler(root: app.root)
         webViews = WebViewHost(settings: browser)
         agent = AgentHost(settings: sshAgent)
         let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = Instance.store
         configuration.setURLSchemeHandler(site, forURLScheme: SiteSchemeHandler.scheme)
         let controller = configuration.userContentController
         if control != nil {
             controller.addUserScript(WKUserScript(source: ConsoleRelay.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
             controller.add(relay, name: ConsoleRelay.name)
         }
+        if let collector { controller.addUserScript(PerfCollector.userScript(collector)) }
         controller.add(webViews, name: WebViewHost.name)
         controller.add(audio, name: AudioHost.name)
         controller.add(agent, name: AgentHost.name)
@@ -84,7 +93,20 @@ final class Tab: NSObject, WKNavigationDelegate {
     }
 
     func reload() {
+        isLoaded = false
         webView.load(URLRequest(url: pageURL, cachePolicy: .reloadIgnoringLocalCacheData))
+    }
+
+    /// Debug mode switched: the user scripts again, with or without the collector, and a reload
+    /// (a user script applies to the next navigation).
+    func setCollector(_ source: String?) {
+        let controller = webView.configuration.userContentController
+        controller.removeAllUserScripts()
+        if catchesConsole {
+            controller.addUserScript(WKUserScript(source: ConsoleRelay.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        }
+        if let source { controller.addUserScript(PerfCollector.userScript(source)) }
+        reload()
     }
 
     func log(type: String, text: String) {
@@ -164,11 +186,25 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// The page is leaving (a reload, another URL): its web views have no page to follow, its
     /// agent connections no page to report to. The audio players stay (AudioHost).
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        isLoaded = false
         webViews.removeAll()
         agent.closeAll()
     }
 
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        isLoaded = !webView.isLoading
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        isLoaded = !webView.isLoading && webView.url != nil
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        isLoaded = false
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        isLoaded = true
         // The key tab takes the keyboard once it has a page; a hidden one must not steal it.
         if !webView.isHidden { webView.window?.makeFirstResponder(webView) }
         didLoad?(self)

@@ -11,6 +11,8 @@ final class Palette: NSObject, NSTextFieldDelegate {
     var run: (Config.Command) -> Void = { _ in }
     /// Toggles (always on top) say "on" next to their key while they are on.
     var isOn: (Config.Command) -> Bool = { _ in false }
+    /// The row's text: the command's title, or one with its state (debug).
+    var title: (Config.Command) -> String = { $0.title }
 
     private let panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 0),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -113,7 +115,7 @@ final class Palette: NSObject, NSTextFieldDelegate {
 
     private func filter() {
         let query = field.stringValue.trimmingCharacters(in: .whitespaces)
-        shown = query.isEmpty ? commands : commands.filter { $0.title.localizedCaseInsensitiveContains(query) }
+        shown = query.isEmpty ? commands : commands.filter { title($0).localizedCaseInsensitiveContains(query) }
         selected = 0
         render()
     }
@@ -133,14 +135,14 @@ final class Palette: NSObject, NSTextFieldDelegate {
     }
 
     private func row(_ command: Config.Command, selected: Bool, index: Int) -> NSView {
-        let title = NSTextField(labelWithString: command.title)
-        title.font = Self.font(13)
-        title.textColor = selected ? Self.green : .white
+        let label = NSTextField(labelWithString: title(command))
+        label.font = Self.font(13)
+        label.textColor = selected ? Self.green : .white
         let key = NSTextField(labelWithString: [isOn(command) ? "on" : nil, command.key.map(Self.symbols)]
             .compactMap { $0 }.joined(separator: "  "))
         key.font = Self.font(13)
         key.textColor = Self.muted
-        let row = Row(views: [title, NSView(), key])
+        let row = Row(views: [label, NSView(), key])
         row.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
         row.wantsLayer = true
         row.layer?.cornerRadius = 3

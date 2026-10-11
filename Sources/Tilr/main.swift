@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var config = Config.fallback
     let palette = Palette()
     var control: ControlServer?
+    /// Debug mode (Debug.swift): `debug.enabled` at launch, switched by the palette and control.
+    var debug: DebugMode!
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
 
@@ -21,12 +23,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Config.writeDefaults()
+        Instance.launched()
         // A broken config at launch keeps the defaults. The mode is read here, once; the rest
         // of window: applies on every config change.
         if let loaded = Config.load() { config = loaded }
+        debug = DebugMode(settings: config.debug)
+        debug.tabs = { [unowned self] in tabs }
+        debug.changed = { [unowned self] in buildMenu() }
         shell = Shell(settings: config.window)
         shell.changed = { [weak self] _ in self?.buildMenu() }
         applyConfig()
+        // The tabs were made with the collector when debug is on at launch; the sampler starts.
+        debug.launched()
         shell.open()
         // default.yml is ours; only the user's file matters.
         configWatcher = FolderWatcher(Config.dir) { [weak self] paths in
@@ -34,20 +42,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         palette.run = { [weak self] in self?.perform($0.action) }
         palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.shell.onTop == true }
+        palette.title = { [weak self] in self?.title($0) ?? $0.title }
         if !config.control.socket.isEmpty {
             control = ControlServer(
-                path: (config.control.socket as NSString).expandingTildeInPath,
+                path: Config.resolve(config.control.socket),
                 tabs: { [unowned self] in tabs },
                 current: { [unowned self] in current },
-                select: { [unowned self] tab in shell.select(tab); buildMenu() }
+                select: { [unowned self] tab in shell.select(tab); buildMenu() },
+                debug: debug
             )
             control?.start()
         }
-        NSApp.activate(ignoringOtherApps: true)
+        // window.activate_at_launch false (the test instance): the user's app keeps the focus.
+        if config.window.activateAtLaunch { NSApp.activate(ignoringOtherApps: true) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         control?.stop()
+        Instance.terminating()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -67,7 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return tab
             }
             // Control is read at launch: a tab made later still follows that choice.
-            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser, sshAgent: config.sshAgent)
+            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser,
+                          sshAgent: config.sshAgent, collector: debug.collector)
             tab.didLoad = { [weak self] in self?.loaded($0) }
             tab.show(app)
             return tab
@@ -115,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let loaded = Config.load() else { return }
         config = loaded
         applyConfig()
+        debug.configChanged(config.debug)
     }
 
     func applyConfig() {
@@ -133,7 +147,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .reload: current?.reload()
         case .allDesktops: shell.toggleAllSpaces()
         case .nextDesktop: shell.moveToNextSpace()
+        case .debug: debug.toggle()
         }
+    }
+
+    /// A command's row in the palette and the menu: a state of its own for `debug`.
+    func title(_ command: Config.Command) -> String {
+        command.action == .debug ? debug.title(command.title) : command.title
     }
 
     @objc func reload() { current?.reload() }
@@ -175,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let switching = config.switching
         let onTop = shell.onTop
         let commands = plane.commands.map { command in
-            let entry = item(command.title, #selector(runCommand(_:)), command.key?.key ?? "", command.key?.modifiers ?? [])
+            let entry = item(title(command), #selector(runCommand(_:)), command.key?.key ?? "", command.key?.modifiers ?? [])
             entry.representedObject = command
             if command.action == .alwaysOnTop { entry.state = onTop ? .on : .off }
             return entry
@@ -364,6 +384,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = shell.window
         func after(_ seconds: Double, _ body: @escaping () -> Void) {
             DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: body)
+        }
+        guard Spaces.available else {
+            print("space move: unavailable")
+            NSApp.terminate(nil)
+            return
         }
         let (all, index) = shell.desktops()
         print("screen frame:", (window.screen ?? NSScreen.main!).frame)

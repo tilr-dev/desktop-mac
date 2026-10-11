@@ -12,6 +12,13 @@ import WebKit
 ///   { "cmd": "console", "clear": false }            the page's console.* and errors, oldest first
 ///   { "cmd": "eval", "js": "return 1 + 1" }         the body of an async function in the page
 ///   { "cmd": "call", "service": "plugins", "method": "toggle", "args": ["counter"] }
+///   { "cmd": "debug", "action": "status" }         debug mode (Debug.swift): enabled, dir, history,
+///                                                   sample, react (the page's build), recording
+///   { "cmd": "debug", "action": "on" }              on or off: every page reloads; the status after
+///   { "cmd": "debug", "action": "record", "seconds": 5, "path": "~/x.json" }
+///                                                   waits, writes the page's __tilrPerf.dump plus the
+///                                                   process samples of that window to path (default
+///                                                   debug.dir/<date>.json); { path, summary: [lines] }
 ///
 /// `call` runs a method of a service of the page's cordis root (`window.tilr.root.get(service)`):
 /// `plugins.list / toggle / reload`, `layout.list / open / close / float / tile`,
@@ -26,13 +33,15 @@ final class ControlServer {
     private let tabs: () -> [Tab]
     private let current: () -> Tab?
     private let select: (Tab) -> Void
+    private let debug: DebugMode
     private var listener: NWListener?
 
-    init(path: String, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab) -> Void) {
+    init(path: String, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab) -> Void, debug: DebugMode) {
         self.path = path
         self.tabs = tabs
         self.current = current
         self.select = select
+        self.debug = debug
     }
 
     func start() {
@@ -209,8 +218,57 @@ final class ControlServer {
                 return await member.apply(target, args)
                 """
             return ["value": try await evaluate(try tab(), body: body, arguments: ["service": service, "method": method, "args": args])]
+        case "debug":
+            return try await debugCommand(try tab(), request)
         default:
-            throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call")
+            throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug")
+        }
+    }
+
+    /// `debug`: status, on, off, record (Debug.swift).
+    @MainActor
+    private func debugCommand(_ tab: Tab, _ request: [String: Any]) async throws -> [String: Any] {
+        /// The page's React build, read only from a page at rest.
+        func react() async -> Any {
+            guard tab.isLoaded else { return NSNull() }
+            return (try? await evaluate(tab, body: "return globalThis.tilr?.react ?? null", arguments: [:])) ?? NSNull()
+        }
+        func status() async -> [String: Any] {
+            ["enabled": debug.enabled, "dir": debug.dir, "history": debug.settings.history,
+             "sample": debug.settings.sample, "react": await react(), "recording": debug.recording]
+        }
+        let action = request["action"] as? String ?? "status"
+        switch action {
+        case "status":
+            return await status()
+        case "on", "off":
+            debug.set(action == "on")
+            return await status()
+        case "record":
+            guard debug.enabled else { throw Failure(message: "debug: off; tilr ctl debug on") }
+            guard !debug.recording else { throw Failure(message: "debug: a record is in progress") }
+            let seconds = (request["seconds"] as? NSNumber)?.doubleValue ?? 5
+            guard seconds > 0 else { throw Failure(message: "debug: seconds must be positive") }
+            debug.recording = true
+            debug.sampler.holdSince = Date().timeIntervalSince1970 * 1000 - seconds * 1000
+            defer {
+                debug.recording = false
+                debug.sampler.holdSince = nil
+            }
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard debug.enabled else { throw Failure(message: "debug: turned off during the record") }
+            // A page in the middle of a navigation gets a few seconds to settle.
+            for _ in 0..<50 where !tab.isLoaded { try await Task.sleep(nanoseconds: 100_000_000) }
+            guard tab.isLoaded else { throw Failure(message: "debug: the page is loading; try again") }
+            let value = try await evaluate(tab, body: """
+                if (!globalThis.__tilrPerf) throw new Error('no __tilrPerf in the page')
+                return globalThis.__tilrPerf.dump(seconds)
+                """, arguments: ["seconds": seconds])
+            guard let dump = value as? [String: Any] else { throw Failure(message: "debug: the dump is not an object") }
+            let written = try debug.write(dump: dump, seconds: seconds, react: dump["react"] ?? NSNull(), path: request["path"] as? String)
+            return ["path": written.path, "summary": written.summary]
+        default:
+            throw Failure(message: "debug: unknown action \"\(action)\"; one of status, on, off, record")
         }
     }
 

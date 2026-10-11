@@ -1,21 +1,47 @@
 import AppKit
 import WebKit
 
-// Private SkyLight calls. AppKit has no public API to read or choose a window's Space.
-@_silgen_name("CGSMainConnectionID") func CGSMainConnectionID() -> Int32
-@_silgen_name("CGSGetActiveSpace") func CGSGetActiveSpace(_ cid: Int32) -> UInt64
-@_silgen_name("CGSCopyManagedDisplaySpaces") func CGSCopyManagedDisplaySpaces(_ cid: Int32) -> CFArray
-@_silgen_name("CGSCopySpacesForWindows")
-func CGSCopySpacesForWindows(_ cid: Int32, _ mask: Int32, _ windows: CFArray) -> CFArray
-@_silgen_name("CGSMoveWindowsToManagedSpace")
-func CGSMoveWindowsToManagedSpace(_ cid: Int32, _ windows: CFArray, _ space: UInt64)
-
+// Private SkyLight calls: AppKit has no public API to read or choose a window's Space. Resolved
+// at run time (dlsym), so a macOS without one of them runs the app with Spaces unavailable.
 enum Spaces {
-    static let cid = CGSMainConnectionID()
+    private typealias MainConnection = @convention(c) () -> Int32
+    private typealias ActiveSpace = @convention(c) (Int32) -> UInt64
+    private typealias ManagedDisplaySpaces = @convention(c) (Int32) -> Unmanaged<CFArray>?
+    private typealias SpacesForWindows = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+    private typealias MoveWindows = @convention(c) (Int32, CFArray, UInt64) -> Void
+
+    private struct Calls {
+        let cid: Int32
+        let active: ActiveSpace
+        let displays: ManagedDisplaySpaces
+        let spaces: SpacesForWindows
+        let move: MoveWindows
+    }
+
+    /// nil when a symbol is missing on this macOS.
+    private static let calls: Calls? = {
+        let handle = dlopen(nil, RTLD_NOW)
+        func symbol<T>(_ name: String, _: T.Type) -> T? {
+            dlsym(handle, name).map { unsafeBitCast($0, to: T.self) }
+        }
+        guard let main = symbol("CGSMainConnectionID", MainConnection.self),
+              let active = symbol("CGSGetActiveSpace", ActiveSpace.self),
+              let displays = symbol("CGSCopyManagedDisplaySpaces", ManagedDisplaySpaces.self),
+              let spaces = symbol("CGSCopySpacesForWindows", SpacesForWindows.self),
+              let move = symbol("CGSMoveWindowsToManagedSpace", MoveWindows.self)
+        else {
+            print("spaces: unavailable on this macOS (SkyLight calls missing)")
+            return nil
+        }
+        return Calls(cid: main(), active: active, displays: displays, spaces: spaces, move: move)
+    }()
+
+    static var available: Bool { calls != nil }
 
     /// Desktop Spaces (type 0, i.e. not fullscreen ones) per display, in Mission Control order.
     static func desktopsByDisplay() -> [[UInt64]] {
-        let displays = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] ?? []
+        guard let calls else { return [] }
+        let displays = calls.displays(calls.cid)?.takeRetainedValue() as? [[String: Any]] ?? []
         return displays.map { display in
             (display["Spaces"] as? [[String: Any]] ?? [])
                 .filter { ($0["type"] as? Int) == 0 }
@@ -23,15 +49,17 @@ enum Spaces {
         }
     }
 
-    static func active() -> UInt64 { CGSGetActiveSpace(cid) }
+    static func active() -> UInt64? { calls.map { $0.active($0.cid) } }
 
     static func of(_ window: NSWindow) -> [UInt64] {
-        let ids = CGSCopySpacesForWindows(cid, 7, [window.windowNumber] as CFArray) as? [NSNumber] ?? []
+        guard let calls else { return [] }
+        let ids = calls.spaces(calls.cid, 7, [window.windowNumber] as CFArray)?.takeRetainedValue() as? [NSNumber] ?? []
         return ids.map(\.uint64Value)
     }
 
     static func move(_ window: NSWindow, to space: UInt64) {
-        CGSMoveWindowsToManagedSpace(cid, [window.windowNumber] as CFArray, space)
+        guard let calls else { return }
+        calls.move(calls.cid, [window.windowNumber] as CFArray, space)
     }
 }
 
@@ -78,7 +106,7 @@ final class Shell: NSObject, NSWindowDelegate {
         self.settings = settings
         mode = settings.mode
         super.init()
-        window.title = "Tilr"
+        window.title = Instance.title("Tilr")
         window.delegate = self
         window.backgroundColor = .black
         window.isReleasedWhenClosed = false
@@ -126,7 +154,7 @@ final class Shell: NSObject, NSWindowDelegate {
             other.webView.frame = content.bounds
         }
         current = tab
-        window.title = tab.app.name
+        window.title = Instance.title(tab.app.name)
         window.makeFirstResponder(tab.webView)
         changed?(self)
     }
@@ -148,7 +176,7 @@ final class Shell: NSObject, NSWindowDelegate {
         tab.webView.isHidden = false
         slide = (from, tab)
         current = tab
-        window.title = tab.app.name
+        window.title = Instance.title(tab.app.name)
         window.makeFirstResponder(tab.webView)
         changed?(self)
         NSAnimationContext.runAnimationGroup({ context in
@@ -214,7 +242,13 @@ final class Shell: NSObject, NSWindowDelegate {
         settle()
         tabs.forEach { $0.webView.frame = content.bounds }
         NSApp.presentationOptions = presentationOptions
-        window.makeKeyAndOrderFront(nil)
+        // Not active and not to take focus (window.activate_at_launch false): shown behind the
+        // active app; ordering it front would cover the user's windows.
+        if NSApp.isActive || settings.activateAtLaunch {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            window.orderBack(nil)
+        }
         if let current { window.makeFirstResponder(current.webView) }
     }
 
@@ -294,6 +328,7 @@ final class Shell: NSObject, NSWindowDelegate {
     }
 
     func moveToNextSpace() {
+        guard Spaces.available else { return print("Space move unavailable on this macOS") }
         let (all, index) = desktops()
         guard let index, all.count > 1 else {
             // In native fullscreen the window is a Space of its own and is not on any desktop.

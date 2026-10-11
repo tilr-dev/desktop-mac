@@ -107,11 +107,11 @@ final class Profiles {
     private struct Weak { weak var lease: Lease? }
     private var tunnels: [TunnelKey: (tunnel: Tunnel, users: [ObjectIdentifier: Weak])] = [:]
 
-    /// The store of `profile`, nil for the default one, with its proxy (set before the view's
+    /// The store of `profile`, nil for the instance's own (Instance.store), with its proxy (set before the view's
     /// first load: `Lease.ready`). `origin` is the page's, sent by a tunnel's handshake; `chunk`
     /// the tunnel's read size.
     func join(_ profile: Profile?, origin: String, chunk: Int) -> Lease {
-        guard let profile else { return Lease(store: .default(), profile: nil) }
+        guard let profile else { return Lease(store: Instance.store, profile: nil) }
         let store = store(profile.id)
         let lease = Lease(store: store.data, profile: profile)
         guard let proxy = profile.proxy else {
@@ -151,7 +151,7 @@ final class Profiles {
         if let store = stores[id] { return store }
         let data: WKWebsiteDataStore
         if let uuid = UUID(uuidString: id) {
-            data = WKWebsiteDataStore(forIdentifier: uuid)
+            data = WKWebsiteDataStore(forIdentifier: Instance.profileStore(uuid))
         } else {
             // Not a UUID, so it cannot name a store on disk: one in memory, gone with the app.
             print("webviews: profile id \(id) is not a UUID; its storage is kept in memory")

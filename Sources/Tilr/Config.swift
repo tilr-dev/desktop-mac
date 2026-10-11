@@ -1,7 +1,7 @@
 import AppKit
 import Yams
 
-/// Settings, Sublime Text style. `~/.config/tilr/default.yml` holds every key with its default;
+/// Settings, Sublime Text style. `default.yml` in the config folder (`dir`) holds every key with its default;
 /// the app writes it on each launch. `config.yml` next to it holds the user's overrides and is
 /// read again on every save: a map there is merged key by key, a list or a value replaces the
 /// default whole. A broken config.yml keeps the last good config and says why on stdout.
@@ -14,9 +14,10 @@ struct Config: Decodable {
     var control: Control
     var browser: Browser
     var sshAgent: SSHAgent
+    var debug: Debug
 
     enum CodingKeys: String, CodingKey {
-        case site, apps, window, control, browser
+        case site, apps, window, control, browser, debug
         case sshAgent = "ssh_agent"
         case switching = "switch"
         case controlPlane = "control_plane"
@@ -34,9 +35,12 @@ struct Config: Decodable {
         var dragHeight: CGFloat
         var resizeBorder: CGFloat
         var inset: Inset
+        /// At launch: come to the front; false shows the window behind the active app.
+        var activateAtLaunch: Bool
 
         enum CodingKeys: String, CodingKey {
             case mode, inset
+            case activateAtLaunch = "activate_at_launch"
             case dragHeight = "drag_height"
             case resizeBorder = "resize_border"
         }
@@ -88,7 +92,7 @@ struct Config: Decodable {
 
     /// Tilr Control (Control.swift): the socket an agent drives the app through. At launch.
     struct Control: Decodable {
-        /// Empty: no server.
+        /// Empty: no server. Config.resolve'd.
         var socket: String
         /// Console messages kept per app.
         var console: Int
@@ -122,8 +126,49 @@ struct Config: Decodable {
         }
     }
 
-    static let dir = FileManager.default.homeDirectoryForCurrentUser
+    /// Debug mode (Debug.swift): the page's performance collector and the process sampler.
+    struct Debug: Decodable {
+        /// The state at launch and after a config change that touches it; the palette and
+        /// Tilr Control switch it at runtime.
+        var enabled: Bool
+        /// Where `record` writes its files (Config.resolve).
+        var dir: String
+        /// Seconds the collector (and the sampler) keep.
+        var history: Double
+        /// Seconds between process samples.
+        var sample: Double
+    }
+
+    /// `~/.config/tilr`: the user's own instance.
+    static let defaultDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/tilr", isDirectory: true)
+
+    /// The config folder: `--config DIR`, else `TILR_CONFIG`, else `~/.config/tilr`. It holds
+    /// config.yml, default.yml, the pid file and, by default, the control socket and debug
+    /// records; another folder is another instance (Instance.swift: own storage, own title).
+    static let dir: URL = {
+        let args = CommandLine.arguments
+        var given = args.firstIndex(of: "--config").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+        if given?.isEmpty ?? true { given = ProcessInfo.processInfo.environment["TILR_CONFIG"] }
+        guard let given, !given.isEmpty else { return defaultDir }
+        return URL(fileURLWithPath: (given as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL
+    }()
+
+    /// Whether this is the user's own instance (`~/.config/tilr`).
+    static let isDefaultDir = dir.standardizedFileURL.path == defaultDir.standardizedFileURL.path
+
+    /// `dir` as the defaults print it: under the home folder with `~`.
+    static let shownDir: String = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let path = dir.standardizedFileURL.path
+        return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+    }()
+
+    /// A path from the config: `~` expanded, a relative one resolved against the config folder.
+    static func resolve(_ path: String) -> String {
+        let expanded = (path as NSString).expandingTildeInPath
+        return expanded.hasPrefix("/") ? expanded : dir.appendingPathComponent(expanded).path
+    }
     static let file = dir.appendingPathComponent("config.yml")
     static let defaultsFile = dir.appendingPathComponent("default.yml")
 
@@ -133,6 +178,8 @@ struct Config: Decodable {
         # Tilr for Mac: every setting and its default. The app writes this file on each launch, so
         # edits here are lost. To change a setting, put the key into config.yml next to this file:
         # a map is merged key by key, a list or a value replaces the default whole.
+        # Paths: ~ is the home folder; relative paths are resolved against the config folder
+        # (this file's, \(shownDir): --config DIR or TILR_CONFIG, else ~/.config/tilr).
 
         # The page: a folder with an index.html plus whatever it loads, served as tilr://app/.
         # Until there is one, the app shows a placeholder naming the folder. A change in the
@@ -159,6 +206,9 @@ struct Config: Decodable {
           # Initial desktop frame: the screen minus these margins, in points.
           # Later mode switches preserve the last desktop size and position.
           inset: { x: 200, y: 150 }
+          # The app comes to the front when it starts; false shows the window behind the active app
+          # without taking focus (the test instance of ./run.sh --test sets it). At launch.
+          activate_at_launch: true
 
         # Switching between the apps: the new page slides into the window, the old one slides out.
         switch:
@@ -176,7 +226,8 @@ struct Config: Decodable {
           # Opens the palette.
           hotkey: cmd+shift+p
           # Rows of the palette, top to bottom. action is one of:
-          #   quit, fullscreen, window, frameless, always-on-top, reload, all-desktops, next-desktop
+          #   quit, fullscreen, window, frameless, always-on-top, reload, all-desktops, next-desktop,
+          #   debug (switches debug: below at runtime; the row shows the title plus ": on" / ": off")
           # key is optional: a shortcut that runs the command directly.
           commands:
             - title: Exit
@@ -194,13 +245,15 @@ struct Config: Decodable {
             - title: Always on Top
               action: always-on-top
               key: cmd+shift+t
+            - title: Debug recording
+              action: debug
 
         # Tilr Control: a socket through which an agent, `tilr ctl` or `tilr mcp` drives the app:
         # lists and switches the apps, takes a snapshot of the page, reads its console, calls the
         # page's services (switches plugins, opens and moves windows). Only this user can open it;
         # whoever can is in charge of the pages. Empty: no server. Applies at launch.
         control:
-          socket: ~/.config/tilr/control.sock
+          socket: \(shownDir)/control.sock
           # Console messages kept per app for the console command.
           console: 500
 
@@ -233,6 +286,17 @@ struct Config: Decodable {
           max_streams: 64
           # Bytes read from the agent at a time, the most one event to the page carries.
           chunk: 65536
+
+        # Performance recording: off by default. When on, the page gets a collector (window.__tilrPerf)
+        # and the app samples its processes; `tilr ctl debug record N` writes a JSON file.
+        # Switching it (here, from the palette's debug command or `tilr ctl debug on|off`) reloads
+        # every page; the palette and tilr ctl override enabled until it changes here.
+        debug:
+          enabled: false
+          # Where a record goes without a path, as <yyyy-MM-dd_HH-mm-ss>.json.
+          dir: \(shownDir)/debug
+          history: 60      # seconds the collector keeps
+          sample: 0.5      # process sampling period, seconds
 
         """
 
@@ -286,7 +350,7 @@ struct Config: Decodable {
 }
 
 enum Action: String, Decodable {
-    case quit, fullscreen, window, frameless, reload
+    case quit, fullscreen, window, frameless, reload, debug
     case alwaysOnTop = "always-on-top"
     case allDesktops = "all-desktops"
     case nextDesktop = "next-desktop"
