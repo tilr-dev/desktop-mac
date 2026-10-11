@@ -67,6 +67,9 @@ final class Shell: NSObject, NSWindowDelegate {
     var allSpaces = false
     var onTop = false
     private var dragMonitor: Any?
+    private var dragEvent: NSEvent?
+    /// Shared geometry for the two desktop modes; fullscreen never overwrites it.
+    private var desktopFrame: NSRect?
 
     /// The window became key, a tab was chosen or a toggle flipped; the menu mirrors them.
     var changed: ((Shell) -> Void)?
@@ -187,10 +190,13 @@ final class Shell: NSObject, NSWindowDelegate {
             window.toggleFullScreen(nil)
             return
         }
+        if mode != .fullscreen && window.frame.width > 0 && window.frame.height > 0 {
+            desktopFrame = window.frame
+        }
         mode = new
         applyCollectionBehavior()
         let screen = window.screen ?? NSScreen.main!
-        let windowFrame = screen.visibleFrame.insetBy(dx: settings.inset.x, dy: settings.inset.y)
+        let windowFrame = desktopFrame ?? screen.visibleFrame.insetBy(dx: settings.inset.x, dy: settings.inset.y)
         switch new {
         case .fullscreen:
             // Same Space as before, no animation: the window just covers the whole screen
@@ -213,19 +219,27 @@ final class Shell: NSObject, NSWindowDelegate {
     }
 
     /// Frameless mode has no title bar to grab, so a drag that starts in the top `drag_height`
-    /// points moves the window. The events still reach the page, so the header's clock stays clickable.
-    private var dragStart: (mouse: NSPoint, origin: NSPoint)?
+    /// points moves the window. Reserve the perimeter for AppKit's resize handling.
+    func shouldDrag(at point: NSPoint) -> Bool {
+        let bounds = NSRect(origin: .zero, size: window.frame.size)
+        let interior = bounds.insetBy(dx: settings.resizeBorder, dy: settings.resizeBorder)
+        return mode == .frameless && interior.contains(point)
+            && bounds.height - point.y <= settings.dragHeight
+    }
 
     private func installDrag() {
-        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged]) { [weak self] event in
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
             guard let self, mode == .frameless, event.window === window else { return event }
             if event.type == .leftMouseDown {
-                let fromTop = window.frame.height - event.locationInWindow.y
-                dragStart = fromTop <= settings.dragHeight ? (NSEvent.mouseLocation, window.frame.origin) : nil
-            } else if let start = dragStart {
-                let mouse = NSEvent.mouseLocation
-                window.setFrameOrigin(NSPoint(x: start.origin.x + mouse.x - start.mouse.x,
-                                              y: start.origin.y + mouse.y - start.mouse.y))
+                dragEvent = shouldDrag(at: event.locationInWindow) ? event : nil
+            } else if event.type == .leftMouseUp {
+                dragEvent = nil
+            } else if let start = dragEvent {
+                // Clicks reach the clock; once movement starts AppKit owns the gesture.
+                // It may consume mouse-up, so clear our state before handing it over.
+                dragEvent = nil
+                window.performDrag(with: start)
+                return nil
             }
             return event
         }

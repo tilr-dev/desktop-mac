@@ -222,6 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// with `--snapshot PATH`, saves pictures of the top corners of the page.
     @MainActor
     func probeWeb(_ tab: Tab) async {
+        probeWindowGeometry()
         let webView = tab.webView
         let args = CommandLine.arguments
         let path = args.firstIndex(of: "--snapshot").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
@@ -313,6 +314,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             shell.set(config.window.mode)
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
+    }
+
+    /// Regression checks for desktop geometry and the frameless drag / resize boundary.
+    func probeWindowGeometry() {
+        let originalMode = shell.mode
+        shell.set(.window)
+        let desktop = shell.window.frame
+        let chosen = desktop.insetBy(dx: 20, dy: 20).offsetBy(dx: 10, dy: -10)
+        shell.window.setFrame(chosen, display: true)
+        shell.set(.frameless)
+        precondition(shell.window.frame == chosen, "frameless lost desktop geometry")
+        shell.set(.fullscreen)
+        shell.set(.window)
+        precondition(shell.window.frame == chosen, "fullscreen lost desktop geometry")
+        shell.set(.window)
+        precondition(shell.window.frame == chosen, "same mode reset geometry")
+        shell.set(.frameless)
+        let size = shell.window.frame.size
+        let border = shell.settings.resizeBorder
+        let height = shell.settings.dragHeight
+        if height > border && size.width > border * 2 {
+            precondition(shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height - (height + border) / 2)), "header cannot drag")
+        }
+        if border > 0 {
+            precondition(!shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height - border / 2)), "top resize edge drags")
+            precondition(!shell.shouldDrag(at: NSPoint(x: border / 2, y: size.height - border / 2)), "resize corner drags")
+            precondition(!shell.shouldDrag(at: NSPoint(x: size.width - border / 2, y: size.height - border / 2)), "resize corner drags")
+        }
+        precondition(!shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height / 2)), "body drags")
+        shell.set(.window)
+        shell.window.setFrame(desktop, display: true)
+        shell.set(originalMode)
+        print("window geometry and drag boundaries: ok")
     }
 
     /// `--probe`, palette part: opens it, filters, closes. Nothing is run.

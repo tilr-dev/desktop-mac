@@ -8,6 +8,12 @@ own, ordered and masked (holes) as the page stacks their hosts: a float over a b
 Swift Package, AppKit, no Xcode project. `./run.sh` builds and starts the app; `./run.sh --probe`
 runs the self-check (page, palette, app switching, Space move) and quits — run it after changes.
 
+Desktop modes share the last window frame: switching window / frameless / fullscreen restores
+the user's desktop size and position. `window.inset` chooses the initial frame only.
+In frameless mode the top `window.drag_height` points move the window using AppKit's drag;
+the `window.resize_border` perimeter is reserved for resizing. A click still reaches the
+header's clock. `--probe` asserts frame restoration and the header / resize hit boundaries.
+
 ## Rules
 
 - Every tunable goes into the config, never as a literal in code: durations, sizes, margins,

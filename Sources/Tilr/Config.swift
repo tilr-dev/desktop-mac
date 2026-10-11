@@ -32,11 +32,13 @@ struct Config: Decodable {
     struct Windows: Decodable {
         var mode: Mode
         var dragHeight: CGFloat
+        var resizeBorder: CGFloat
         var inset: Inset
 
         enum CodingKeys: String, CodingKey {
             case mode, inset
             case dragHeight = "drag_height"
+            case resizeBorder = "resize_border"
         }
 
         struct Inset: Decodable {
@@ -152,7 +154,10 @@ struct Config: Decodable {
           mode: fullscreen
           # Frameless mode: a drag that starts within this many points from the top moves the window.
           drag_height: 32
-          # Window and frameless modes: the window is the screen minus these margins, in points.
+          # Frameless mode: reserve this perimeter for resizing, in points; it does not drag.
+          resize_border: 6
+          # Initial desktop frame: the screen minus these margins, in points.
+          # Later mode switches preserve the last desktop size and position.
           inset: { x: 200, y: 150 }
 
         # Switching between the apps: the new page slides into the window, the old one slides out.
