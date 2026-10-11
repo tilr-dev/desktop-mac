@@ -139,11 +139,11 @@ struct Config: Decodable {
         var sample: Double
     }
 
-    /// `~/.config/tilr`: the user's own instance.
-    static let defaultDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/tilr", isDirectory: true)
+    /// `~/Library/Application Support/dev.tilr.mac`: the user's own instance.
+    static let defaultDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("dev.tilr.mac", isDirectory: true)
 
-    /// The config folder: `--config DIR`, else `TILR_CONFIG`, else `~/.config/tilr`. It holds
+    /// The config folder: `--config DIR`, else `TILR_CONFIG`, else `~/Library/Application Support/dev.tilr.mac`. It holds
     /// config.yml, default.yml, the pid file and, by default, the control socket and debug
     /// records; another folder is another instance (Instance.swift: own storage, own title).
     static let dir: URL = {
@@ -154,7 +154,7 @@ struct Config: Decodable {
         return URL(fileURLWithPath: (given as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL
     }()
 
-    /// Whether this is the user's own instance (`~/.config/tilr`).
+    /// Whether this is the user's own instance (`~/Library/Application Support/dev.tilr.mac`).
     static let isDefaultDir = dir.standardizedFileURL.path == defaultDir.standardizedFileURL.path
 
     /// `dir` as the defaults print it: under the home folder with `~`.
@@ -179,26 +179,26 @@ struct Config: Decodable {
         # edits here are lost. To change a setting, put the key into config.yml next to this file:
         # a map is merged key by key, a list or a value replaces the default whole.
         # Paths: ~ is the home folder; relative paths are resolved against the config folder
-        # (this file's, \(shownDir): --config DIR or TILR_CONFIG, else ~/.config/tilr).
+        # (this file's, \(shownDir): --config DIR or TILR_CONFIG, else ~/Library/Application Support/dev.tilr.mac).
 
-        # The page: a folder with an index.html plus whatever it loads, served as tilr://app/.
+        # The page: a folder with an index.html plus whatever it loads, served as tilr://default/.
         # Until there is one, the app shows a placeholder naming the folder. A change in the
         # folder hot-reloads the page. Ignored when apps: is not empty.
-        site: ~/tilr
+        site: apps/default
 
         # Several apps in the one window, each with its own folder and its own storage
         # (tilr://<name>/); switch: below moves between them.
         # apps:
         #   - name: Dashboard
-        #     site: ~/tilr
+        #     site: apps/default
         #   - name: Notes
-        #     site: ~/tilr-notes
+        #     site: apps/notes
         apps: []
 
         window:
           # fullscreen covers the screen with the Dock and the menu bar hidden; window has a title
           # bar; frameless has none. The mode at launch; the Commands menu switches it later.
-          mode: fullscreen
+          mode: window
           # Frameless mode: a drag that starts within this many points from the top moves the window.
           drag_height: 32
           # Frameless mode: reserve this perimeter for resizing, in points; it does not drag.
@@ -305,7 +305,7 @@ struct Config: Decodable {
         # Tilr for Mac. The app reloads this file on every save. Every setting and its default is in
         # default.yml next to this file; a key put here overrides it (a map key by key, a list or a
         # value whole).
-        site: ~/tilr
+        site: apps/default
 
         """
 
@@ -316,10 +316,14 @@ struct Config: Decodable {
     /// Writes `default.yml`, and `config.yml` when there is none yet. Once, at launch.
     static func writeDefaults() {
         let files = FileManager.default
-        try? files.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? defaultText.write(to: defaultsFile, atomically: true, encoding: .utf8)
-        if !files.fileExists(atPath: file.path) {
-            try? userText.write(to: file, atomically: true, encoding: .utf8)
+        do {
+            try files.createDirectory(at: dir, withIntermediateDirectories: true)
+            try defaultText.write(to: defaultsFile, atomically: true, encoding: .utf8)
+            if !files.fileExists(atPath: file.path) {
+                try userText.write(to: file, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            print("config: cannot prepare folder \(dir.path): \(error)")
         }
     }
 

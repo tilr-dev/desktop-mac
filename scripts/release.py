@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Build a standalone DMG; public releases require signing, notarization and Sparkle."""
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import shutil
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def run(*args, **kwargs):
+    print("+", " ".join(str(arg) for arg in args), flush=True)
+    return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
+
+
+def embed_framework(app, framework, identity="-"):
+    target = app / "Contents/Frameworks/Sparkle.framework"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    run("ditto", framework, target)
+    # Sign nested code from the inside out, preserving Sparkle's layout and symlinks.
+    nested = [p for p in target.rglob("*") if not p.is_symlink()
+              and p.suffix in (".xpc", ".app")]
+    autoupdate = target / "Versions/B/Autoupdate"
+    for path in ([autoupdate] if autoupdate.exists() else []) + sorted(nested, key=lambda p: len(p.parts), reverse=True) + [target]:
+        sign(path, identity)
+
+
+def sign(path, identity):
+    args = ["codesign", "--force", "--sign", identity]
+    if identity != "-":
+        args += ["--options", "runtime", "--timestamp"]
+    run(*args, path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--build", required=True, type=int)
+    parser.add_argument("--arch", choices=["arm64", "x86_64", "universal"], default="arm64")
+    parser.add_argument("--preview", action="store_true", help="Ad-hoc local preview, NOT a public release")
+    parser.add_argument("--publish", action="store_true", help="Publish the notarized DMG and Sparkle feed to Tilr CDN")
+    parser.add_argument("--notes", type=Path, help="Plain-text release notes to embed in the feed")
+    parser.add_argument("--skip-build", action="store_true", help="Package an already-built matching binary")
+    parser.add_argument("--build-package", type=Path, default=ROOT, help="Swift package directory (default: this repo)")
+    parser.add_argument("--framework", type=Path, help="Override the Sparkle.framework artifact path")
+    parser.add_argument("--swift-disable-sandbox", action="store_true", help="For SwiftPM inside an existing sandbox")
+    args = parser.parse_args()
+    if args.preview and args.publish:
+        parser.error("A preview cannot be published")
+    if not re.fullmatch(r"\d+(\.\d+){0,2}", args.version) or args.build < 1:
+        parser.error("version must be numeric (e.g. 0.1.0); build must be positive")
+    settings_path = ROOT / "release.local.json"
+    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    def setting(name):
+        return os.environ.get(name, settings.get(name, ""))
+    identity = "-" if args.preview else setting("TILR_SIGN_IDENTITY")
+    profile = setting("TILR_NOTARY_PROFILE")
+    feed = setting("TILR_UPDATE_FEED")
+    key = setting("TILR_UPDATE_PUBLIC_KEY")
+    if args.preview:
+        feed, key = "", ""
+    if args.publish:
+        from publish import CDN
+        if feed not in (f"{CDN}/mac/{args.arch}/appcast.xml", f"{CDN}/mac/beta/{args.arch}/appcast.xml"):
+            parser.error("Saved feed must match --arch and the Tilr stable/beta CDN location")
+        if not shutil.which("wrangler"):
+            parser.error("Publishing requires Wrangler; install it with npm install -g wrangler")
+    if not args.preview and (not identity.startswith("Developer ID Application:") or not profile or not feed or not key):
+        parser.error("Public release requires TILR_SIGN_IDENTITY (Developer ID Application), TILR_NOTARY_PROFILE, TILR_UPDATE_FEED, TILR_UPDATE_PUBLIC_KEY. See RELEASE.md.")
+    if feed or key:
+        try:
+            assert feed.startswith("https://") and len(base64.b64decode(key, validate=True)) == 32
+        except (AssertionError, ValueError):
+            parser.error("Sparkle requires an HTTPS feed and a base64 32-byte Ed25519 public key")
+    os.chdir(ROOT)
+    env = os.environ.copy()
+    env["CLANG_MODULE_CACHE_PATH"] = str(ROOT / ".build/ModuleCache")
+    env["SWIFTPM_MODULECACHE_OVERRIDE"] = env["CLANG_MODULE_CACHE_PATH"]
+    # SwiftPM's native build database can retain commands from the previous target
+    # architecture. Separate scratch roots also keep agent releases out of dev builds.
+    scratch = args.build_package.resolve() / ".build" / f"release-{args.arch}"
+    swift = ["swift", "build", "--package-path", str(args.build_package.resolve()),
+             "--scratch-path", str(scratch), "-c", "release"]
+    if args.arch != "universal":
+        swift += ["--build-system", "native"]
+    for arch in (["arm64", "x86_64"] if args.arch == "universal" else [args.arch]):
+        swift += ["--arch", arch]
+    if args.swift_disable_sandbox:
+        swift += ["--disable-sandbox"]
+    if not args.skip_build:
+        run(*swift, env=env)
+    binary_dir = Path(subprocess.check_output(swift + ["--show-bin-path"], env=env, text=True).strip())
+    framework = args.framework.resolve() if args.framework else scratch / "artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+    if not framework.exists():
+        parser.error("Sparkle artifact missing; run swift package resolve")
+    output = ROOT / "build/releases" / f"{args.version}-{args.build}-{args.arch}{'-preview' if args.preview else ''}"
+    output.mkdir(parents=True, exist_ok=False)
+    with tempfile.TemporaryDirectory(prefix="stage-", dir=output) as staging:
+        stage = Path(staging)
+        app = stage / "Tilr.app"
+        contents = app / "Contents"
+        (contents / "MacOS").mkdir(parents=True)
+        (contents / "Resources").mkdir()
+        run("ditto", binary_dir / "Tilr", contents / "MacOS/Tilr")
+        run("lipo", "-verify_arch", *(["arm64", "x86_64"] if args.arch == "universal" else [args.arch]), contents / "MacOS/Tilr")
+        run("ditto", ROOT / "placeholder.html", contents / "Resources/placeholder.html")
+        run("ditto", ROOT / "Resources/AppIcon.icns", contents / "Resources/AppIcon.icns")
+        with (ROOT / "Info.plist").open("rb") as file:
+            info = plistlib.load(file)
+        info.update(CFBundleShortVersionString=args.version, CFBundleVersion=str(args.build))
+        if feed and key:
+            info.update(SUFeedURL=feed, SUPublicEDKey=key)
+        with (contents / "Info.plist").open("wb") as file:
+            plistlib.dump(info, file)
+        embed_framework(app, framework, identity)
+        sign(app, identity)
+        run("codesign", "--verify", "--deep", "--strict", "--verbose=2", app)
+        if not args.preview:
+            upload = output / "notarization.zip"
+            run("ditto", "-c", "-k", "--keepParent", app, upload)
+            run("xcrun", "notarytool", "submit", upload, "--keychain-profile", profile, "--wait")
+            run("xcrun", "stapler", "staple", app)
+            run("xcrun", "stapler", "validate", app)
+            run("spctl", "--assess", "--type", "execute", "--verbose=2", app)
+            upload.unlink()
+        run("ditto", app, output / "Tilr.app")
+        (stage / "Applications").symlink_to("/Applications")
+        dmg = output / f"Tilr-{args.version}-{args.build}-{args.arch}{'-preview' if args.preview else ''}.dmg"
+        run("hdiutil", "create", "-volname", "Tilr", "-srcfolder", stage, "-format", "UDZO", dmg)
+        if not args.preview:
+            sign(dmg, identity)
+            run("xcrun", "notarytool", "submit", dmg, "--keychain-profile", profile, "--wait")
+            run("xcrun", "stapler", "staple", dmg)
+            run("xcrun", "stapler", "validate", dmg)
+        run("hdiutil", "verify", dmg)
+        checksum = subprocess.check_output(["shasum", "-a", "256", dmg.name], cwd=output, text=True)
+        (output / (dmg.name + ".sha256")).write_text(checksum)
+        with dmg.open("rb") as archive:
+            sha256 = hashlib.file_digest(archive, "sha256").hexdigest()
+        (output / "release.json").write_text(json.dumps({
+            "version": args.version, "build": args.build, "arch": args.arch,
+            "preview": args.preview, "dmg": dmg.name,
+            "sha256": sha256,
+            "feed": feed, "public_key": key,
+        }, indent=2) + "\n")
+    print(f"\n{'LOCAL PREVIEW — not notarized' if args.preview else 'SIGNED AND NOTARIZED'}: {dmg}")
+    if args.publish:
+        import sys
+        command = [sys.executable, ROOT / "scripts/publish.py", output, "--publish"]
+        if args.notes:
+            command += ["--notes", args.notes.resolve()]
+        run(*command)
+
+
+if __name__ == "__main__":
+    main()

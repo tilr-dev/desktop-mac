@@ -3,8 +3,8 @@ import Foundation
 import WebKit
 
 /// This instance of the app, named by its config folder (`Config.dir`). The user's own one is
-/// `~/.config/tilr`; any other folder (`--config DIR`, `TILR_CONFIG`; `./run.sh --test` uses
-/// `~/.config/tilr-test`) is a separate instance that runs beside it:
+/// `~/Library/Application Support/dev.tilr.mac`; any other folder (`--config DIR`, `TILR_CONFIG`; `./run.sh --test` uses
+/// `~/Library/Application Support/dev.tilr.mac.test`) is a separate instance that runs beside it:
 /// - its own web storage: the pages' data store is `WKWebsiteDataStore(forIdentifier:)` with a
 ///   UUID kept in `<dir>/storage-id` (the user's instance keeps the default store and its data),
 ///   and every web view profile's store id is mixed with that UUID, so a profile id the two

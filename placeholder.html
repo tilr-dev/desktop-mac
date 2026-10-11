@@ -15,9 +15,16 @@
   code { font: 15px ui-monospace, Menlo, monospace; color: #d7dae0; }
 </style>
 <h1>Hello, <span>Tilr</span></h1>
-<p>No <code>index.html</code> in <code id="site"></code></p>
-<p>Point <code>site:</code> in <code>~/.config/tilr/config.yml</code> at the web folder, or put a page there.</p>
+<p>Your workspace starts here.</p>
+<details>
+  <summary>Use your own interface</summary>
+  <p>Put an <code>index.html</code> in <code id="site"></code>.</p>
+  <p>To use another folder, set <code>site:</code> in <code id="config"></code>.</p>
+  <p>Changes reload automatically. Node.js is only needed to build TypeScript projects.</p>
+</details>
 <script>
-  document.getElementById('site').textContent = new URLSearchParams(location.search).get('site') ?? '?'
+  const params = new URLSearchParams(location.search)
+  document.getElementById('site').textContent = params.get('site') ?? '?'
+  document.getElementById('config').textContent = params.get('config') ?? '~/Library/Application Support/dev.tilr.mac/config.yml'
 </script>
 </html>

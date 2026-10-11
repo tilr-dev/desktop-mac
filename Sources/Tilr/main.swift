@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import Sparkle
 
 // Prints reach a log file or a pipe as they happen (run.sh with its output redirected), not in blocks.
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -17,11 +18,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var debug: DebugMode!
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
+    var updater: SPUStandardUpdaterController?
 
     var tabs: [Tab] { shell.tabs }
     var current: Tab? { shell.current }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Release packaging supplies both values. Local builds never contact an update feed.
+        if !probing, !CommandLine.arguments.contains("--no-updates"),
+           Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") is String,
+           Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") is String {
+            updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        }
         Config.writeDefaults()
         Instance.launched()
         // A broken config at launch keeps the defaults. The mode is read here, once; the rest
@@ -207,7 +215,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             entry.state = tab === current ? .on : .off
             return entry
         }
-        submenu("Tilr", [item("Quit Tilr", #selector(NSApplication.terminate(_:)), "q")])
+        let check = item("Check for Updates…", #selector(SPUStandardUpdaterController.checkForUpdates(_:)), "")
+        check.target = updater
+        if updater == nil {
+            // Keep the menu discoverable in local/preview builds, which have no update feed.
+            check.action = nil
+            check.isEnabled = false
+            check.toolTip = "Updates are available in signed release builds."
+        }
+        var appItems: [NSMenuItem] = [check, .separator()]
+        appItems.append(item("Quit Tilr", #selector(NSApplication.terminate(_:)), "q"))
+        submenu("Tilr", appItems)
         submenu("Edit", [
             item("Undo", Selector(("undo:")), "z"),
             item("Redo", Selector(("redo:")), "z", [.command, .shift]),
@@ -265,6 +283,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? await Task.sleep(nanoseconds: 700_000_000)
         print("apps:", tabs.map { "\($0.app.name) → \($0.app.origin.absoluteString)" })
         print("page:", webView.url?.absoluteString ?? "none")
+        if webView.url?.lastPathComponent == "placeholder.html" {
+            let welcome = await js("document.querySelector('h1')?.textContent ?? ''")
+            precondition(welcome.contains("Tilr"), "Bundled welcome page failed to load")
+            print("bundled welcome page: ok")
+            await snapshot("welcome")
+            return
+        }
         let root = "document.querySelector('tilr-header')?.shadowRoot"
         print("header:", await js("""
             (() => { const r = \(root); if (!r) return 'MISSING';

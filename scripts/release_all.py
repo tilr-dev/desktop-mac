@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Non-interactive agent entry point: two separate Mac builds, then optional publication."""
+import argparse
+import base64
+import fcntl
+import json
+import os
+import plistlib
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from publish import CDN, validate_manifest
+from release import ROOT
+
+ARCHES = ("arm64", "x86_64")
+SETTING_NAMES = ("TILR_SIGN_IDENTITY", "TILR_NOTARY_PROFILE", "TILR_UPDATE_PUBLIC_KEY")
+
+
+def feed_for(arch, channel):
+    return f"{CDN}/mac/{'beta/' if channel == 'beta' else ''}{arch}/appcast.xml"
+
+
+def settings(require_build=True):
+    path = ROOT / "release.local.json"
+    saved = json.loads(path.read_text()) if path.exists() else {}
+    result = {name: os.environ.get(name, saved.get(name, "")) for name in SETTING_NAMES}
+    required = SETTING_NAMES if require_build else ("TILR_UPDATE_PUBLIC_KEY",)
+    if any(not result[name] for name in required):
+        raise ValueError("Missing signing settings. Complete the one-time setup in RELEASE.md; no credentials are requested interactively here.")
+    if require_build and not result["TILR_SIGN_IDENTITY"].startswith("Developer ID Application:"):
+        raise ValueError("Use the Rexuni Developer ID Application identity")
+    if len(base64.b64decode(result["TILR_UPDATE_PUBLIC_KEY"], validate=True)) != 32:
+        raise ValueError("Invalid Sparkle public key")
+    return result
+
+
+def run(command, **kwargs):
+    print("+", " ".join(map(str, command)), flush=True)
+    return subprocess.run(list(map(str, command)), check=True, stdin=subprocess.DEVNULL, **kwargs)
+
+
+def preflight(config, publish, build=True):
+    required = ["codesign", "xcrun", "hdiutil"]
+    if build:
+        required += ["swift", "ditto", "lipo"]
+    if publish:
+        required += ["wrangler", "curl", "node"]
+    missing = [name for name in required if not shutil.which(name)]
+    if missing:
+        raise ValueError("Missing tools: " + ", ".join(missing))
+    if publish:
+        node_version = subprocess.check_output(["node", "--version"], text=True).strip()
+        if int(node_version.lstrip("v").split(".")[0]) < 22:
+            raise ValueError(f"Release runner requires Node >=22 for Wrangler; PATH selects {node_version}. On this Mac prepend /opt/homebrew/bin to PATH.")
+    if build:
+        identities = subprocess.check_output(["security", "find-identity", "-v", "-p", "codesigning"], text=True)
+        if f'"{config["TILR_SIGN_IDENTITY"]}"' not in identities:
+            raise ValueError("Configured Developer ID identity is unavailable to THIS process. Check the runner's login Keychain and execution permissions; do not recreate the certificate.")
+        run(["xcrun", "notarytool", "history", "--keychain-profile", config["TILR_NOTARY_PROFILE"]], stdout=subprocess.DEVNULL)
+    tools = ROOT / ".build/artifacts/sparkle/Sparkle/bin"
+    if not (tools / "generate_keys").exists():
+        if not build:
+            raise ValueError("Sparkle tools missing. Provision the release runner before publishing; publish-only does not resolve/build source dependencies.")
+        run(["swift", "package", "resolve"], cwd=ROOT)
+    key = subprocess.check_output([str(tools / "generate_keys"), "--account", "tilr-rexuni", "-p"], text=True).strip()
+    if key != config["TILR_UPDATE_PUBLIC_KEY"]:
+        raise ValueError("Runner's Sparkle key is missing or differs from configured public key")
+    # Exercise the exact facilities which can be absent in an agent sandbox.
+    if build:
+        with tempfile.TemporaryDirectory(prefix="release-check-", dir=ROOT / "build") as directory:
+            target = Path(directory)
+            # copy2 also copies macOS flags: /usr/bin/true is SIP-restricted, so
+            # copystat/chflags fails even in a normal user Terminal. Only copy bytes.
+            shutil.copyfile("/usr/bin/true", target / "signing-probe")
+            (target / "signing-probe").chmod(0o755)
+            run(["codesign", "--force", "--sign", config["TILR_SIGN_IDENTITY"], "--options", "runtime", "--timestamp", target / "signing-probe"])
+            run(["hdiutil", "create", "-size", "8m", "-fs", "HFS+", "-volname", "Tilr release check", target / "probe.dmg"])
+    if publish:
+        # Checks access to the actual bucket, not just whether a user is logged in.
+        env = os.environ.copy()
+        env["CLOUDFLARE_ACCOUNT_ID"] = "8e0530af975a33f2f739127f75084531"
+        run(["wrangler", "r2", "bucket", "info", "tilr-cdn"], env=env)
+    print("Release runner preflight passed.")
+
+
+def completed(directory, version, build, arch, feed, key):
+    meta, _ = validate_manifest(directory)
+    expected = dict(version=version, build=build, arch=arch, feed=feed, public_key=key)
+    if any(meta.get(name) != value for name, value in expected.items()):
+        raise ValueError(f"Existing release does not match requested version/build/channel/key: {directory}")
+
+
+def execute(version, build, channel, config, publish=False, resume=False, notes=None, root=ROOT, runner=run, publish_only=False):
+    """Never start publishing until BOTH architecture builds have completed."""
+    outputs = []
+    for arch in ARCHES:
+        output = root / "build/releases" / f"{version}-{build}-{arch}"
+        env = os.environ.copy()
+        env.update(config)
+        env["TILR_UPDATE_FEED"] = feed_for(arch, channel)
+        if output.exists():
+            if not resume and not publish_only:
+                raise ValueError(f"Output already exists: {output}. Use --resume for completed builds.")
+            completed(output, version, build, arch, env["TILR_UPDATE_FEED"], config["TILR_UPDATE_PUBLIC_KEY"])
+        else:
+            if publish_only:
+                raise ValueError(f"Missing completed release: {output}. Publish-only never builds missing artifacts.")
+            runner([sys.executable, root / "scripts/release.py", "--version", version, "--build", str(build), "--arch", arch], env=env)
+            completed(output, version, build, arch, env["TILR_UPDATE_FEED"], config["TILR_UPDATE_PUBLIC_KEY"])
+        outputs.append(output)
+    if publish:
+        # Prepare/validate both feeds before exposing either update.
+        for should_publish in (False, True):
+            for output in outputs:
+                command = [sys.executable, root / "scripts/publish.py", output]
+                if notes:
+                    command += ["--notes", str(notes)]
+                if should_publish:
+                    command += ["--publish"]
+                runner(command)
+    return outputs
+
+
+def automatic_release(root=ROOT, version=None):
+    """Reserve a fresh build under the coordinator lock, including failed attempts."""
+    info = plistlib.loads((root / "Info.plist").read_bytes())
+    versions = [str(info["CFBundleShortVersionString"])]
+    builds = [int(info["CFBundleVersion"])]
+    releases = root / "build/releases"
+    if releases.exists():
+        for path in releases.iterdir():
+            match = re.fullmatch(r"(\d+(?:\.\d+){0,2})-(\d+)-(?:arm64|x86_64|universal)(?:-preview)?", path.name)
+            if match:
+                versions.append(match[1])
+                builds.append(int(match[2]))
+    state = root / "build/release-auto.json"
+    if state.exists():
+        saved = json.loads(state.read_text())
+        versions.append(saved["version"])
+        builds.append(int(saved["build"]))
+    def version_key(value):
+        if not re.fullmatch(r"\d+(?:\.\d+){0,2}", value):
+            raise ValueError(f"Invalid release version: {value}")
+        return tuple((list(map(int, value.split("."))) + [0, 0])[:3])
+    # Keep the marketing version; only the build increments on each run.
+    chosen = version or max(versions, key=lambda value: (version_key(value), len(value)))
+    version_key(chosen)
+    build = max(builds) + 1
+    state.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state.with_suffix(".tmp")
+    temporary.write_text(json.dumps(dict(version=chosen, build=build), indent=2) + "\n")
+    temporary.replace(state)
+    return chosen, build
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--auto", action="store_true", help="Build with saved signing settings and reserve the next local build number; no prompts")
+    parser.add_argument("--version")
+    parser.add_argument("--build", type=int)
+    parser.add_argument("--channel", choices=["stable", "beta"], default="stable")
+    parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--publish-only", action="store_true", help="Publish existing DMGs only; NEVER build, sign with Apple, or notarize again")
+    parser.add_argument("--resume", action="store_true", help="Reuse matching completed builds; verify any already-published release")
+    parser.add_argument("--notes", type=Path)
+    parser.add_argument("--check", action="store_true", help="Check runner access without building a release")
+    args = parser.parse_args()
+    if args.auto and (args.build is not None or args.resume or args.publish or args.publish_only or args.check):
+        parser.error("--auto is build-only; use explicit version/build for resume, checks or publication")
+    if not args.auto and not args.check and (not args.version or not re.fullmatch(r"\d+(\.\d+){0,2}", args.version) or not args.build or args.build < 1):
+        parser.error("Provide numeric --version and positive --build, or use --check")
+    if args.publish_only and args.publish:
+        parser.error("Choose --publish-only or --publish")
+    publishing = args.publish or args.publish_only
+    config = settings(require_build=not args.publish_only)
+    (ROOT / "build").mkdir(exist_ok=True)
+    with (ROOT / "build/release-all.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        preflight(config, publishing, build=not args.publish_only)
+        if args.check:
+            return
+        if args.auto:
+            args.version, args.build = automatic_release(version=args.version)
+            print(f"Building Tilr {args.version}, build {args.build}, channel {args.channel}.", flush=True)
+        outputs = execute(args.version, args.build, args.channel, config, publishing, args.resume,
+                          args.notes.resolve() if args.notes else None, publish_only=args.publish_only)
+        if publishing:
+            downloads = {}
+            for arch, output in zip(ARCHES, outputs):
+                downloads[arch] = json.loads((output / "published.json").read_text())["download"]
+            summary = ROOT / "build/releases" / f"{args.version}-{args.build}-{args.channel}-downloads.json"
+            summary.write_text(json.dumps(dict(version=args.version, build=args.build, downloads=downloads), indent=2) + "\n")
+            print(f"Both architectures published. Website download links: {summary}")
+            for arch, url in downloads.items():
+                print(f"{arch}: {url}")
+        else:
+            print("Both notarized builds are ready. Nothing published.")
+            for output in outputs:
+                print(f"Output: {output}")
+            print(f"Publish after testing: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel {args.channel} --publish-only")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"Release stopped: {error}")

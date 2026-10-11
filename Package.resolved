@@ -1,14 +1,23 @@
 {
-  "pins" : [
+  "pins": [
     {
-      "identity" : "yams",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/jpsim/Yams.git",
-      "state" : {
-        "revision" : "3d6871d5b4a5cd519adf233fbb576e0a2af71c17",
-        "version" : "5.4.0"
+      "identity": "sparkle",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/sparkle-project/Sparkle.git",
+      "state": {
+        "revision": "eef1a539a373c1f1a320624b1130fc5de7b2e100",
+        "version": "2.10.0"
+      }
+    },
+    {
+      "identity": "yams",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/jpsim/Yams.git",
+      "state": {
+        "revision": "3d6871d5b4a5cd519adf233fbb576e0a2af71c17",
+        "version": "5.4.0"
       }
     }
   ],
-  "version" : 2
+  "version": 2
 }

@@ -84,9 +84,14 @@ final class Tab: NSObject, WKNavigationDelegate {
         site.root = app.root
         if Site.devURL == nil {
             // The folder must exist for FSEvents to follow it; an index.html put there later is picked up.
-            try? FileManager.default.createDirectory(at: app.root, withIntermediateDirectories: true)
-            // An edit in the folder reloads the page or a plugin; a dev server has its own live reload.
-            watcher = FolderWatcher(app.root) { [weak self] in self?.siteChanged($0) }
+            watcher = nil
+            do {
+                try Site.prepareDirectory(app.root)
+                // An edit reloads the page or a plugin; a dev server has its own live reload.
+                watcher = FolderWatcher(app.root) { [weak self] in self?.siteChanged($0) }
+            } catch {
+                print("site: cannot create folder \(app.root.path): \(error)")
+            }
         }
         print("\(app.name):", pageURL.absoluteString, Site.devURL == nil ? "← \(app.root.path)" : "")
         reload()
