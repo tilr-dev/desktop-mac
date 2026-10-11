@@ -124,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard probing, !probed, tab === tabs.first else { return }
         probed = true
         Task { @MainActor in
+            await probeReloadHistory()
             await probeWeb(tab)
             probePalette()
             probeSpaces()
@@ -255,6 +256,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: Probe
+
+    /// Exercise real WebKit navigation, including installing into an empty folder.
+    @MainActor
+    func probeReloadHistory() async {
+        guard Site.devURL == nil else { return }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-history-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = Site.App(name: "history-probe", root: root)
+        let tab = Tab(app: app, control: config.control, browser: config.browser, sshAgent: config.sshAgent)
+        func loaded() async {
+            for _ in 0..<200 {
+                if tab.isLoaded { return }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            preconditionFailure("Reload history probe timed out")
+        }
+        func cleanHistory() {
+            precondition(!tab.webView.canGoBack && !tab.webView.canGoForward, "Reload added navigation history")
+        }
+        tab.show(app)
+        tab.watcher = nil // Drive changes explicitly so each assertion observes one navigation.
+        await loaded()
+        let placeholder = tab.webView
+        let index = root.appendingPathComponent("index.html")
+        try! "<html><body>first</body></html>".write(to: index, atomically: true, encoding: .utf8)
+        tab.siteChanged([index.path])
+        await loaded()
+        precondition(tab.webView !== placeholder, "Placeholder history survived installation")
+        cleanHistory()
+        let page = tab.webView
+        _ = try? await page.evaluateJavaScript("localStorage.setItem('reload-probe', 'saved'); window.probeMarker = true")
+        try! "<html><body>second</body></html>".write(to: index, atomically: true, encoding: .utf8)
+        tab.siteChanged([index.path])
+        await loaded()
+        precondition(tab.webView === page, "Index edit unnecessarily replaced WebView")
+        let fresh = try? await page.evaluateJavaScript("document.body.textContent === 'second' && window.probeMarker === undefined && localStorage.getItem('reload-probe') === 'saved'") as? Bool
+        precondition(fresh == true, "Index edit did not fully reload or lost storage")
+        cleanHistory()
+        tab.reload()
+        await loaded()
+        cleanHistory()
+        try! FileManager.default.removeItem(at: index)
+        tab.siteChanged([index.path])
+        await loaded()
+        precondition(tab.webView !== page, "Removed index kept app history")
+        cleanHistory()
+        try! "<html><body>third</body></html>".write(to: index, atomically: true, encoding: .utf8)
+        tab.siteChanged([index.path])
+        await loaded()
+        let saved = try? await tab.webView.evaluateJavaScript("localStorage.getItem('reload-probe')") as? String
+        precondition(saved == "saved", "Replacing WebView lost persistent storage")
+        _ = try? await tab.webView.evaluateJavaScript("localStorage.removeItem('reload-probe')")
+        cleanHistory()
+        print("reload history: index edit, manual reload, placeholder transitions, persistent storage: ok")
+    }
 
     /// `--probe`, web part: reports what loaded, clicks through the header's clock menu from JS and,
     /// with `--snapshot PATH`, saves pictures of the top corners of the page.

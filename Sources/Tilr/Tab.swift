@@ -7,7 +7,7 @@ import WebKit
 final class Tab: NSObject, WKNavigationDelegate {
     private(set) var app: Site.App
     let site: SiteSchemeHandler
-    let webView: WKWebView
+    private(set) var webView: WKWebView
     /// The page's web views (WebViews.swift): subviews of `webView`, gone with the page.
     let webViews: WebViewHost
     /// The page's audio players (Audio.swift): they outlive the page, a reload keeps them playing.
@@ -80,8 +80,10 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// Points the web view at the app's folder (or the dev server) and watches it. Called at
     /// launch and whenever the config moves the app to another folder.
     func show(_ app: Site.App) {
+        let moved = self.app != app
         self.app = app
         site.root = app.root
+        if moved { resetWebView() }
         if Site.devURL == nil {
             // The folder must exist for FSEvents to follow it; an index.html put there later is picked up.
             watcher = nil
@@ -99,7 +101,33 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     func reload() {
         isLoaded = false
-        webView.load(URLRequest(url: pageURL, cachePolicy: .reloadIgnoringLocalCacheData))
+        let url = pageURL
+        if webView.url == url {
+            webView.reloadFromOrigin()
+        } else {
+            // Crossing between the placeholder and the app starts a fresh history.
+            if webView.url != nil || webView.isLoading { resetWebView() }
+            webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
+        }
+    }
+
+    /// WKWebView has no public history-clear API. Keep the configuration (data store,
+    /// scripts and bridges), but replace the view when the app itself changes.
+    private func resetWebView() {
+        let old = webView
+        old.navigationDelegate = nil
+        old.stopLoading()
+        webViews.removeAll()
+        agent.closeAll()
+        isLoaded = false
+        let next = WKWebView(frame: old.frame, configuration: old.configuration)
+        next.navigationDelegate = self
+        next.underPageBackgroundColor = old.underPageBackgroundColor
+        next.isInspectable = old.isInspectable
+        next.autoresizingMask = old.autoresizingMask
+        next.isHidden = old.isHidden
+        webView = next
+        old.superview?.replaceSubview(old, with: next)
     }
 
     /// Debug mode switched: the user scripts again, with or without the collector, and a reload
