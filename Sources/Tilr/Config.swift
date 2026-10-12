@@ -217,6 +217,16 @@ struct Config: Decodable {
         var history: Double
         /// Seconds between process samples.
         var sample: Double
+        /// Seconds `/usr/bin/footprint` may run for a Performance `footprint` request (Memory.swift).
+        var footprintTimeout: Double
+        /// Seconds `squeeze` waits after the low-memory notification before reading `after`.
+        var squeezeSettle: Double
+
+        enum CodingKeys: String, CodingKey {
+            case enabled, dir, history, sample
+            case footprintTimeout = "footprint_timeout"
+            case squeezeSettle = "squeeze_settle"
+        }
     }
 
     /// `~/Library/Application Support/dev.tilr.mac`: the user's own instance.
@@ -420,6 +430,8 @@ struct Config: Decodable {
           dir: \(shownDir)/debug  # default destination for ctl debug record JSON
           history: 60     # deprecated; shared web history is 120 seconds
           sample: 0.5     # deprecated; shared web sampler runs once per second
+          footprint_timeout: 5  # seconds /usr/bin/footprint may run for Performance footprint / ctl debug footprint
+          squeeze_settle: 2     # seconds squeeze (org.WebKit.lowMemory) waits before reading the footprint again
 
         """
 

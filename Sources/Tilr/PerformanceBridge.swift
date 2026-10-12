@@ -4,6 +4,9 @@ import UniformTypeIdentifiers
 
 /// Demand-driven samples for the optional Performance plugin. No native timer or background
 /// task: each request reads once. Disabling the plugin drops the sampler's CPU baselines.
+/// Messages: `'sample'`, `'reset'`, `{ op: 'save' | 'open' }` (recording files), and
+/// `{ type: 'footprint' | 'squeeze' | 'inspector' }` (Memory.swift: memory categories,
+/// org.WebKit.lowMemory with before/after, Web Inspector).
 final class PerformanceBridge: NSObject, WKScriptMessageHandlerWithReply {
     static let name = "tilrPerformance"
     weak var tab: Tab?
@@ -63,31 +66,27 @@ final class PerformanceBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
             return
         }
+        if let request = message.body as? [String: Any], let type = request["type"] as? String {
+            switch type {
+            case "footprint": Memory.footprint(Memory.targets(tab)) { replyHandler($0, nil) }
+            case "squeeze": Memory.squeeze(tab) { replyHandler($0, nil) }
+            case "inspector": replyHandler(Memory.inspector(tab), nil)
+            default: replyHandler(nil, "Unknown performance request.")
+            }
+            return
+        }
         if message.body as? String == "reset" { reset(); replyHandler([], nil); return }
         guard message.body as? String == "sample" else { replyHandler(nil, "Unknown performance request."); return }
         // Native providers mount their views beneath the page's container. A process shared by
         // multiple views is read only once and its scope explicitly lists those views.
-        var views: [WKWebView] = []
-        func walk(_ view: NSView) {
-            if let web = view as? WKWebView { views.append(web) }
-            for child in view.subviews { walk(child) }
-        }
-        walk(tab.webView)
-        var scopes: [pid_t: [String]] = [:]
-        for (index, view) in views.enumerated() {
-            if let pid = ProcessSampler.webContentPID(view) {
-                scopes[pid, default: []].append(index == 0 ? "page" : "embedded-\(index)")
-            }
-        }
+        let pages = Memory.webContent(tab)
         let now = Date().timeIntervalSince1970 * 1000
         var result: [[String: Any]] = []
-        for (pid, scope) in scopes.sorted(by: { $0.key < $1.key }) {
-            if let sample = sampler.read(pid, name: "WebContent", at: now) {
-                result.append(row(sample, scope: scope.joined(separator: "+")))
-            }
+        for page in pages {
+            if let sample = sampler.read(page.pid, name: "WebContent", at: now) { result.append(row(sample, scope: page.scope)) }
         }
         if let sample = sampler.read(getpid(), name: "Tilr", at: now) { result.append(row(sample, scope: "app")) }
-        sampler.retainPIDs(Set(scopes.keys).union([getpid()]))
+        sampler.retainPIDs(Set(pages.map(\.pid)).union([getpid()]))
         replyHandler(result, nil)
     }
 

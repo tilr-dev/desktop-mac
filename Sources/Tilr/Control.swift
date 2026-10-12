@@ -21,6 +21,11 @@ import WebKit
 ///                                                   performance.record(), waits, writes finish()'s recording
 ///                                                   (refused while the Performance window records) to path (default
 ///                                                   debug.dir/<date>.json); { path, summary: [lines] }
+///   { "cmd": "debug", "action": "footprint" }       { processes: [{ pid, role, scope, footprint, reclaimable,
+///                                                   categories: { malloc, graphics, js, jit, other } }], took } (bytes, ms)
+///   { "cmd": "debug", "action": "squeeze" }         posts org.WebKit.lowMemory (every WebKit process on the Mac);
+///                                                   { method: 'notify', before, after, processes, … } (bytes)
+///   { "cmd": "debug", "action": "inspect" }         opens Web Inspector for the tab: { shown } or { shown: false, reason }
 ///
 /// `call` runs a method of a service of the page's cordis root (`window.tilr.root.get(service)`):
 /// `plugins.list / toggle / reload`, `layout.list / open / close / float / tile`,
@@ -234,7 +239,7 @@ final class ControlServer {
         }
     }
 
-    /// `debug`: status, on, off, record (Debug.swift).
+    /// `debug`: status, on, off, record (Debug.swift); footprint, squeeze, inspect (Memory.swift).
     @MainActor
     private func debugCommand(_ tab: Tab, _ request: [String: Any]) async throws -> [String: Any] {
         let service = "const p = globalThis.tilr?.services?.performance; if (!p) throw new Error('Install and enable the Performance web plugin first.');"
@@ -289,8 +294,16 @@ final class ControlServer {
             else { throw Failure(message: "performance: invalid recording") }
             let written = try debug.write(dump: dump, path: request["path"] as? String)
             return ["path": written.path, "summary": written.summary]
+        case "footprint":
+            // Memory.swift: /usr/bin/footprint categories of the tab's WebContent processes and Tilr.
+            return await withCheckedContinuation { done in Memory.footprint(Memory.targets(tab)) { done.resume(returning: $0) } }
+        case "squeeze":
+            // org.WebKit.lowMemory (system-wide), then the WebContent footprint ~debug.squeeze_settle s later.
+            return await withCheckedContinuation { done in Memory.squeeze(tab) { done.resume(returning: $0) } }
+        case "inspect":
+            return Memory.inspector(tab)
         default:
-            throw Failure(message: "performance: expected status, on, off or record")
+            throw Failure(message: "performance: expected status, on, off, record, footprint, squeeze or inspect")
         }
     }
 

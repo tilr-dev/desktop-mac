@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     origins: Site.apps(config: config).map { "tilr://\($0.host)" },
                                     allowed: Config.isDefaultDir && !probing)
         debug = DebugMode(settings: config.debug)
+        Memory.settings = config.debug
         shell = Shell(settings: config.window)
         shell.changed = { [weak self] _ in self?.buildMenu() }
         applyConfig()
@@ -152,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         config = loaded
         applyConfig()
         debug.configChanged(config.debug)
+        Memory.settings = config.debug
         LocalServerHost.shared.configChanged(settings: config.localServer,
                                              origins: Site.apps(config: config).map { "tilr://\($0.host)" },
                                              allowed: Config.isDefaultDir && !probing)

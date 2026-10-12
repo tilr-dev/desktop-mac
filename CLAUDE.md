@@ -51,7 +51,16 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
   | `Shell.swift` | `CGSMainConnectionID`, `CGSGetActiveSpace`, `CGSCopyManagedDisplaySpaces`, `CGSCopySpacesForWindows`; `SLSBridgedMoveWindowsToManagedSpaceOperation.initWithWindows:spaceID:` / `performWithWMBridgeDelegate` (symbol/class/method/ABI guards); `CGSMoveWindowsToManagedSpace` only before macOS 14.5 | `next-desktop`, `--probe` round trip | explicit unavailable on unsupported systems; async result verified by exact desktop membership, timeout reports failure; no SIP changes |
   | `../../native-plugins/Sources/BrowserWebKit/BrowserAutomation.swift` | `WKWebView._simulateMouseMove:` (`NSSelectorFromString`, `responds(to:)`) | native browser hover; enabled by `browser.automation_private_input` | explicit unavailable error; click uses public AppKit input, scroll uses DOM `scrollBy` |
   | `Debug.swift` | `WKWebView._webProcessIdentifier` (`NSSelectorFromString` + `responds(to:)`, `value(forKey:)`) | demand-driven Performance bridge: WebContent pids | unavailable (never includes unrelated apps) |
+  | `Memory.swift` | `WKWebView._inspector` → `_WKInspector.show`; `WKPreferences._setDeveloperExtrasEnabled:` (KVC `developerExtrasEnabled`, set on request only) — all `NSSelectorFromString` + `responds(to:)`, never linked | Performance `{type:'inspector'}`, `tilr ctl debug inspect`: open Web Inspector for the tab's page | `{ shown: false, reason }`; Safari → Develop → Tilr (`isInspectable`) |
 
+- **Memory diagnosis** (`Memory.swift`, Performance bridge `{type:'footprint'|'squeeze'|'inspector'}`,
+  `tilr ctl debug footprint|squeeze|inspect`): `footprint` runs `/usr/bin/footprint -j` (public tool,
+  off the main thread, `debug.footprint_timeout`) on the tab's WebContent processes and Tilr and
+  reports malloc / graphics / js / jit / other. `squeeze` posts the Darwin notification
+  `org.WebKit.lowMemory` (public `notify_post`): it is **system-wide** — every WebKit process on the
+  Mac (Safari, Mail, other apps) drops caches, not only Tilr's. WebKit has no per-view or
+  per-process memory-pressure call (checked on macOS 26: nothing on `WKWebView`, `WKProcessPool`,
+  `WKWebsiteDataStore`). Test: `python3 scripts/test_footprint.py`.
 - To see and drive the running app, use Tilr Control (`Sources/Tilr/Control.swift`): `tilr ctl
   snapshot PATH`, `tilr ctl console`, `tilr ctl call SERVICE.METHOD …` (the CLI of the web repo),
   or the `tilr` MCP server. After a Swift change, check it in the test instance (`./run.sh --test`).
