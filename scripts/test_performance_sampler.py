@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 source = (Path(__file__).resolve().parents[1] / 'Sources/Tilr/Debug.swift').read_text()
-source = source[source.index('final class ProcessSampler {'):source.index("/// The page's side of debug mode:")]
+source = source[source.index('final class ProcessSampler {'):len(source)]
 checks = r'''
 let sampler = ProcessSampler()
 let pid = getpid()

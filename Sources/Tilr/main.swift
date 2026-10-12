@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var nativePluginSettings = Config.fallback.nativePlugins
     let palette = Palette()
     var control: ControlServer?
-    /// Debug mode (Debug.swift): `debug.enabled` at launch, switched by the palette and control.
+    /// Compatibility settings and JSON export for the single Performance collector.
     var debug: DebugMode!
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
@@ -45,13 +45,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     origins: Site.apps(config: config).map { "tilr://\($0.host)" },
                                     allowed: Config.isDefaultDir && !probing)
         debug = DebugMode(settings: config.debug)
-        debug.tabs = { [unowned self] in tabs }
-        debug.changed = { [unowned self] in buildMenu() }
         shell = Shell(settings: config.window)
         shell.changed = { [weak self] _ in self?.buildMenu() }
         applyConfig()
-        // The tabs were made with the collector when debug is on at launch; the sampler starts.
-        debug.launched()
         shell.open()
         // default.yml is ours; only the user's file matters.
         configWatcher = FolderWatcher(Config.dir) { [weak self] paths in
@@ -177,13 +173,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .reload: current?.reload()
         case .allDesktops: shell.toggleAllSpaces()
         case .nextDesktop: shell.moveToNextSpace()
-        case .debug: debug.toggle()
+        case .debug:
+            current?.webView.evaluateJavaScript("if (globalThis.tilr?.services?.performance) tilr.services.performance.open(); else alert('Install and enable the Performance web plugin first.')", completionHandler: nil)
         }
     }
 
-    /// A command's row in the palette and the menu: a state of its own for `debug`.
+    /// The legacy debug action opens the shared Performance window.
     func title(_ command: Config.Command) -> String {
-        command.action == .debug ? debug.title(command.title) : command.title
+        command.action == .debug ? "Performance…" : command.title
     }
 
     @objc func reload() { current?.reload() }

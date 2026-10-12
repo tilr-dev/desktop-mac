@@ -12,12 +12,14 @@ import WebKit
 ///   { "cmd": "console", "clear": false }            the page's console.* and errors, oldest first
 ///   { "cmd": "eval", "js": "return 1 + 1" }         the body of an async function in the page
 ///   { "cmd": "call", "service": "plugins", "method": "toggle", "args": ["counter"] }
-///   { "cmd": "debug", "action": "status" }         debug mode (Debug.swift): enabled, dir, history,
-///                                                   sample, react (the page's build), recording
-///   { "cmd": "debug", "action": "on" }              on or off: every page reloads; the status after
+///   { "cmd": "debug", "action": "status" }         Performance service: enabled, react (the page's
+///                                                   build), mechanism, active (a page recording), dir,
+///                                                   recording (a CLI record); mechanism 'none' + reason
+///                                                   while the page loads or without the plugin
+///   { "cmd": "debug", "action": "on" }              shared Performance switch in the selected tab; reload scheduled
 ///   { "cmd": "debug", "action": "record", "seconds": 5, "path": "~/x.json" }
-///                                                   waits, writes the page's __tilrPerf.dump plus the
-///                                                   process samples of that window to path (default
+///                                                   performance.record(), waits, writes finish()'s recording
+///                                                   (refused while the Performance window records) to path (default
 ///                                                   debug.dir/<date>.json); { path, summary: [lines] }
 ///
 /// `call` runs a method of a service of the page's cordis root (`window.tilr.root.get(service)`):
@@ -235,47 +237,60 @@ final class ControlServer {
     /// `debug`: status, on, off, record (Debug.swift).
     @MainActor
     private func debugCommand(_ tab: Tab, _ request: [String: Any]) async throws -> [String: Any] {
-        /// The page's React build, read only from a page at rest.
-        func react() async -> Any {
-            guard tab.isLoaded else { return NSNull() }
-            return (try? await evaluate(tab, body: "return globalThis.tilr?.react ?? null", arguments: [:])) ?? NSNull()
-        }
-        func status() async -> [String: Any] {
-            ["enabled": debug.enabled, "dir": debug.dir, "history": debug.settings.history,
-             "sample": debug.settings.sample, "react": await react(), "recording": debug.recording]
-        }
+        let service = "const p = globalThis.tilr?.services?.performance; if (!p) throw new Error('Install and enable the Performance web plugin first.');"
         let action = request["action"] as? String ?? "status"
         switch action {
         case "status":
-            return await status()
-        case "on", "off":
-            debug.set(action == "on")
-            return await status()
-        case "record":
-            guard debug.enabled else { throw Failure(message: "debug: off; tilr ctl debug on") }
-            guard !debug.recording else { throw Failure(message: "debug: a record is in progress") }
-            let seconds = (request["seconds"] as? NSNumber)?.doubleValue ?? 5
-            guard seconds > 0 else { throw Failure(message: "debug: seconds must be positive") }
-            debug.recording = true
-            debug.sampler.holdSince = Date().timeIntervalSince1970 * 1000 - seconds * 1000
-            defer {
-                debug.recording = false
-                debug.sampler.holdSince = nil
+            // Answers even while the page loads or without the plugin: { enabled: false, mechanism: 'none', reason }.
+            var result: [String: Any]
+            if !tab.isLoaded {
+                result = ["enabled": false, "mechanism": "none", "reason": "The page is still loading"]
+            } else {
+                do {
+                    let value = try await evaluate(tab, body: "const p = globalThis.tilr?.services?.performance; if (!p) return { enabled: false, mechanism: 'none', reason: globalThis.tilr ? 'The Performance web plugin is not installed or not enabled' : 'The page is still loading' }; return { enabled: p.enabled, react: tilr.react, mechanism: 'performance', active: p.recording === true };", arguments: [:])
+                    result = value as? [String: Any] ?? ["enabled": false, "mechanism": "none", "reason": "Unexpected reply from the page"]
+                } catch {
+                    result = ["enabled": false, "mechanism": "none", "reason": Self.describe(error)]
+                }
             }
-            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard debug.enabled else { throw Failure(message: "debug: turned off during the record") }
-            // A page in the middle of a navigation gets a few seconds to settle.
-            for _ in 0..<50 where !tab.isLoaded { try await Task.sleep(nanoseconds: 100_000_000) }
-            guard tab.isLoaded else { throw Failure(message: "debug: the page is loading; try again") }
-            let value = try await evaluate(tab, body: """
-                if (!globalThis.__tilrPerf) throw new Error('no __tilrPerf in the page')
-                return globalThis.__tilrPerf.dump(seconds)
-                """, arguments: ["seconds": seconds])
-            guard let dump = value as? [String: Any] else { throw Failure(message: "debug: the dump is not an object") }
-            let written = try debug.write(dump: dump, seconds: seconds, react: dump["react"] ?? NSNull(), path: request["path"] as? String)
+            result["dir"] = debug.dir
+            result["recording"] = debug.recording
+            return result
+        case "on", "off":
+            return try await evaluate(tab, body: service + "if (p.enabled !== on) setTimeout(() => { void p.enable(on) }, 0); return { mechanism: 'performance', requested: on, reloading: p.enabled !== on };", arguments: ["on": action == "on"]) as? [String: Any] ?? [:]
+        case "record":
+            guard !debug.recording else { throw Failure(message: "performance: a CLI record is in progress") }
+            let seconds = (request["seconds"] as? NSNumber)?.doubleValue ?? 5
+            guard seconds.isFinite && seconds > 0 && seconds <= 60 else { throw Failure(message: "performance: seconds must be in (0, 60]") }
+            // The service's own recording: record() puts the collector's frame loop on demand
+            // ('recording') until finish(), so the samples carry FPS.
+            let start: Any
+            do { start = try await evaluate(tab, body: service + "if (!p.enabled) throw new Error('Performance collection is off'); if (p.recording === true) throw new Error('A recording is already running (Performance window)'); const t = performance.now(); p.record(); return { t, origin: performance.timeOrigin };", arguments: [:]) } catch {
+                // Never hijack a recording started in the Performance window.
+                let message = Self.describe(error)
+                if message.contains("A recording is already running") { throw Failure(message: "performance: a recording is already running in the Performance window; stop it there first") }
+                throw Failure(message: "performance: " + message.replacingOccurrences(of: "Error: ", with: ""))
+            }
+            guard let start = start as? [String: Any], let t = (start["t"] as? NSNumber)?.doubleValue else { throw Failure(message: "performance: missing start") }
+            debug.recording = true
+            defer { debug.recording = false }
+            // finish() returns the recording cut to its window (incl. dropped), null when none was in
+            // progress; an older plugin's finish() returns undefined: snapshot() + DebugMode.cut.
+            let finish = service + "if (performance.timeOrigin !== origin) throw new Error('The page reloaded during the recording'); const r = p.finish(); if (r === null) throw new Error('Collection stopped during the recording'); if (r !== undefined) return { recording: r }; const d = p.snapshot(); if (!d) throw new Error('Collection stopped during the recording'); return { snapshot: d };"
+            do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch {
+                _ = try? await evaluate(tab, body: finish, arguments: start)
+                throw error
+            }
+            let value = try await evaluate(tab, body: finish, arguments: start)
+            let reply = value as? [String: Any]
+            let dump: [String: Any]
+            if let recording = reply?["recording"] as? [String: Any] { dump = recording }
+            else if let snapshot = reply?["snapshot"] as? [String: Any] { dump = DebugMode.cut(snapshot, from: t) }
+            else { throw Failure(message: "performance: invalid recording") }
+            let written = try debug.write(dump: dump, path: request["path"] as? String)
             return ["path": written.path, "summary": written.summary]
         default:
-            throw Failure(message: "debug: unknown action \"\(action)\"; one of status, on, off, record")
+            throw Failure(message: "performance: expected status, on, off or record")
         }
     }
 

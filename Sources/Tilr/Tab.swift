@@ -54,7 +54,7 @@ final class Tab: NSObject, WKNavigationDelegate {
             controller.addUserScript(WKUserScript(source: ConsoleRelay.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
             controller.add(relay, name: ConsoleRelay.name)
         }
-        if let collector { controller.addUserScript(PerfCollector.userScript(collector)) }
+        if let collector { controller.addUserScript(WKUserScript(source: collector, injectionTime: .atDocumentStart, forMainFrameOnly: true)) }
         controller.add(agent, name: AgentHost.name)
         controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
         controller.addScriptMessageHandler(performanceBridge, contentWorld: .page, name: PerformanceBridge.name)
@@ -129,18 +129,6 @@ final class Tab: NSObject, WKNavigationDelegate {
         next.isHidden = old.isHidden
         webView = next
         old.superview?.replaceSubview(old, with: next)
-    }
-
-    /// Debug mode switched: the user scripts again, with or without the collector, and a reload
-    /// (a user script applies to the next navigation).
-    func setCollector(_ source: String?) {
-        let controller = webView.configuration.userContentController
-        controller.removeAllUserScripts()
-        if catchesConsole {
-            controller.addUserScript(WKUserScript(source: ConsoleRelay.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
-        }
-        if let source { controller.addUserScript(PerfCollector.userScript(source)) }
-        reload()
     }
 
     func log(type: String, text: String) {

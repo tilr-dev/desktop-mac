@@ -413,16 +413,13 @@ struct Config: Decodable {
           # Bytes read from the agent at a time, the most one event to the page carries.
           chunk: 65536
 
-        # Performance recording: off by default. When on, the page gets a collector (window.__tilrPerf)
-        # and the app samples its processes; `tilr ctl debug record N` writes a JSON file.
-        # Switching it (here, from the palette's debug command or `tilr ctl debug on|off`) reloads
-        # every page; the palette and tilr ctl override enabled until it changes here.
+        # Compatibility settings for the single web Performance collector.
+        # The debug action opens Performance; ctl debug on/off changes its per-tab switch.
         debug:
-          enabled: false
-          # Where a record goes without a path, as <yyyy-MM-dd_HH-mm-ss>.json.
-          dir: \(shownDir)/debug
-          history: 60      # seconds the collector keeps
-          sample: 0.5      # process sampling period, seconds
+          enabled: false  # seed collection on first navigation; web switch wins afterwards
+          dir: \(shownDir)/debug  # default destination for ctl debug record JSON
+          history: 60     # deprecated; shared web history is 120 seconds
+          sample: 0.5     # deprecated; shared web sampler runs once per second
 
         """
 
