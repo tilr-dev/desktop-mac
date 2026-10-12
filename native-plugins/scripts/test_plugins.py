@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 import plugin
 
 
@@ -81,6 +82,28 @@ class Packages(unittest.TestCase):
         file = self.directory / 'audio/0.1.0.tilrplugin/Contents/Resources/manifest.json'
         file.write_text(file.read_text() + ' ')
         self.assertIn('invalid code signature', self.check_host(False))
+
+    def test_third_party_mode_still_rejects_tampered_packages(self):
+        (self.config / 'config.yml').write_text('native_plugins: { enabled: [audio], allow_third_party: true }\n')
+        self.install()
+        file = self.directory / 'audio/0.1.0.tilrplugin/Contents/Resources/manifest.json'
+        file.write_text(file.read_text() + ' ')
+        self.assertIn('invalid code signature', self.check_host(False))
+
+    def test_installer_requires_opt_in_for_another_publisher(self):
+        for publisher in ['OTHER_TEAM', None]:
+            with patch.object(plugin, 'signature', side_effect=[publisher, 'TILR_TEAM']):
+                with self.assertRaisesRegex(ValueError, 'signing team'):
+                    plugin.verify(self.source, APP)
+            with patch.object(plugin, 'signature', side_effect=[publisher, 'TILR_TEAM']):
+                self.assertEqual(plugin.verify(self.source, APP, allow_third_party=True)['id'], 'audio')
+
+    def test_installer_probes_target_config_before_activation(self):
+        # Invalid permission config must fail closed before executing plugin code.
+        (self.config / 'config.yml').write_text('native_plugins: { allow_third_party: [invalid] }\n')
+        with self.assertRaises(subprocess.CalledProcessError):
+            plugin.install(self.source, self.directory, app=APP, allow_third_party=True)
+        self.assertFalse((self.directory / 'audio/active.json').exists())
 
     def test_incompatible_abi_rejected_by_installer_and_host(self):
         self.resign(abi=99)

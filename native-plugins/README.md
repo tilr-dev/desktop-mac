@@ -64,8 +64,41 @@ version to update it. A failed check leaves the active version unchanged.
 Both initial plugins use **in-process modules**. They are trusted native code,
 not sandboxed extensions. A plugin failure can affect the app. The initial
 publisher policy accepts the app's signing team; ad-hoc development apps accept
-valid ad-hoc plugins. Arbitrary third-party signing teams and subprocess plugins
-are not supported in ABI 1.
+valid ad-hoc plugins. Users of release builds can explicitly allow other publishers
+and ad-hoc packages in their instance's `config.yml` (Tilr → Native Plugin Settings…):
+
+```yaml
+native_plugins:
+  allow_third_party: true
+  enabled: [browser-webkit, audio, my-plugin]
+```
+
+This permission defaults to false and takes effect **after restart**, including
+when disabling it. Native code already loaded into the process cannot be revoked
+or unloaded. About reports the loaded versions, errors, and third-party providers.
+The setting does not install every package: only IDs in `enabled` are loaded.
+
+A plugin author can fork this repository, add a dynamic SwiftPM product using the
+SDK and a `manifests/my-plugin.json`, then build without an Apple Developer account:
+
+```sh
+python3 scripts/plugin.py build my-plugin --arch arm64 --version 0.1.0
+python3 scripts/plugin.py install dist/arm64/my-plugin.tilrplugin \
+  --app /Applications/Tilr.app --allow-third-party
+```
+
+The build adds a free ad-hoc signature. Completely signatureless or damaged
+packages remain rejected. `--allow-third-party` accepts the package's publisher
+in the installer; the app's probe separately checks the target instance's permission
+before activating it. For a custom plugin directory, supply `--config INSTANCE_DIR`
+if the instance config is not its parent. Neither command edits the user's permission.
+
+Release hosts carry Apple's `com.apple.security.cs.disable-library-validation`
+entitlement to support the user's choice. This exception is fixed at signing time;
+the configuration is a Tilr loader policy, not a switch for the OS entitlement.
+Third-party native code runs with Tilr's process access. ABI 1 provides no sandbox
+or subprocess isolation. Downloaded packages may additionally be subject to macOS
+Gatekeeper/quarantine policy; the installer does not remove quarantine.
 
 Installing/updating a native package never replaces or rebuilds the application.
 **Restart Tilr to load a newly installed native version.** The loader never
@@ -81,6 +114,7 @@ The default configuration enables `browser-webkit` and `audio`:
 
 ```yaml
 native_plugins:
+  allow_third_party: false   # other publishers/ad-hoc packages; at launch
   directory: native-plugins   # relative to the instance's config directory
   enabled: [browser-webkit, audio]
   request_timeout: 30         # seconds; at launch
@@ -169,6 +203,17 @@ continue to route through the native browser provider. For headless validation:
 
 `apps/mac/run.sh` and release packaging include bootstrap packages. Public app
 releases sign them with the app's identity and include them in notarization.
-Independently distributed public plugin packages also need the publisher's
-normal signing/notarization distribution workflow; this CLI does not publish or
-notarize packages automatically.
+The vendor release set is every `manifests/*.json` in this repository. Add the
+manifest and its SwiftPM dynamic product to include a new vendor plugin in future
+app releases automatically (also with `release.py --native-plugins DIR`).
+`release.command` builds plugins for both architectures; `upload.command` publishes
+those completed DMGs without rebuilding. `release.json` records plugin IDs,
+versions, ABIs and binary checksums. Publishing checks the inventory against the
+bundled packages and refuses architecture pairs with different versions/ABIs.
+Plugin versions are independent: update their source manifests when making a new
+plugin release; changing the app's build number does not bump plugin versions.
+These commands include bootstrap packages in the app update, not a separate
+automatic plugin feed. An external active version continues to take precedence.
+Independent plugin distribution may use Developer ID signing/notarization for
+normal macOS distribution, or ad-hoc packages with user opt-in as above. This CLI
+does not publish or notarize independent packages automatically.

@@ -54,14 +54,16 @@ def signature(path):
     return None if team is None or team[1] == 'not set' else team[1]
 
 
-def verify(package, app=None, development=False, arch=None):
+def verify(package, app=None, development=False, arch=None, allow_third_party=False):
+    if allow_third_party and app is None:
+        raise ValueError('--allow-third-party requires --app and its runtime permission')
     package = Path(package)
     if package.is_symlink() or any(p.is_symlink() for p in package.rglob('*')):
         raise ValueError('Plugin packages may not contain symlinks')
     team = signature(package)
     if app:
         host_team = signature(app)
-        if team != host_team or (team is None and not development):
+        if not allow_third_party and (team != host_team or (team is None and not development)):
             raise ValueError('Plugin and app must share a signing team (ad-hoc requires --development)')
     elif not development:
         raise ValueError('Use --app /path/to/Tilr.app to verify publisher, or --development for a local build')
@@ -162,14 +164,16 @@ def activate(folder, version):
     atomic_json(active, data)
 
 
-def probe(package, app, timeout):
+def probe(package, app, timeout, config=None):
     if app:
-        run(Path(app) / 'Contents/MacOS/Tilr', '--check-native-plugin', package,
-            capture_output=True, timeout=timeout)
+        command = [Path(app) / 'Contents/MacOS/Tilr', '--check-native-plugin', package]
+        if config is not None:
+            command += ['--config', config]
+        run(*command, capture_output=True, timeout=timeout)
 
 
-def install(package, directory, *, app=None, development=False, probe_timeout=30):
-    data = verify(package, app, development)
+def install(package, directory, *, app=None, development=False, probe_timeout=30, allow_third_party=False, config=None):
+    data = verify(package, app, development, allow_third_party=allow_third_party)
     folder = Path(directory) / data['id']
     with locked(folder):
         destination = folder / f'{data["version"]}.tilrplugin'
@@ -178,20 +182,20 @@ def install(package, directory, *, app=None, development=False, probe_timeout=30
         with tempfile.TemporaryDirectory(prefix='.install-', dir=folder) as temp:
             staged = Path(temp) / destination.name
             shutil.copytree(package, staged)
-            verify(staged, app, development)  # Verify the copied bytes, not just the source.
-            probe(staged, app, probe_timeout)
+            verify(staged, app, development, allow_third_party=allow_third_party)  # Verify the copied bytes, not just the source.
+            probe(staged, app, probe_timeout, config or Path(directory).parent)
             staged.rename(destination)
         activate(folder, data['version'])
     return data
 
 
-def rollback(id, directory, *, app=None, development=False, probe_timeout=30):
+def rollback(id, directory, *, app=None, development=False, probe_timeout=30, allow_third_party=False, config=None):
     folder = Path(directory) / component(id)
     with locked(folder):
         active = json.loads((folder / 'active.json').read_text())
         version = component(active.get('previous'), True)
-        verify(folder / f'{version}.tilrplugin', app, development)
-        probe(folder / f'{version}.tilrplugin', app, probe_timeout)
+        verify(folder / f'{version}.tilrplugin', app, development, allow_third_party=allow_third_party)
+        probe(folder / f'{version}.tilrplugin', app, probe_timeout, config or Path(directory).parent)
         activate(folder, version)
     return version
 
@@ -216,18 +220,20 @@ def main():
         if name != 'list':
             command.add_argument('--app', type=Path)
             command.add_argument('--development', action='store_true')
+            command.add_argument('--allow-third-party', action='store_true', help='Accept another publisher/ad-hoc package; the target app config must also allow it')
+            command.add_argument('--config', type=Path, help='Target instance config directory (default: parent of --directory)')
             command.add_argument('--probe-timeout', type=float, default=30, help='Seconds allowed for the app ABI probe')
     args = parser.parse_args()
     if args.command == 'build':
         for path in build(args.ids, configuration=args.configuration, arch=args.arch, identity=args.identity, output=args.output, version=args.version):
             print(path)
     elif args.command == 'verify':
-        print(json.dumps(verify(args.package, args.app, args.development), indent=2))
+        print(json.dumps(verify(args.package, args.app, args.development, allow_third_party=args.allow_third_party), indent=2))
     elif args.command == 'install':
-        print(json.dumps(install(args.package, args.directory, app=args.app, development=args.development, probe_timeout=args.probe_timeout), indent=2))
+        print(json.dumps(install(args.package, args.directory, app=args.app, development=args.development, probe_timeout=args.probe_timeout, allow_third_party=args.allow_third_party, config=args.config), indent=2))
         print('Installed. Restart Tilr to activate the native module; the application bundle is unchanged.')
     elif args.command == 'rollback':
-        print('Selected', rollback(args.id, args.directory, app=args.app, development=args.development, probe_timeout=args.probe_timeout), 'for the next launch.')
+        print('Selected', rollback(args.id, args.directory, app=args.app, development=args.development, probe_timeout=args.probe_timeout, allow_third_party=args.allow_third_party, config=args.config), 'for the next launch.')
     else:
         for path in sorted(args.directory.glob('*/active.json')):
             print(path.parent.name, path.read_text().strip())
