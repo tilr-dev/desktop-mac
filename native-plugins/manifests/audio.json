@@ -1,0 +1,16 @@
+{
+  "id": "audio",
+  "version": "0.1.0",
+  "abi": 1,
+  "minOS": "14.0",
+  "product": "NativeAudio",
+  "bridges": {
+    "tilrAudio": "audio"
+  },
+  "services": [
+    "audio"
+  ],
+  "events": [
+    "tilr-audio"
+  ]
+}
