@@ -92,11 +92,15 @@ def completed(directory, version, build, arch, feed, key):
     expected = dict(version=version, build=build, arch=arch, feed=feed, public_key=key)
     if any(meta.get(name) != value for name, value in expected.items()):
         raise ValueError(f"Existing release does not match requested version/build/channel/key: {directory}")
+    from bundle_plugins import describe_plugins
+    print(f"Completed native plugins ({arch}): {describe_plugins(meta.get('native_plugins', []))}", flush=True)
+    return [(p['id'], p['version'], p['abi']) for p in meta.get('native_plugins', [])]
 
 
 def execute(version, build, channel, config, publish=False, resume=False, notes=None, root=ROOT, runner=run, publish_only=False):
     """Never start publishing until BOTH architecture builds have completed."""
     outputs = []
+    inventories = []
     for arch in ARCHES:
         output = root / "build/releases" / f"{version}-{build}-{arch}"
         env = os.environ.copy()
@@ -105,13 +109,16 @@ def execute(version, build, channel, config, publish=False, resume=False, notes=
         if output.exists():
             if not resume and not publish_only:
                 raise ValueError(f"Output already exists: {output}. Use --resume for completed builds.")
-            completed(output, version, build, arch, env["TILR_UPDATE_FEED"], config["TILR_UPDATE_PUBLIC_KEY"])
+            inventory = completed(output, version, build, arch, env["TILR_UPDATE_FEED"], config["TILR_UPDATE_PUBLIC_KEY"])
         else:
             if publish_only:
                 raise ValueError(f"Missing completed release: {output}. Publish-only never builds missing artifacts.")
             runner([sys.executable, root / "scripts/release.py", "--version", version, "--build", str(build), "--arch", arch], env=env)
-            completed(output, version, build, arch, env["TILR_UPDATE_FEED"], config["TILR_UPDATE_PUBLIC_KEY"])
+            inventory = completed(output, version, build, arch, env["TILR_UPDATE_FEED"], config["TILR_UPDATE_PUBLIC_KEY"])
+        inventories.append(inventory)
         outputs.append(output)
+    if inventories[0] != inventories[1]:
+        raise ValueError('Native plugin versions/ABIs differ between architecture releases')
     if publish:
         # Prepare/validate both feeds before exposing either update.
         for should_publish in (False, True):

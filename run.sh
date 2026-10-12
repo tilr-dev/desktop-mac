@@ -72,7 +72,7 @@ echo "web sources: $(cd ../../web 2>/dev/null && pwd)/src   (npm run dev:site th
 echo "site folder: $site"
 echo "config:      $cfg"
 
-swift build -c release
+swift build --build-system native -c release
 app=build/Tilr.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 # A new file, not a copy over the old one: the kernel caches a bundle's code signature by inode,
@@ -92,7 +92,8 @@ ditto .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sp
 rm -rf "$app/Contents/Resources/web"
 cp placeholder.html "$app/Contents/Resources/"
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
-codesign --force --sign - "$app" 2>/dev/null || true
+python3 ../../native-plugins/scripts/plugin.py build --output "$app/Contents/PlugIns"
+codesign --force --sign - --entitlements Tilr.entitlements "$app"
 # One Tilr per config folder: the one running holds that folder's control socket and window.
 # Stops the instance in $cfg/tilr.pid when that pid is a Tilr of this folder (one started with
 # --config, for a test folder; one without, for the user's), and waits for it to go.

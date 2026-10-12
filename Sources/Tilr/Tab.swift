@@ -8,10 +8,8 @@ final class Tab: NSObject, WKNavigationDelegate {
     private(set) var app: Site.App
     let site: SiteSchemeHandler
     private(set) var webView: WKWebView
-    /// The page's web views (WebViews.swift): subviews of `webView`, gone with the page.
-    let webViews: WebViewHost
-    /// The page's audio players (Audio.swift): they outlive the page, a reload keeps them playing.
-    let audio = AudioHost()
+    /// Separately installed native providers, scoped to this app/tab.
+    var nativePlugins: NativePluginSession!
     /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
     let agent: AgentHost
     private let localServer = LocalServerBridge()
@@ -41,12 +39,11 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     /// `control`: with Tilr Control on, the page's console is caught for it. `browser`: how the
     /// page's web views are made. `collector`: debug mode's script (Debug.swift), nil while off.
-    init(app: Site.App, control: Config.Control?, browser: Config.Browser, sshAgent: Config.SSHAgent, collector: String? = nil) {
+    init(app: Site.App, control: Config.Control?, browser: Config.Browser, native: Config.NativePlugins, sshAgent: Config.SSHAgent, collector: String? = nil) {
         self.app = app
         consoleLimit = control?.console ?? 0
         catchesConsole = control != nil
         site = SiteSchemeHandler(root: app.root)
-        webViews = WebViewHost(settings: browser)
         agent = AgentHost(settings: sshAgent)
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = Instance.store
@@ -57,17 +54,14 @@ final class Tab: NSObject, WKNavigationDelegate {
             controller.add(relay, name: ConsoleRelay.name)
         }
         if let collector { controller.addUserScript(PerfCollector.userScript(collector)) }
-        controller.add(webViews, name: WebViewHost.name)
-        controller.add(audio, name: AudioHost.name)
         controller.add(agent, name: AgentHost.name)
         controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         localServer.tab = self
-        webViews.tab = self
-        audio.send = { [weak self] in self?.send(event: AudioHost.event, detail: $0) }
-        audio.siteFile = { [weak self] in self?.siteFile($0) }
+        nativePlugins = NativePluginSession(tab: self, settings: native, browser: browser)
+        nativePlugins.attach(to: controller)
         agent.send = { [weak self] in self?.send(event: AgentHost.event, detail: $0) }
         webView.navigationDelegate = self
         webView.underPageBackgroundColor = .black
@@ -120,7 +114,7 @@ final class Tab: NSObject, WKNavigationDelegate {
         let old = webView
         old.navigationDelegate = nil
         old.stopLoading()
-        webViews.removeAll()
+        nativePlugins.pageDidNavigate()
         agent.closeAll()
         isLoaded = false
         let next = WKWebView(frame: old.frame, configuration: old.configuration)
@@ -216,14 +210,21 @@ final class Tab: NSObject, WKNavigationDelegate {
         guard url.scheme == SiteSchemeHandler.scheme, let host = url.host else { return nil }
         let others = (NSApp.delegate as? AppDelegate)?.tabs.map(\.app) ?? []
         guard let owner = ([app] + others).first(where: { $0.host == host }) else { return nil }
-        return AudioHost.file(in: owner.root, path: url.path)
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard !parts.isEmpty, !parts.contains("..") else { return nil }
+        let root = owner.root.resolvingSymlinksInPath().standardizedFileURL
+        let file = parts.reduce(root) { $0.appendingPathComponent($1) }.resolvingSymlinksInPath().standardizedFileURL
+        guard file.path.hasPrefix(root.path + "/") else { return nil }
+        var directory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &directory), !directory.boolValue else { return nil }
+        return file
     }
 
     /// The page is leaving (a reload, another URL): its web views have no page to follow, its
-    /// agent connections no page to report to. The audio players stay (AudioHost).
+    /// agent connections no page to report to. The native audio session stays.
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         isLoaded = false
-        webViews.removeAll()
+        nativePlugins.pageDidNavigate()
         agent.closeAll()
     }
 

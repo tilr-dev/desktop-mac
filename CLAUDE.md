@@ -3,8 +3,17 @@
 WKWebView shell: one window, a tab per app from the config (no tab bar, switched by shortcut),
 each a folder served as `tilr://<name>/`.
 The page's web views (the `webviews` service of the web repo, a plugin's browser window) are
-WKWebViews of ours placed over the page (`Sources/Tilr/WebViews.swift`), in an overlay of their
+WKWebViews supplied by the separately compiled `browser-webkit` plugin
+(`../../native-plugins/Sources/BrowserWebKit`), in an AppKit SDK overlay of their
 own, ordered and masked (holes) as the page stacks their hosts: a float over a browser tile shows.
+Native audio also lives in `../../native-plugins`. This app depends only on the SDK's
+Objective-C ABI headers; never add provider implementations back to this target. Generic
+native placement belongs in `TilrPluginViews`, not the browser engine. See
+[native plugin SDK, installation and lifecycle](../../native-plugins/README.md).
+`NativePlugins.swift` loads signed versioned packages and owns per-tab sessions. Native
+updates take effect after restart. Package/ABI checks: `python3 scripts/test_native_plugins.py`;
+add `--gui` in a desktop session for the browser/app probes.
+
 Swift Package, AppKit, no Xcode project. `./run.sh` builds and starts the app; `./run.sh --probe`
 runs the self-check (page, palette, app switching, Space move) and quits — run it after changes,
 as `./run.sh --test --probe`. The config folder (`~/Library/Application Support/dev.tilr.mac`, or `--config DIR` / `TILR_CONFIG`)
@@ -40,7 +49,7 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
   | File | Symbol | Feature | Fallback |
   |---|---|---|---|
   | `Shell.swift` | `CGSMainConnectionID`, `CGSGetActiveSpace`, `CGSCopyManagedDisplaySpaces`, `CGSCopySpacesForWindows`; `SLSBridgedMoveWindowsToManagedSpaceOperation.initWithWindows:spaceID:` / `performWithWMBridgeDelegate` (symbol/class/method/ABI guards); `CGSMoveWindowsToManagedSpace` only before macOS 14.5 | `next-desktop`, `--probe` round trip | explicit unavailable on unsupported systems; async result verified by exact desktop membership, timeout reports failure; no SIP changes |
-  | `BrowserAutomation.swift` | `WKWebView._simulateMouseMove:` (`NSSelectorFromString`, `responds(to:)`) | native browser hover; enabled by `browser.automation_private_input` | explicit unavailable error; click uses public AppKit input, scroll uses DOM `scrollBy` |
+  | `../../native-plugins/Sources/BrowserWebKit/BrowserAutomation.swift` | `WKWebView._simulateMouseMove:` (`NSSelectorFromString`, `responds(to:)`) | native browser hover; enabled by `browser.automation_private_input` | explicit unavailable error; click uses public AppKit input, scroll uses DOM `scrollBy` |
   | `Debug.swift` | `WKWebView._webProcessIdentifier` (`NSSelectorFromString` + `responds(to:)`, `value(forKey:)`) | debug mode's sampler: the pages' WebContent pids | every WebContent process by name (`proc_listpids` + `proc_name`) |
 
 - To see and drive the running app, use Tilr Control (`Sources/Tilr/Control.swift`): `tilr ctl

@@ -98,6 +98,11 @@ def validate_manifest(directory):
                 "SUPublicEDKey": meta["public_key"]}
     if any(info.get(key) != value for key, value in expected.items()):
         raise ValueError("Release metadata differs from the application bundle")
+    from bundle_plugins import plugin_inventory
+    plugins = plugin_inventory(directory / 'Tilr.app')
+    if plugins or 'native_plugins' in meta:
+        if meta.get('native_plugins') != plugins:
+            raise ValueError('Native plugins differ from the completed release inventory')
     if meta.get("packaging") == 1:
         from release_packaging import audit
         audit(directory / "Tilr.app", meta["arch"])
@@ -282,6 +287,8 @@ def main():
         parser.error("maximum_deltas must be a non-negative integer")
     directory = args.release.resolve()
     meta, dmg = validate_manifest(directory)
+    from bundle_plugins import describe_plugins
+    print(f"Publishing native plugins ({meta['arch']}): {describe_plugins(meta.get('native_plugins', []))}", flush=True)
     # Covers separate publisher processes on this Mac. Do not run releases concurrently on other Macs.
     (ROOT / "build").mkdir(exist_ok=True)
     with (ROOT / "build/publish.lock").open("w") as lock:

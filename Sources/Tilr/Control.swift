@@ -220,8 +220,13 @@ final class ControlServer {
             return ["value": try await evaluate(try tab(), body: body, arguments: ["service": service, "method": method, "args": args])]
         case "debug":
             return try await debugCommand(try tab(), request)
+        case "native-plugins":
+            return ["plugins": try tab().nativePlugins.status()]
+        case "native-call":
+            guard let service = request["service"] as? String else { throw Failure(message: "native-call: service required") }
+            return try await tab().nativePlugins.request(service: service, body: request["request"] as? [String: Any] ?? [:])
         case "browser":
-            return try await browserCommand(try tab(), request)
+            return try await tab().nativePlugins.request(service: "browser", body: request)
         default:
             throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug, browser")
         }

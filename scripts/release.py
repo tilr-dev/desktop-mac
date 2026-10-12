@@ -35,10 +35,12 @@ def embed_framework(app, framework, identity="-", arch=None):
         sign(path, identity)
 
 
-def sign(path, identity):
+def sign(path, identity, entitlements=None):
     args = ["codesign", "--force", "--sign", identity]
     if identity != "-":
         args += ["--options", "runtime", "--timestamp"]
+    if entitlements:
+        args += ["--entitlements", entitlements]
     run(*args, path)
 
 
@@ -53,6 +55,7 @@ def main():
     parser.add_argument("--skip-build", action="store_true", help="Package an already-built matching binary")
     parser.add_argument("--build-package", type=Path, default=ROOT, help="Swift package directory (default: this repo)")
     parser.add_argument("--framework", type=Path, help="Override the Sparkle.framework artifact path")
+    parser.add_argument("--native-plugins", type=Path, help="Prebuilt signed bootstrap packages; default: build from ../../native-plugins")
     parser.add_argument("--swift-disable-sandbox", action="store_true", help="For SwiftPM inside an existing sandbox")
     args = parser.parse_args()
     if args.preview and args.publish:
@@ -128,6 +131,8 @@ def main():
         if dsym.exists():
             run("ditto", dsym, symbols / dsym.name)
         embed_framework(app, framework, identity, args.arch)
+        from bundle_plugins import bundle_plugins, verify_plugin_publishers, plugin_inventory, describe_plugins
+        bundle_plugins(app, args.arch, identity, args.native_plugins)
         from bundle_server import bundle_server
         server = bundle_server(app, args.arch, args.build, preview=args.preview)
         info.update(TilrServerProtocolVersion=server["protocolVersion"],
@@ -137,7 +142,10 @@ def main():
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump(info, file)
         audit(app, args.arch)
-        sign(app, identity)
+        sign(app, identity, ROOT / 'Tilr.entitlements')
+        verify_plugin_publishers(app)
+        plugins = plugin_inventory(app)
+        print(f"Bundled native plugins ({args.arch}): {describe_plugins(plugins)}", flush=True)
         run("codesign", "--verify", "--deep", "--strict", "--verbose=2", app)
         if not args.preview:
             upload = output / "notarization.zip"
@@ -166,6 +174,7 @@ def main():
             "version": args.version, "build": args.build, "arch": args.arch, "packaging": 1,
             "preview": args.preview, "dmg": dmg.name,
             "sha256": sha256,
+            "native_plugins": plugins,
             "feed": feed, "public_key": key,
         }, indent=2) + "\n")
     success(f"\n{'LOCAL PREVIEW — not notarized' if args.preview else 'SIGNED AND NOTARIZED'}: {dmg}")

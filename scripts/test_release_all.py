@@ -39,6 +39,16 @@ class ReleaseAllTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(Path(cmd[1]).name == "release.py" for cmd in calls))
 
+    def test_plugin_version_mismatch_prevents_publication(self):
+        calls = []
+        with patch.object(release_all, 'completed', side_effect=[
+                [('audio', '0.1.0', 1)], [('audio', '0.1.1', 1)]]), \
+             self.assertRaisesRegex(ValueError, 'Native plugin versions'):
+            release_all.execute('0.1.0', 1, 'stable', self.config, publish=True, root=self.root,
+                                runner=lambda cmd, **kw: calls.append(cmd))
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(Path(cmd[1]).name == 'release.py' for cmd in calls))
+
     def test_resume_reuses_both_builds_but_checks_them(self):
         for arch in release_all.ARCHES:
             (self.root / "build/releases" / f"0.1.0-1-{arch}").mkdir(parents=True)

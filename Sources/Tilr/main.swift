@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var configWatcher: FolderWatcher?
     /// The defaults until config.yml is read; the last good config after that.
     var config = Config.fallback
+    var nativePluginSettings = Config.fallback.nativePlugins
     let palette = Palette()
     var control: ControlServer?
     /// Debug mode (Debug.swift): `debug.enabled` at launch, switched by the palette and control.
@@ -19,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
     var updater: SPUStandardUpdaterController?
+    let about = About()
 
     var tabs: [Tab] { shell.tabs }
     var current: Tab? { shell.current }
@@ -28,13 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !probing, !CommandLine.arguments.contains("--no-updates"),
            Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") is String,
            Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") is String {
-            updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+            updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: about, userDriverDelegate: nil)
         }
         Config.writeDefaults()
         Instance.launched()
         // A broken config at launch keeps the defaults. The mode is read here, once; the rest
         // of window: applies on every config change.
         if let loaded = Config.load() { config = loaded }
+        nativePluginSettings = config.nativePlugins
         LocalServerHost.shared.didUpdate = { [weak self] in
             self?.tabs.forEach { $0.send(event: "tilr-local-server-ready", detail: [:]) }
         }
@@ -73,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         control?.stop()
+        tabs.forEach { $0.nativePlugins.stop() }
         Instance.terminating()
     }
 
@@ -88,17 +92,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let kept = apps.map { app in
             if let tab = tabs.first(where: { $0.app.name == app.name }) {
                 if tab.app.root != app.root { tab.show(app) }
-                tab.webViews.settings = config.browser
+                tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
                 tab.agent.settings = config.sshAgent
                 return tab
             }
             // Control is read at launch: a tab made later still follows that choice.
-            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser,
+            let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser, native: nativePluginSettings,
                           sshAgent: config.sshAgent, collector: debug.collector)
+            tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
             tab.didLoad = { [weak self] in self?.loaded($0) }
             tab.show(app)
             return tab
         }
+        for tab in tabs where !kept.contains(where: { $0 === tab }) { tab.nativePlugins.stop() }
         shell.setTabs(kept)
         buildMenu()
         if apps.count > 1 { print("apps:", apps.map(\.name)) }
@@ -130,7 +136,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard probing, !probed, tab === tabs.first else { return }
         probed = true
         Task { @MainActor in
-            await probeBrowserAutomation(settings: config.browser)
+            do { _ = try await tab.nativePlugins.request(service: "browser", body: ["action": "probe"]) }
+            catch {
+                print("native browser probe FAILED:", error.localizedDescription)
+                Instance.terminating()
+                exit(EXIT_FAILURE)
+            }
             await probeReloadHistory()
             await probeWeb(tab)
             probePalette()
@@ -190,8 +201,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the terminal. The Edit menu is what makes ⌘C / ⌘V work inside the web view. The
     /// Commands menu mirrors the config's control plane, with each command's key. The Apps menu
     /// lists the tabs; the current one is checked.
+    @objc func showAbout() {
+        let plugins = tabs.flatMap { tab in
+            tab.nativePlugins.status().map { entry in
+                let id = entry["id"] as? String ?? "Unknown"
+                if let version = entry["version"] as? String {
+                    let publisher = entry["publisher"] as? String == "third-party" ? " · third-party" : ""
+                    return "\(id) \(version) — loaded\(publisher)"
+                }
+                return "\(tab.app.name): \(id) — \(entry["error"] as? String ?? "unavailable")"
+            }
+        }
+        about.show(updater: updater, pluginStatus: Array(Set(plugins)).sorted())
+    }
     @objc func showLocalServer() { LocalServerHost.shared.showStatus() }
     @objc func checkServerUpdates() { LocalServerHost.shared.checkUpdates(userInitiated: true) }
+    @objc func showNativePluginSettings() {
+        Config.writeDefaults()
+        NSWorkspace.shared.open(Config.file)
+    }
 
     func buildMenu() {
         let main = NSMenu()
@@ -234,7 +262,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             check.isEnabled = false
             check.toolTip = "Updates are available in signed release builds."
         }
-        var appItems: [NSMenuItem] = [check,
+        var appItems: [NSMenuItem] = [item("About Tilr", #selector(showAbout), ""), check,
+                                    item("Native Plugin Settings…", #selector(showNativePluginSettings), ""),
                                     item("Local Server…", #selector(showLocalServer), ""),
                                     item("Check for Server Updates…", #selector(checkServerUpdates), ""), .separator()]
         appItems.append(item("Quit Tilr", #selector(NSApplication.terminate(_:)), "q"))
@@ -277,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let app = Site.App(name: "history-probe", root: root)
-        let tab = Tab(app: app, control: config.control, browser: config.browser, sshAgent: config.sshAgent)
+        let tab = Tab(app: app, control: config.control, browser: config.browser, native: config.nativePlugins, sshAgent: config.sshAgent)
         func loaded() async {
             for _ in 0..<200 {
                 if tab.isLoaded { return }
@@ -519,6 +548,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+}
+
+// Validate signatures, ABI and factories without WindowServer or starting services.
+// Useful for installers/CI; does not modify configuration or a running instance.
+if let index = CommandLine.arguments.firstIndex(of: "--check-native-plugin") {
+    do {
+        guard CommandLine.arguments.indices.contains(index + 1) else {
+            throw NativePluginFailure(message: "--check-native-plugin needs a package path")
+        }
+        guard let config = Config.load() else { throw NativePluginFailure(message: "invalid configuration") }
+        try NativePluginLibrary.checkPackage(URL(fileURLWithPath: CommandLine.arguments[index + 1]), allowThirdParty: config.nativePlugins.allowThirdParty)
+        exit(EXIT_SUCCESS)
+    } catch {
+        print("native plugin check FAILED:", error.localizedDescription)
+        exit(EXIT_FAILURE)
+    }
+}
+if CommandLine.arguments.contains("--check-native-plugins") {
+    do {
+        let config = Config.load() ?? Config.fallback
+        for id in config.nativePlugins.enabled {
+            let library = try NativePluginLibrary.open(id: id, directory: URL(fileURLWithPath: Config.resolve(config.nativePlugins.directory)), allowThirdParty: config.nativePlugins.allowThirdParty)
+            let plugin = try library.make()
+            plugin.stop()
+            print("native plugin check: \(id) \(library.manifest.version) ABI \(plugin.abiVersion) ← \(library.url.path)")
+        }
+        exit(EXIT_SUCCESS)
+    } catch {
+        print("native plugin check FAILED:", error.localizedDescription)
+        exit(EXIT_FAILURE)
+    }
 }
 
 let app = NSApplication.shared

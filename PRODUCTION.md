@@ -448,3 +448,39 @@ for beta. To resume an existing release, use explicit version/build with
 `release_all.py --resume`. Successful builds print artifact paths and the publish-only
 command. There are no terminal questions or final Return prompt. macOS Keychain
 access prompts, if any, remain controlled by the key's existing access permissions.
+
+
+## Нативные плагины
+
+Браузер WebKit и аудио собираются из отдельного репозитория `../../native-plugins`.
+Приложение зависит только от его SDK. `run.sh` и `release.py` кладут стартовые
+пакеты в `Contents/PlugIns`; release подписывает их тем же Developer ID и включает
+в нотарификацию приложения. `release.py --native-plugins DIR` принимает готовые
+подписанные пакеты для нужной архитектуры. Проверяется совпадение издателя с приложением.
+
+Установленные пользователем версии лежат вне `.app`: каталог `native_plugins.directory`
+в конфигурации экземпляра (по умолчанию `<config>/native-plugins`). Указатель `active.json`
+выбирает неизменяемую версию пакета. Она приоритетнее стартовой и сохраняется при обновлении
+приложения. Обновление плагина не меняет `.app`; загруженный нативный модуль заменяется
+при следующем запуске Tilr. Cordis-плагины по-прежнему перезагружаются на лету.
+
+Сборка, установка, откат и ограничения ABI описаны в
+[README нативных плагинов](../../native-plugins/README.md). Проверка:
+`python3 scripts/test_native_plugins.py`; интерактивные проверки добавляет `--gui`.
+Команда `tilr ctl native-plugins` показывает загруженные версии и ошибки.
+
+`release.command` пересобирает нативные пакеты для обеих архитектур. В `release.json`
+сохраняются ID, версия, ABI и SHA-256 бинарника каждого пакета. `upload.command`
+показывает этот состав, проверяет его по готовому `.app` и публикует ранее собранный
+DMG. Разные версии/ABI плагинов в ARM и Intel релизах останавливают публикацию.
+Версии задаются в `native-plugins/manifests/*.json` независимо от версии приложения.
+
+About показывает фактически загруженные версии, сторонних издателей и ошибки.
+Tilr → Native Plugin Settings… открывает `config.yml` экземпляра. Пользователь может
+добавить `native_plugins.allow_third_party: true` (в YAML-секцию `native_plugins`),
+чтобы разрешить сторонние и ad-hoc пакеты. По умолчанию настройка выключена;
+включение и выключение требуют перезапуска. `Tilr.entitlements` позволяет загрузку
+других издателей на уровне hardened runtime; решение принимает загрузчик по настройке.
+Сторонний код получает права процесса Tilr. Целостность подписи и совместимость ABI
+проверяются и при включённом разрешении. Встроенные release-пакеты всё равно подписываются
+издателем приложения и входят в нотарификацию.

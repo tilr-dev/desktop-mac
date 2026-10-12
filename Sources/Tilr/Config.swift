@@ -13,12 +13,14 @@ struct Config: Decodable {
     var controlPlane: ControlPlane
     var control: Control
     var browser: Browser
+    var nativePlugins: NativePlugins
     var sshAgent: SSHAgent
     var debug: Debug
     var localServer: LocalServer
 
     enum CodingKeys: String, CodingKey {
         case site, apps, window, control, browser, debug
+        case nativePlugins = "native_plugins"
         case sshAgent = "ssh_agent"
         case switching = "switch"
         case controlPlane = "control_plane"
@@ -131,8 +133,46 @@ struct Config: Decodable {
         var console: Int
     }
 
+    struct NativePlugins: Decodable {
+        var directory: String
+        var enabled: [String]
+        var allowThirdParty: Bool
+        var requestTimeout: Double
+        var options: [String: PluginValue]
+        enum CodingKeys: String, CodingKey {
+            case directory, enabled, options
+            case allowThirdParty = "allow_third_party"
+            case requestTimeout = "request_timeout"
+        }
+    }
+
+    /// Plugin-owned JSON configuration, extensible without changing the app schema.
+    indirect enum PluginValue: Decodable {
+        case null, bool(Bool), number(Double), string(String)
+        case array([PluginValue]), object([String: PluginValue])
+        init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            if c.decodeNil() { self = .null }
+            else if let v = try? c.decode(Bool.self) { self = .bool(v) }
+            else if let v = try? c.decode(Double.self) { self = .number(v) }
+            else if let v = try? c.decode(String.self) { self = .string(v) }
+            else if let v = try? c.decode([PluginValue].self) { self = .array(v) }
+            else { self = .object(try c.decode([String: PluginValue].self)) }
+        }
+        var value: Any {
+            switch self {
+            case .null: return NSNull()
+            case .bool(let v): return v
+            case .number(let v): return v
+            case .string(let v): return v
+            case .array(let v): return v.map(\.value)
+            case .object(let v): return v.mapValues(\.value)
+            }
+        }
+    }
+
     /// The page's web views (WebViews.swift): a browser window of a plugin is a WKWebView of ours.
-    struct Browser: Decodable {
+    struct Browser: Codable {
         /// The User-Agent the views send; empty for WebKit's own.
         var userAgent: String
         /// Bytes a tunnel reads from a connection at a time (Tunnel.swift).
@@ -324,6 +364,15 @@ struct Config: Decodable {
           socket: \(shownDir)/control.sock
           # Console messages kept per app for the console command.
           console: 500
+
+        # Independently compiled native plugins. User versions override bundled versions.
+        # Directory and enabled set apply at launch; replacing loaded code needs a restart.
+        native_plugins:
+          allow_third_party: false # accept other publishers/ad-hoc native code with Tilr's process access; at launch
+          directory: "native-plugins"
+          enabled: [browser-webkit, audio]
+          request_timeout: 30  # seconds before a native control request fails; at launch
+          options: {}         # per-plugin JSON settings, keyed by plugin id; hot reloaded
 
         # The page's web views: a plugin's browser window is a WKWebView of the app's, placed over
         # the window's content (the webviews service of the page). Applies to views made after
