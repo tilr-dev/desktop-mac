@@ -242,26 +242,71 @@ The plist's `AssociatedBundleIdentifiers` (the app's bundle id, `dev.tilr.mac`) 
 Items and the "Background Items Added" notice show the job as Tilr rather than the signing team
 (macOS 13+; the binary and the app must share a Team ID); a job lacking the key is migrated like
 a zsh one below.
-A job written by an earlier Tilr (`/bin/zsh -lc 'exec …'`, otherwise identical)
-is migrated: the plist is rewritten; a running job is left running with its
-terminals and picks up the new definition at its next bootstrap (next login), a
-stopped one is booted out and bootstrapped at once. Any other differing plist is
-still refused. Standalone installations are
+A plist of ours with another definition (a job written by an earlier Tilr through
+`/bin/zsh -lc 'exec …'` or without the association, a changed port or environment) is
+rewritten and applied. "Ours" = Label `dev.tilr.server` and `ProgramArguments` running the
+installed `tilr-server`, directly or through `/bin/zsh -lc`; any other plist under that name,
+or a loaded job of that name without the file, is refused with a message naming the file.
+launchd keeps a loaded definition until bootout, so applying it means a restart:
+- the job is stopped, or the server reports no live panes → `bootout` + `bootstrap` at once,
+  then the usual wait for the port;
+- the server has live panes, or does not answer → only the file is rewritten and
+  `server/restart-pending` is written. `Tilr > Local Server…` then says "A new service
+  definition is waiting; restart to apply" and offers Restart Server… (confirmation: open
+  panes will close). The next launch applies it by itself if the server has no panes then.
+  "Pending" is read from launchd: `launchctl print`'s program, arguments and environment
+  (minus `OSLogRateLimit` and `XPC_*`, which launchd adds) against the plist; a login that
+  loaded the new file counts as applied and clears the marker. The marker decides only when
+  that output cannot be parsed.
+"Live panes" comes from `tilr-server ps --url ws://127.0.0.1:<port>` (the protocol's
+ListPanes over the server's WebSocket, with the stored token): a header plus one line per pane.
+After every `bootstrap`, a job that `launchctl print` shows loaded without a `pid` is
+`kickstart`ed. Standalone installations are
 not adopted or stopped; conflicting ports/services produce a visible error.
 The generated `origins.toml` allows configured Tilr app origins. Config changes
 are applied on app launch through a session-preserving reload.
 
 `Tilr > Check for Updates…` checks the **application**.
 `Tilr > Check for Server Updates…` checks the **server** and offers Update Server.
-`Tilr > Local Server…` shows the installed version/channel and any available update.
+`Tilr > Local Server…` shows the installed version/channel, any available update, a pending
+service definition (Restart Server…) and Remove Local Server…, and while Tilr works, the
+launchd step it is on.
 Opening it performs an authenticated connection check off the UI thread and shows
-«Запущен» with the actual running version, or «Не запущен или недоступен» when the
-server cannot be reached. «Обновить статус» repeats the check; connection failure
+"Running" with the actual running version, or "Not running or unreachable" when the
+server cannot be reached. "Refresh" repeats the check; connection failure
 is not treated as proof that the process has exited.
 By default server checks run at launch and every 24 hours; installation requires
 pressing Update Server. `local_server.update_channel`, `auto_check`,
 `check_interval`, network timeouts and size limits are documented in `default.yml`.
-A network/feed failure leaves the local server and credentials usable.
+A network/feed failure leaves the local server and credentials usable. A feed URL that answers
+anything but 200 (404 before the first release of a channel) means "No server release is
+published for <channel>/<arch>": a manual check says so, an automatic one only logs it. A
+non-200 on the binary download is "Server update download failed (HTTP <status>)".
+
+### Removal
+
+`local_server.enabled: false` in `config.yml` (at launch, or on save: the config is watched), or
+Remove Local Server… in `Tilr > Local Server…` (confirmation: open panes will close), removes
+what the app installed when the plist is ours (see above): `launchctl bootout
+gui/<uid>/dev.tilr.server`, the plist, and in `server/` the binary, `tilr-server.previous`,
+`app-managed*.json`, `origins.toml`, `runtime/` and a pending-restart marker. `server/state/`
+(sessions, token, logs) and `server.log` stay. A foreign plist is left alone with a notice.
+Only release builds (with a bundled server) remove, as only they install. The dialog then
+shows "Not installed"; the next launch with `enabled: true` (or setting it back to `true`)
+installs afresh from the bundle.
+
+macOS's Background Task Management database keeps its record of the agent after the plist is
+gone (`sfltool dumpbtm` still lists `8.dev.tilr.server`): launchd no longer knows the job and
+nothing runs, but there is no public API to delete one legacy agent's record.
+
+By hand, when the app is already gone:
+
+```sh
+launchctl bootout gui/$(id -u)/dev.tilr.server     # stops the server; its panes close
+rm ~/Library/LaunchAgents/dev.tilr.server.plist
+rm -rf ~/Library/Application\ Support/dev.tilr.mac/server   # binary, receipts, state (sessions, token, logs)
+# Everything of the app: rm -rf ~/Library/Application\ Support/dev.tilr.mac
+```
 The managed server's `update` command points to this independent server updater.
 The separate Linux/standalone server updater is unchanged.
 

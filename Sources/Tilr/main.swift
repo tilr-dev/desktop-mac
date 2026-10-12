@@ -156,6 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         config = loaded
         applyConfig()
         debug.configChanged(config.debug)
+        LocalServerHost.shared.configChanged(settings: config.localServer,
+                                             origins: Site.apps(config: config).map { "tilr://\($0.host)" },
+                                             allowed: Config.isDefaultDir && !probing)
     }
 
     func applyConfig() {

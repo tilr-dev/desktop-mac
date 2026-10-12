@@ -278,6 +278,9 @@ struct Config: Decodable {
         # Bundled terminal server. These settings apply at launch, in the default
         # production instance only; --probe and separate --config instances never install it.
         local_server:
+          # Also applies on reload. false stops Tilr's service, removes it from Login Items
+          # and deletes the installed server (sessions, tokens and logs in server/state are
+          # kept); true installs it again.
           enabled: true
           # Loopback port; 1..65535. Do not change while the managed service is loaded.
           port: 7890

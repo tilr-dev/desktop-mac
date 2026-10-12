@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 @main struct ServerUpdateTests {
-    static func main() throws {
+    static func main() async throws {
         let key = Curve25519.Signing.PrivateKey()
         let updater = ServerUpdates(feedURL: URL(string: "https://cdn.example/stable.json")!,
             publicKey: key.publicKey.rawRepresentation, channel: "stable", arch: "arm64", appBuild: 10,
@@ -39,6 +39,24 @@ import CryptoKit
         try updater.verifyBinary(bytes, release: release(2))
         reject { try updater.verifyBinary(bytes.dropLast(), release: release(2)) }
         reject { try updater.verifyBinary(Data(repeating: 65, count: bytes.count), release: release(2)) }
-        print("server updates: signed feeds, tampering, channels, duplicate builds, protocol/app compatibility, no downgrade, payload integrity: passed")
+        // A feed that answers 404 is "nothing published"; a binary that does is a failed download.
+        var missing = updater
+        missing.fetcher = { _, _, _ in throw ServerUpdates.HTTPStatus(code: 404) }
+        let noRelease = await failure { _ = try await missing.check(installed: initial) }
+        expect(noRelease is ServerUpdates.NoRelease)
+        expect(noRelease?.localizedDescription == "No server release is published for stable/arm64.")
+        // A manual check shows that sentence; an automatic one shows nothing.
+        expect(ServerUpdates.message(for: noRelease!, userInitiated: true) == "No server release is published for stable/arm64.")
+        expect(ServerUpdates.message(for: noRelease!, userInitiated: false) == nil)
+        let download = await failure { _ = try await missing.stage(release(2)) }
+        expect(download?.localizedDescription == "Server update download failed (HTTP 404)")
+        var served = updater
+        served.fetcher = { _, file, _ in try wire.write(to: file) }
+        expect(try await served.check(installed: initial)?.manifest.build == 4)
+        print("server updates: signed feeds, tampering, channels, duplicate builds, protocol/app compatibility, no downgrade, payload integrity, feed 404 = no release (manual shows it, automatic silent), binary 404 = download failure: passed")
+    }
+
+    static func failure(_ body: () async throws -> Void) async -> Error? {
+        do { try await body(); return nil } catch { return error }
     }
 }

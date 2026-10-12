@@ -29,6 +29,31 @@ struct ServerUpdates {
     let timeout: TimeInterval
     let maxFeedBytes: Int64
     let maxBinaryBytes: Int64
+    /// Tests: stands in for the HTTPS download (url, destination, size limit).
+    var fetcher: ((URL, URL, Int64) async throws -> Void)? = nil
+
+    /// A response other than 200.
+    struct HTTPStatus: LocalizedError {
+        let code: Int
+        var errorDescription: String? { "Server update download failed (HTTP \(code))" }
+    }
+    /// The feed answered, but not with a feed: nothing is published for this channel and architecture.
+    struct NoRelease: LocalizedError {
+        let channel: String
+        let arch: String
+        var errorDescription: String? { "No server release is published for \(channel)/\(arch)." }
+    }
+
+    /// What a failed check shows: a manual check shows the error; an automatic one shows
+    /// nothing (a missing feed or no network must not interrupt local use).
+    static func message(for error: Error, userInitiated: Bool) -> String? {
+        userInitiated ? error.localizedDescription : nil
+    }
+
+    private func fetch(_ url: URL, to file: URL, limit: Int64) async throws {
+        if let fetcher { return try await fetcher(url, file, limit) }
+        try await ServerDownload.fetch(url, to: file, limit: limit, timeout: timeout)
+    }
 
     func decode(_ data: Data) throws -> Feed {
         guard data.count <= maxFeedBytes else { throw ServerInstallation.Failure("Server update feed is too large") }
@@ -70,7 +95,11 @@ struct ServerUpdates {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("feed.json")
-        try await ServerDownload.fetch(feedURL, to: file, limit: maxFeedBytes, timeout: timeout)
+        do {
+            try await fetch(feedURL, to: file, limit: maxFeedBytes)
+        } catch is HTTPStatus {
+            throw NoRelease(channel: channel, arch: arch)
+        }
         return try candidate(in: decode(Data(contentsOf: file)), installed: installed)
     }
 
@@ -80,7 +109,7 @@ struct ServerUpdates {
         let dir = try temporaryDirectory()
         do {
             let file = dir.appendingPathComponent("tilr-server")
-            try await ServerDownload.fetch(release.url, to: file, limit: release.size, timeout: timeout)
+            try await fetch(release.url, to: file, limit: release.size)
             try verifyBinary(Data(contentsOf: file), release: release)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
             try JSONEncoder().encode(release.manifest).write(to: dir.appendingPathComponent("app-managed.json"), options: .atomic)
@@ -143,8 +172,10 @@ private final class ServerDownload: NSObject, URLSessionDownloadDelegate, @unche
     }
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         do {
-            guard let response = downloadTask.response as? HTTPURLResponse, response.statusCode == 200,
-                  response.url?.scheme == "https" else { throw ServerInstallation.Failure("Server update download failed (HTTP status)") }
+            guard let response = downloadTask.response as? HTTPURLResponse, response.url?.scheme == "https" else {
+                throw ServerInstallation.Failure("Server update download failed (no HTTPS response)")
+            }
+            guard response.statusCode == 200 else { throw ServerUpdates.HTTPStatus(code: response.statusCode) }
             let size = try FileManager.default.attributesOfItem(atPath: location.path)[.size] as? NSNumber
             guard let size, size.int64Value <= limit else { throw ServerInstallation.Failure("Server download exceeds its size limit") }
             if let failure { throw failure }

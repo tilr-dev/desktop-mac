@@ -11,12 +11,17 @@ import Darwin
         try fm.createDirectory(at: source, withIntermediateDirectories: true)
         var commands: [[String]] = []
         var loaded = false
-        var jobState = "state = running"
+        let runningState = "state = running\n\tpid = 4242"
+        var jobState = runningState
+        // Live panes the running server reports (`tilr-server ps`); nil = it does not answer.
+        var panes: Int? = 1
+        // Whether launchd starts the job on bootstrap; false leaves it loaded with no process.
+        var startsOnBootstrap = true
         var formats = "supervisor-state 1\npane-state 1"
         let installedFormats = formats
         var version = "1.0-build1-test"
         var signed = true
-        func expect(_ value: Bool) { precondition(value) }
+        func expect(_ value: Bool, line: UInt = #line) { precondition(value, "line \(line)") }
         func payload(_ build: Int, _ bytes: String) throws {
             version = "1.0-build\(build)-test"
             let data = Data(bytes.utf8)
@@ -32,7 +37,8 @@ import Darwin
                 if executable.lastPathComponent == "codesign" { return .init(status: signed ? 0 : 1, text: "") }
                 if executable.lastPathComponent == "launchctl" {
                     if args[0] == "print" { return .init(status: loaded ? 0 : 1, text: loaded ? jobState : "") }
-                    if args[0] == "bootstrap" { loaded = true; jobState = "state = running" }
+                    if args[0] == "bootstrap" { loaded = true; jobState = startsOnBootstrap ? runningState : "state = waiting" }
+                    if args[0] == "kickstart" { jobState = runningState }
                     if args[0] == "bootout" { loaded = false }
                     return .init(status: 0, text: "")
                 }
@@ -44,6 +50,11 @@ import Darwin
                     return .init(status: 0, text: executable.deletingLastPathComponent().path == source.path ? formats : installedFormats)
                 }
                 if args == ["token"] { return .init(status: 0, text: "test-token") }
+                if args.first == "ps" {
+                    guard let panes else { return .init(status: 1, text: "did not answer") }
+                    let rows = (0..<panes).map { "pane-\($0)  100  80x24  0  ~  (shell)" }
+                    return .init(status: 0, text: (["PANE  PID  SIZE  VIEWERS  CWD  COMMAND"] + rows).joined(separator: "\n"))
+                }
                 fatalError("unexpected command: \(args)")
             }, portCheck: {})
         func rejects(_ body: () throws -> Void) {
@@ -144,7 +155,7 @@ import Darwin
         expect(try programArguments().first == install.binary.path)
         let launchd = commands.filter { $0.first == "launchctl" && $0[1] != "print" }.map { $0[1] }
         expect(launchd == ["bootout", "bootstrap"])
-        expect(loaded && jobState == "state = running")
+        expect(loaded && jobState == runningState)
         // A direct job written before the app association (key missing or another value) is
         // rewritten the same way: running left alone, stopped replaced.
         for associated in [nil, ["dev.tilr.old"]] as [[String]?] {
@@ -152,7 +163,7 @@ import Darwin
             unassociated["AssociatedBundleIdentifiers"] = associated
             let unassociatedPlist = try PropertyListSerialization.data(fromPropertyList: unassociated, format: .xml, options: 0)
             try unassociatedPlist.write(to: install.plist)
-            jobState = "state = running"
+            jobState = runningState
             commands.removeAll()
             _ = try install.install()
             expect(try plistJob()["AssociatedBundleIdentifiers"] as? [String] == [ServerInstallation.appBundleIdentifier])
@@ -171,13 +182,87 @@ import Darwin
         _ = try install.install()
         expect(try programArguments().first == install.binary.path)
         expect(try plistJob()["AssociatedBundleIdentifiers"] as? [String] == [ServerInstallation.appBundleIdentifier])
-        // Only owned keys may differ: another environment, or another binary, is refused.
+        // Our job with another definition (here an extra environment variable) is applied:
+        // a running server with live panes keeps the old definition, the file is rewritten and a
+        // restart is pending; with no panes it is booted out and bootstrapped at once.
+        func launchdCalls() -> [String] { commands.filter { $0.first == "launchctl" && $0[1] != "print" }.map { $0[1] } }
+        func environment() throws -> [String: String] { try plistJob()["EnvironmentVariables"] as! [String: String] }
         var otherEnv = try plistJob()
-        otherEnv.removeValue(forKey: "AssociatedBundleIdentifiers")
-        otherEnv["EnvironmentVariables"] = ["TILR_STATE_DIR": "/elsewhere"]
+        var env = otherEnv["EnvironmentVariables"] as! [String: String]
+        env["TILR_EXTRA"] = "1"
+        otherEnv["EnvironmentVariables"] = env
+        let otherEnvPlist = try PropertyListSerialization.data(fromPropertyList: otherEnv, format: .xml, options: 0)
         let before = try Data(contentsOf: install.plist)
-        try PropertyListSerialization.data(fromPropertyList: otherEnv, format: .xml, options: 0).write(to: install.plist)
-        rejects { _ = try install.install() }
+        try? fm.removeItem(at: install.restartMarker)
+        for answer in [2, nil] as [Int?] {
+            try otherEnvPlist.write(to: install.plist)
+            loaded = true; jobState = runningState; panes = answer
+            commands.removeAll()
+            _ = try install.install()
+            expect(try environment()["TILR_EXTRA"] == nil)
+            expect(launchdCalls().isEmpty)
+            expect(install.restartPending())
+        }
+        // The panes closed: the next install (the next launch) applies the pending definition.
+        panes = 0
+        commands.removeAll()
+        _ = try install.install()
+        expect(launchdCalls() == ["bootout", "bootstrap"])
+        expect(!install.restartPending() && loaded)
+        commands.removeAll()
+        _ = try install.install()
+        expect(launchdCalls().isEmpty)
+        // No panes from the start: applied at once.
+        try otherEnvPlist.write(to: install.plist)
+        commands.removeAll()
+        _ = try install.install()
+        expect(launchdCalls() == ["bootout", "bootstrap"])
+        expect(try environment()["TILR_EXTRA"] == nil && !install.restartPending())
+        // Bootstrapped but held back (loaded, no pid): kickstarted.
+        try otherEnvPlist.write(to: install.plist)
+        startsOnBootstrap = false
+        commands.removeAll()
+        _ = try install.install()
+        expect(launchdCalls() == ["bootout", "bootstrap", "kickstart"])
+        expect(jobState == runningState)
+        startsOnBootstrap = true
+        // The dialog's Restart Server…: bootout and bootstrap whatever the panes.
+        panes = 3
+        commands.removeAll()
+        try install.restart()
+        expect(launchdCalls() == ["bootout", "bootstrap"])
+        panes = 1
+        // Pending is read from launchd: its loaded program/arguments/environment against the file.
+        // A login that loaded the new file clears a stale marker; a mismatch is pending without one.
+        let file = try plistJob()
+        let fileArgs = file["ProgramArguments"] as! [String]
+        func printed(_ args: [String], _ env: [String: String]) -> String {
+            (["gui/501/\(install.label) = {", "\tstate = running", "", "\tprogram = \(args[0])", "\targuments = {"]
+             + args.map { "\t\t" + $0 } + ["\t}", "", "\tinherited environment = {", "\t\tSSH_AUTH_SOCK => /x", "\t}",
+             "\tdefault environment = {", "\t\tPATH => /usr/bin", "\t}", "", "\tenvironment = {"]
+             + (env.merging(["OSLogRateLimit": "64", "XPC_SERVICE_NAME": install.label]) { a, _ in a })
+                .sorted { $0.key < $1.key }.map { "\t\t\($0.key) => \($0.value)" }
+             + ["\t}", "", "\tpid = 4242", "}"]).joined(separator: "\n")
+        }
+        let fileEnv = file["EnvironmentVariables"] as! [String: String]
+        try Data().write(to: install.restartMarker)
+        expect(ServerInstallation.loadedDefinition(printed(fileArgs, fileEnv), matches: file) == true)
+        loaded = true; jobState = printed(fileArgs, fileEnv)
+        expect(!install.restartPending() && !fm.fileExists(atPath: install.restartMarker.path))
+        jobState = printed(fileArgs, fileEnv.merging(["TILR_EXTRA": "1"]) { a, _ in a })
+        expect(install.restartPending())
+        jobState = printed(fileArgs.dropLast(2) + ["--config", "/elsewhere"], fileEnv)
+        expect(install.restartPending())
+        // Unparseable output: the marker decides.
+        jobState = runningState
+        expect(!install.restartPending())
+        try Data().write(to: install.restartMarker)
+        expect(install.restartPending())
+        // Not loaded: the next bootstrap reads the file; nothing pending, marker cleared.
+        loaded = false
+        expect(!install.restartPending() && !fm.fileExists(atPath: install.restartMarker.path))
+        loaded = true; jobState = runningState
+        // Another binary or another program is refused.
         var otherBinary = try PropertyListSerialization.propertyList(from: before, format: nil) as! [String: Any]
         otherBinary["ProgramArguments"] = ["/usr/local/bin/other-server", "--listen", "127.0.0.1:0"]
         try PropertyListSerialization.data(fromPropertyList: otherBinary, format: .xml, options: 0).write(to: install.plist)
@@ -193,7 +278,44 @@ import Darwin
         try PropertyListSerialization.data(fromPropertyList: renamed, format: .xml, options: 0).write(to: install.plist)
         rejects { _ = try install.install() }
         try valid.write(to: install.plist)
-        print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped and unassociated job migration, app association: passed")
+        expect(try install.install().build == 5)
+        // Removal. A foreign plist is left alone, launchd untouched.
+        try PropertyListSerialization.data(fromPropertyList: renamed, format: .xml, options: 0).write(to: install.plist)
+        commands.removeAll()
+        rejects { _ = try install.remove() }
+        expect(launchdCalls().isEmpty && fm.fileExists(atPath: install.binary.path))
+        try valid.write(to: install.plist)
+        // Ours: booted out, plist and installed files gone, state kept.
+        try fm.createDirectory(at: install.state, withIntermediateDirectories: true)
+        try Data("session".utf8).write(to: install.state.appendingPathComponent("sessions.json"))
+        try fm.createDirectory(at: install.root.appendingPathComponent("runtime"), withIntermediateDirectories: true)
+        try Data().write(to: install.restartMarker)
+        loaded = true; jobState = runningState
+        commands.removeAll()
+        expect(try install.remove() == .removed)
+        expect(launchdCalls() == ["bootout"] && !loaded)
+        for gone in [install.plist, install.binary, install.receipt, install.restartMarker,
+                     install.root.appendingPathComponent("origins.toml"), install.root.appendingPathComponent("runtime"),
+                     install.root.appendingPathComponent("tilr-server.previous"), install.root.appendingPathComponent("app-managed.previous.json")] {
+            expect(!fm.fileExists(atPath: gone.path))
+        }
+        expect(fm.fileExists(atPath: install.state.appendingPathComponent("sessions.json").path))
+        expect(!install.isInstalled)
+        // Not installed: nothing to do.
+        commands.removeAll()
+        expect(try install.remove() == .notInstalled)
+        expect(launchdCalls().isEmpty)
+        // A loaded job of our name without our file is not ours to remove.
+        loaded = true
+        rejects { _ = try install.remove() }
+        loaded = false
+        // The next install is a fresh one from the bundle.
+        try payload(6, "six")
+        commands.removeAll()
+        expect(try install.install().build == 6)
+        expect(launchdCalls() == ["bootstrap"])
+        expect(try String(contentsOf: install.binary, encoding: .utf8) == "six" && install.isInstalled)
+        print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped and unassociated job migration, app association, changed definition applied without panes / pending with panes, kickstart of a held-back job, pending read from launchd (match clears a stale marker, mismatch pending, marker fallback), restart, removal (ours / foreign / not installed) and reinstall: passed")
         if let payload = CommandLine.arguments.dropFirst().first {
             var real = ServerInstallation(source: URL(fileURLWithPath: payload),
                 root: temp.appendingPathComponent("real"), agents: temp.appendingPathComponent("real-agents"),
