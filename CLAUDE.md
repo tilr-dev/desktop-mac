@@ -50,7 +50,7 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
   |---|---|---|---|
   | `Shell.swift` | `CGSMainConnectionID`, `CGSGetActiveSpace`, `CGSCopyManagedDisplaySpaces`, `CGSCopySpacesForWindows`; `SLSBridgedMoveWindowsToManagedSpaceOperation.initWithWindows:spaceID:` / `performWithWMBridgeDelegate` (symbol/class/method/ABI guards); `CGSMoveWindowsToManagedSpace` only before macOS 14.5 | `next-desktop`, `--probe` round trip | explicit unavailable on unsupported systems; async result verified by exact desktop membership, timeout reports failure; no SIP changes |
   | `../../native-plugins/Sources/BrowserWebKit/BrowserAutomation.swift` | `WKWebView._simulateMouseMove:` (`NSSelectorFromString`, `responds(to:)`) | native browser hover; enabled by `browser.automation_private_input` | explicit unavailable error; click uses public AppKit input, scroll uses DOM `scrollBy` |
-  | `Debug.swift` | `WKWebView._webProcessIdentifier` (`NSSelectorFromString` + `responds(to:)`, `value(forKey:)`) | debug mode's sampler: the pages' WebContent pids | every WebContent process by name (`proc_listpids` + `proc_name`) |
+  | `Debug.swift` | `WKWebView._webProcessIdentifier` (`NSSelectorFromString` + `responds(to:)`, `value(forKey:)`) | debug mode's sampler and demand-driven Performance bridge: WebContent pids | legacy debug: every WebContent process by name; Performance: unavailable (never includes unrelated apps) |
 
 - To see and drive the running app, use Tilr Control (`Sources/Tilr/Control.swift`): `tilr ctl
   snapshot PATH`, `tilr ctl console`, `tilr ctl call SERVICE.METHOD …` (the CLI of the web repo),

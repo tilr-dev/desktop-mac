@@ -167,6 +167,8 @@ final class ProcessSampler {
         let name: String
         /// Percent of one core over the last interval.
         let cpu: Double
+        let cpuReady: Bool
+        let cpuSeconds: Double
         /// Bytes: the physical footprint (what Activity Monitor calls Memory).
         let rss: Int
     }
@@ -224,7 +226,7 @@ final class ProcessSampler {
         last = last.filter { pid, _ in seen.contains(pid) || pid == getpid() }
     }
 
-    private func read(_ pid: pid_t, name: String, at now: Double) -> Sample? {
+    func read(_ pid: pid_t, name: String, at now: Double) -> Sample? {
         var info = rusage_info_v4()
         let status = withUnsafeMutablePointer(to: &info) { pointer in
             pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
@@ -234,11 +236,22 @@ final class ProcessSampler {
         let cpuTime = ticks &* Self.timebase.numer / Self.timebase.denom
         let wall = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         var cpu = 0.0
+        let cpuReady = last[pid] != nil
         if let previous = last[pid], wall > previous.wall, cpuTime >= previous.cpu {
             cpu = Double(cpuTime - previous.cpu) / Double(wall - previous.wall) * 100
         }
         last[pid] = (cpuTime, wall)
-        return Sample(t: now, pid: pid, name: name, cpu: (cpu * 10).rounded() / 10, rss: Int(info.ri_phys_footprint))
+        return Sample(t: now, pid: pid, name: name, cpu: (cpu * 10).rounded() / 10, cpuReady: cpuReady, cpuSeconds: Double(cpuTime) / 1_000_000_000, rss: Int(info.ri_phys_footprint))
+    }
+
+    func retainPIDs(_ pids: Set<pid_t>) { last = last.filter { pids.contains($0.key) } }
+
+    /// An exact view/process association, or unavailable. Never substitutes unrelated apps.
+    static func webContentPID(_ view: WKWebView) -> pid_t? {
+        let selector = NSSelectorFromString("_webProcessIdentifier")
+        guard view.responds(to: selector),
+              let pid = (view.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0 else { return nil }
+        return pid
     }
 
     /// The pages' WebContent processes: WebKit's private `_webProcessIdentifier`, when the view

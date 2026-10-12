@@ -13,6 +13,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
     let agent: AgentHost
     private let localServer = LocalServerBridge()
+    private let performanceBridge = PerformanceBridge()
     var watcher: FolderWatcher?
 
     /// A page finished loading.
@@ -56,10 +57,12 @@ final class Tab: NSObject, WKNavigationDelegate {
         if let collector { controller.addUserScript(PerfCollector.userScript(collector)) }
         controller.add(agent, name: AgentHost.name)
         controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
+        controller.addScriptMessageHandler(performanceBridge, contentWorld: .page, name: PerformanceBridge.name)
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         localServer.tab = self
+        performanceBridge.tab = self
         nativePlugins = NativePluginSession(tab: self, settings: native, browser: browser)
         nativePlugins.attach(to: controller)
         agent.send = { [weak self] in self?.send(event: AgentHost.event, detail: $0) }
@@ -116,6 +119,7 @@ final class Tab: NSObject, WKNavigationDelegate {
         old.stopLoading()
         nativePlugins.pageDidNavigate()
         agent.closeAll()
+        performanceBridge.reset()
         isLoaded = false
         let next = WKWebView(frame: old.frame, configuration: old.configuration)
         next.navigationDelegate = self
@@ -226,6 +230,7 @@ final class Tab: NSObject, WKNavigationDelegate {
         isLoaded = false
         nativePlugins.pageDidNavigate()
         agent.closeAll()
+        performanceBridge.reset()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
