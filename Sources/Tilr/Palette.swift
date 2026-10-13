@@ -14,8 +14,9 @@ final class Palette: NSObject, NSTextFieldDelegate {
     /// The row's text: the command's title, or one with its state (debug).
     var title: (Config.Command) -> String = { $0.title }
 
+    /// Deferred: its window server window is made when it is first shown, not at launch.
     private let panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 0),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
+                              styleMask: [.borderless], backing: .buffered, defer: true)
     private let field = NSTextField()
     private let list = NSStackView()
     private(set) var shown: [Config.Command] = []

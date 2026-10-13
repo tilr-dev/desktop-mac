@@ -8,6 +8,10 @@ final class Tab: NSObject, WKNavigationDelegate {
     private(set) var app: Site.App
     let site: SiteSchemeHandler
     private(set) var webView: WKWebView
+    /// What the Shell stacks, shows, hides and slides: a plain layer-backed view the web view
+    /// fills. A slide moves this view's layer, never a view frame, so WebKit sees no geometry
+    /// change (no per-frame view-frame update to the WebContent process).
+    let container = NSView()
     /// Separately installed native providers, scoped to this app/tab.
     var nativePlugins: NativePluginSession!
     /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
@@ -15,9 +19,16 @@ final class Tab: NSObject, WKNavigationDelegate {
     private let localServer = LocalServerBridge()
     private let performanceBridge = PerformanceBridge()
     var watcher: FolderWatcher?
+    /// `watch.latency`: seconds FSEvents gathers the folder's changes.
+    private let watchLatency: Double
+    /// The page has been asked to load (`loadIfNeeded`): until then the web view is blank,
+    /// the folder unwatched and the native providers not started (`switch.preload`).
+    private(set) var started = false
 
     /// A page finished loading.
     var didLoad: ((Tab) -> Void)?
+    /// A page failed to load (`didFail`, `didFailProvisionalNavigation`).
+    var didFailLoad: ((Tab) -> Void)?
 
     struct ConsoleEntry {
         /// Seconds since 1970.
@@ -27,31 +38,62 @@ final class Tab: NSObject, WKNavigationDelegate {
         let text: String
     }
 
-    /// The page's console, oldest first, the last `consoleLimit` entries (Tilr Control's `console`).
-    var console: [ConsoleEntry] = []
-    private let consoleLimit: Int
+    /// The page's console, the last `control.console` entries (Tilr Control's `console`).
+    var console: ConsoleLog
     private let relay = ConsoleRelay()
-    private let catchesConsole: Bool
 
     /// The page has finished loading and no navigation is under way: JavaScript may be
     /// evaluated (during a navigation it can hang the call). Debug mode's `status` and `record`
     /// read it.
-    private(set) var isLoaded = false
+    private(set) var isLoaded = false {
+        didSet { if isLoaded { wake() } }
+    }
+    /// The last navigation has ended, loaded or failed: a `firstLoad` caller has nothing left
+    /// to wait for. Cleared when a navigation starts.
+    private(set) var loadEnded = false {
+        didSet { if loadEnded { wake() } }
+    }
+    /// `firstLoad` callers, resumed when the load ends (loaded or failed) or their time is up.
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
-    /// `control`: with Tilr Control on, the page's console is caught for it. `browser`: how the
-    /// page's web views are made. `collector`: debug mode's script (Debug.swift), nil while off.
-    init(app: Site.App, control: Config.Control?, browser: Config.Browser, native: Config.NativePlugins, sshAgent: Config.SSHAgent, collector: String? = nil) {
+    /// Returns when the page has loaded, its load has failed, or after `timeout` seconds,
+    /// whichever comes first.
+    @MainActor
+    func firstLoad(within timeout: Double) async {
+        guard !isLoaded, !loadEnded else { return }
+        let id = UUID()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            waiters[id] = done
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.waiters.removeValue(forKey: id)?.resume()
+            }
+        }
+    }
+
+    private func wake() {
+        let waiting = waiters.values
+        waiters.removeAll()
+        waiting.forEach { $0.resume() }
+    }
+
+    /// `control`: with Tilr Control on, the page's console is caught for it (`control.console_capture`).
+    /// `browser`: how the page's web views are made. `inspectable`: `debug.inspectable`.
+    /// `collector`: debug mode's script (Debug.swift), nil while off.
+    init(app: Site.App, control: Config.Control?, browser: Config.Browser, native: Config.NativePlugins, sshAgent: Config.SSHAgent,
+         watchLatency: Double, inspectable: Bool, collector: String? = nil) {
         self.app = app
-        consoleLimit = control?.console ?? 0
-        catchesConsole = control != nil
+        self.watchLatency = watchLatency
+        let catchesConsole = control?.consoleCapture == true
+        console = ConsoleLog(capacity: catchesConsole ? control?.console ?? 0 : 0)
         site = SiteSchemeHandler(root: app.root)
         agent = AgentHost(settings: sshAgent)
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = Instance.store
         configuration.setURLSchemeHandler(site, forURLScheme: SiteSchemeHandler.scheme)
         let controller = configuration.userContentController
-        if control != nil {
-            controller.addUserScript(WKUserScript(source: ConsoleRelay.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        if catchesConsole, let control {
+            controller.addUserScript(WKUserScript(source: ConsoleRelay.script(entryMax: control.consoleEntryMax),
+                                                  injectionTime: .atDocumentStart, forMainFrameOnly: false))
             controller.add(relay, name: ConsoleRelay.name)
         }
         if let collector { controller.addUserScript(WKUserScript(source: collector, injectionTime: .atDocumentStart, forMainFrameOnly: true)) }
@@ -68,8 +110,15 @@ final class Tab: NSObject, WKNavigationDelegate {
         agent.send = { [weak self] in self?.send(event: AgentHost.event, detail: $0) }
         webView.navigationDelegate = self
         webView.underPageBackgroundColor = .black
-        webView.isInspectable = true  // Safari → Develop → Tilr
+        webView.isInspectable = inspectable  // Safari → Develop → Tilr
+        // The web view fills its container; the Shell sizes the container (a hidden one does not
+        // follow the window) and turns its resizing on when it shows the tab.
+        container.wantsLayer = true
+        container.isHidden = true
+        container.autoresizingMask = []
+        webView.frame = container.bounds
         webView.autoresizingMask = [.width, .height]
+        container.addSubview(webView)
     }
 
     /// The dev server, the site, or the placeholder while the folder has no `index.html`.
@@ -77,30 +126,53 @@ final class Tab: NSObject, WKNavigationDelegate {
         Site.devURL ?? (Site.hasIndex(app.root) ? app.origin : Site.placeholder(for: app.root))
     }
 
-    /// Points the web view at the app's folder (or the dev server) and watches it. Called at
-    /// launch and whenever the config moves the app to another folder.
+    /// Points the tab at the app's folder (or the dev server). Whenever the config moves the
+    /// app to another folder; a tab that has loaded follows at once, one that has not yet
+    /// picks it up on `loadIfNeeded`.
     func show(_ app: Site.App) {
         let moved = self.app != app
         self.app = app
         site.root = app.root
+        guard started else { return }
         if moved { resetWebView() }
+        load()
+    }
+
+    /// Loads the page the first time: starts the native providers, watches the folder and
+    /// navigates. The tab being selected, `switch.preload`, or a control command needs the page.
+    func loadIfNeeded() {
+        guard !started else { return }
+        started = true
+        nativePlugins.start()
+        load()
+    }
+
+    /// Watches the folder and loads the page.
+    private func load() {
         if Site.devURL == nil {
             // The folder must exist for FSEvents to follow it; an index.html put there later is picked up.
             watcher = nil
             do {
                 try Site.prepareDirectory(app.root)
                 // An edit reloads the page or a plugin; a dev server has its own live reload.
-                watcher = FolderWatcher(app.root) { [weak self] in self?.siteChanged($0) }
+                watcher = FolderWatcher(app.root, latency: watchLatency) { [weak self] in self?.siteChanged($0) }
             } catch {
                 print("site: cannot create folder \(app.root.path): \(error)")
             }
         }
         print("\(app.name):", pageURL.absoluteString, Site.devURL == nil ? "← \(app.root.path)" : "")
-        reload()
+        navigate()
     }
 
+    /// Reloads the page; a tab that has not loaded yet loads it.
     func reload() {
+        guard started else { return loadIfNeeded() }
+        navigate()
+    }
+
+    private func navigate() {
         isLoaded = false
+        loadEnded = false
         let url = pageURL
         if webView.url == url {
             webView.reloadFromOrigin()
@@ -131,9 +203,8 @@ final class Tab: NSObject, WKNavigationDelegate {
         old.superview?.replaceSubview(old, with: next)
     }
 
-    func log(type: String, text: String) {
-        console.append(ConsoleEntry(time: Date().timeIntervalSince1970, type: type, text: text))
-        if console.count > consoleLimit { console.removeFirst(console.count - consoleLimit) }
+    func log(type: String, text: String, time: Double = Date().timeIntervalSince1970) {
+        console.append(ConsoleEntry(time: time, type: type, text: text))
     }
 
     /// A change under `plugins/` goes to the page, which swaps just those plugins in place
@@ -183,17 +254,21 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     /// Dispatches a CustomEvent on the page's `window` (what the web views report through).
     func send(event: String, detail: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: detail), let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent(\(Self.literal(event)), { detail: \(json) }))") { _, error in
-            if let error { print("\(self.app.name) \(event):", error.localizedDescription) }
+        guard started, let json = Self.json(detail) else { return }
+        webView.callAsyncJavaScript(Self.dispatch, arguments: ["name": event, "detail": json], in: nil, in: .page) { [weak self] result in
+            if case .failure(let error) = result, let self { print("\(app.name) \(event):", error.localizedDescription) }
         }
     }
 
-    /// A JS string literal.
-    static func literal(_ text: String) -> String {
-        let data = try! JSONSerialization.data(withJSONObject: [text])
-        let array = String(data: data, encoding: .utf8)!
-        return String(array.dropFirst().dropLast())
+    /// The one body every native → page event runs (`send`; `NativePluginSession.emit` adds an
+    /// origin check): a constant source JavaScriptCore parses once. `detail` comes as JSON text,
+    /// so the page gets exactly what `JSONSerialization` wrote before.
+    static let dispatch = "window.dispatchEvent(new CustomEvent(name, { detail: JSON.parse(detail) }))"
+
+    /// `detail` as JSON text, nil when it is not JSON.
+    static func json(_ detail: [String: Any]) -> String? {
+        guard JSONSerialization.isValidJSONObject(detail), let data = try? JSONSerialization.data(withJSONObject: detail) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     /// `tilr://<host>/<path>` → the file under the folder of the app with that host (this tab's
@@ -216,6 +291,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// agent connections no page to report to. The native audio session stays.
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         isLoaded = false
+        loadEnded = false
         nativePlugins.pageDidNavigate()
         agent.closeAll()
         performanceBridge.reset()
@@ -223,10 +299,19 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         isLoaded = !webView.isLoading
+        loadFailed()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         isLoaded = !webView.isLoading && webView.url != nil
+        loadFailed()
+    }
+
+    /// A navigation failed: unless another one is already under way, the load has ended.
+    private func loadFailed() {
+        guard !webView.isLoading else { return }
+        loadEnded = true
+        didFailLoad?(self)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -235,8 +320,9 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         isLoaded = true
+        loadEnded = true
         // The key tab takes the keyboard once it has a page; a hidden one must not steal it.
-        if !webView.isHidden { webView.window?.makeFirstResponder(webView) }
+        if !webView.isHiddenOrHasHiddenAncestor { webView.window?.makeFirstResponder(webView) }
         didLoad?(self)
     }
 }

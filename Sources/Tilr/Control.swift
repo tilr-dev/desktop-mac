@@ -1,12 +1,16 @@
 import AppKit
+import ImageIO
 import Network
+import UniformTypeIdentifiers
 import WebKit
 
 /// Tilr Control: how an agent (or `tilr ctl`, or `tilr mcp`) drives the running app. A server on
 /// a unix socket (`control.socket` in the config), one JSON object per line each way:
 ///
 ///   { "cmd": "apps" }                               the apps (tabs) and which one is current
-///   { "cmd": "switch", "app": "Notes" }             show that app
+///   { "cmd": "switch", "app": "Notes" }             show that app (at once; "slide": true slides
+///                                                   towards its place in the list, like switch.jump,
+///                                                   and answers "slide": true when a slide started)
 ///   { "cmd": "reload" }                             reload the page
 ///   { "cmd": "snapshot", "path": "~/x.png" }        a picture of the page, as the window shows it
 ///   { "cmd": "console", "clear": false }            the page's console.* and errors, oldest first
@@ -39,15 +43,21 @@ final class ControlServer {
     let path: String
     private let tabs: () -> [Tab]
     private let current: () -> Tab?
-    private let select: (Tab) -> Void
+    /// Shows a tab: at once, or with the switch slide when the Bool is true. Returns whether a
+    /// slide started (not for the current tab, nor with switch.duration 0).
+    private let select: (Tab, Bool) -> Bool
+    /// `control.load_timeout`: seconds a command waits for an app's first page load.
+    private let loadTimeout: () -> Double
     private let debug: DebugMode
     private var listener: NWListener?
 
-    init(path: String, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab) -> Void, debug: DebugMode) {
+    init(path: String, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab, Bool) -> Bool,
+         loadTimeout: @escaping () -> Double, debug: DebugMode) {
         self.path = path
         self.tabs = tabs
         self.current = current
         self.select = select
+        self.loadTimeout = loadTimeout
         self.debug = debug
     }
 
@@ -176,39 +186,47 @@ final class ControlServer {
             guard let tab = current() else { throw Failure(message: "no app") }
             return tab
         }
+        /// The tab with its page: one not loaded yet (switch.preload) loads now, and the command
+        /// waits up to control.load_timeout for a load under way (a page that failed to load
+        /// does not wait).
+        func page() async throws -> Tab {
+            let tab = try tab()
+            tab.loadIfNeeded()
+            if !tab.isLoaded { await tab.firstLoad(within: loadTimeout()) }
+            return tab
+        }
         switch cmd {
         case "apps":
             return ["apps": tabs().map { tab -> [String: Any] in
-                ["name": tab.app.name, "site": tab.app.root.path, "url": tab.webView.url?.absoluteString ?? "", "current": tab === current()]
+                ["name": tab.app.name, "site": tab.app.root.path, "url": tab.webView.url?.absoluteString ?? "", "current": tab === current(),
+                 "loaded": tab.started]
             }]
         case "switch":
             let tab = try tab()
-            select(tab)
-            return ["app": tab.app.name]
+            // A slide that did not happen (the current app, switch.duration 0) answers like a plain switch.
+            let slid = select(tab, request["slide"] as? Bool ?? false)
+            return slid ? ["app": tab.app.name, "slide": true] : ["app": tab.app.name]
         case "reload":
             let tab = try tab()
             tab.reload()
             return ["app": tab.app.name]
         case "snapshot":
             guard let path = request["path"] as? String else { throw Failure(message: "snapshot: no path") }
-            let tab = try tab()
+            let tab = try await page()
             let image = try await tab.webView.takeSnapshot(configuration: nil)
-            guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:])
-            else { throw Failure(message: "snapshot: no image") }
             let file = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-            try png.write(to: file)
+            try await PNG.write(image, to: file)
             return ["path": file.path, "width": Int(image.size.width), "height": Int(image.size.height)]
         case "console":
             let tab = try tab()
-            let messages = tab.console.map { ["time": $0.time, "type": $0.type, "text": $0.text] as [String: Any] }
+            let messages = tab.console.entries.map { ["time": $0.time, "type": $0.type, "text": $0.text] as [String: Any] }
             if request["clear"] as? Bool == true { tab.console.removeAll() }
             return ["messages": messages]
         case "eval":
             guard let js = request["js"] as? String else { throw Failure(message: "eval: no js") }
             // An expression is returned; a body with a `return` of its own runs as written.
             let body = js.range(of: #"\breturn\b"#, options: .regularExpression) == nil ? "return (\(js))" : js
-            return ["value": try await evaluate(try tab(), body: body, arguments: [:])]
+            return ["value": try await evaluate(try await page(), body: body, arguments: [:])]
         case "call":
             guard let service = request["service"] as? String, let method = request["method"] as? String else {
                 throw Failure(message: "call: service and method are required")
@@ -224,16 +242,18 @@ final class ControlServer {
                 }
                 return await member.apply(target, args)
                 """
-            return ["value": try await evaluate(try tab(), body: body, arguments: ["service": service, "method": method, "args": args])]
+            return ["value": try await evaluate(try await page(), body: body, arguments: ["service": service, "method": method, "args": args])]
         case "debug":
-            return try await debugCommand(try tab(), request)
+            // status reports an app that has not loaded; the rest need its page.
+            let action = request["action"] as? String ?? "status"
+            return try await debugCommand(action == "status" ? try tab() : try await page(), request)
         case "native-plugins":
             return ["plugins": try tab().nativePlugins.status()]
         case "native-call":
             guard let service = request["service"] as? String else { throw Failure(message: "native-call: service required") }
-            return try await tab().nativePlugins.request(service: service, body: request["request"] as? [String: Any] ?? [:])
+            return try await page().nativePlugins.request(service: service, body: request["request"] as? [String: Any] ?? [:])
         case "browser":
-            return try await tab().nativePlugins.request(service: "browser", body: request)
+            return try await page().nativePlugins.request(service: "browser", body: request)
         default:
             throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug, browser")
         }
@@ -248,7 +268,9 @@ final class ControlServer {
         case "status":
             // Answers even while the page loads or without the plugin: { enabled: false, mechanism: 'none', reason }.
             var result: [String: Any]
-            if !tab.isLoaded {
+            if !tab.started {
+                result = ["enabled": false, "mechanism": "none", "reason": "The app is not loaded yet (switch.preload)"]
+            } else if !tab.isLoaded {
                 result = ["enabled": false, "mechanism": "none", "reason": "The page is still loading"]
             } else {
                 do {
@@ -323,21 +345,33 @@ final class ControlServer {
 }
 
 /// Catches the page's console.* calls and errors for `console` (Tab installs it when control is
-/// on). A separate object: the content controller retains its handlers, the tab must not retain itself.
+/// on and `control.console_capture`). A separate object: the content controller retains its
+/// handlers, the tab must not retain itself.
 final class ConsoleRelay: NSObject, WKScriptMessageHandler {
     static let name = "tilrConsole"
     weak var tab: Tab?
 
-    /// Wraps console.* and reports window errors, at document start, in every frame.
-    static let script = """
+    /// Wraps console.* and reports window errors, at document start, in every frame. Entries
+    /// are queued and posted as one array per microtask checkpoint; each keeps at most
+    /// `entryMax` characters (`control.console_entry_max`), a cut one ends in "…".
+    static func script(entryMax: Int) -> String {
+        """
         (() => {
+          const max = \(max(entryMax, 0))
+          let queue = []
+          const flush = () => {
+            const entries = queue
+            queue = []
+            try { window.webkit.messageHandlers.\(name).postMessage(entries) } catch {}
+          }
           const post = (type, args) => {
-            const text = args.map(a => {
+            let text = args.map(a => {
               if (typeof a === 'string') return a
               if (a instanceof Error) return a.stack || a.message
               try { return JSON.stringify(a) ?? String(a) } catch { return String(a) }
             }).join(' ')
-            try { window.webkit.messageHandlers.\(name).postMessage({ type, text }) } catch {}
+            if (text.length > max) text = text.slice(0, max) + '…'
+            if (queue.push({ type, text, time: Date.now() }) === 1) queueMicrotask(flush)
           }
           for (const type of ['log', 'info', 'warn', 'error', 'debug']) {
             const original = console[type]
@@ -347,9 +381,75 @@ final class ConsoleRelay: NSObject, WKScriptMessageHandler {
           window.addEventListener('unhandledrejection', e => post('pageerror', [e.reason instanceof Error ? e.reason.stack || e.reason.message : String(e.reason)]))
         })()
         """
+    }
 
+    /// An array of `{ type, text, time }` (time in ms since 1970), oldest first.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let tab, let body = message.body as? [String: Any] else { return }
-        tab.log(type: body["type"] as? String ?? "log", text: body["text"] as? String ?? "")
+        guard let tab, let entries = message.body as? [[String: Any]] else { return }
+        for body in entries {
+            let time = (body["time"] as? NSNumber).map { $0.doubleValue / 1000 } ?? Date().timeIntervalSince1970
+            tab.log(type: body["type"] as? String ?? "log", text: body["text"] as? String ?? "", time: time)
+        }
+    }
+}
+
+/// The last `capacity` console entries, in a fixed ring: appending never moves the others.
+struct ConsoleLog {
+    private var ring: [Tab.ConsoleEntry] = []
+    /// Where the next entry goes once the ring is full; then also the oldest entry.
+    private var next = 0
+    let capacity: Int
+
+    init(capacity: Int) {
+        self.capacity = max(capacity, 0)
+        ring.reserveCapacity(self.capacity)
+    }
+
+    mutating func append(_ entry: Tab.ConsoleEntry) {
+        guard capacity > 0 else { return }
+        if ring.count < capacity { ring.append(entry); return }
+        ring[next] = entry
+        next = (next + 1) % capacity
+    }
+
+    /// Oldest first.
+    var entries: [Tab.ConsoleEntry] {
+        Array(ring[next...] + ring[..<next])
+    }
+
+    mutating func removeAll() {
+        ring.removeAll(keepingCapacity: true)
+        next = 0
+    }
+}
+
+/// PNG files of snapshots: the image is taken apart on the main thread, encoded and written
+/// on a background queue.
+enum PNG {
+    private static let queue = DispatchQueue(label: "dev.tilr.png", qos: .userInitiated)
+
+    struct Failure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    @MainActor
+    static func write(_ image: NSImage, to file: URL) async throws {
+        var rect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            throw Failure(message: "snapshot: no image")
+        }
+        try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+            queue.async {
+                guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+                    return done.resume(throwing: Failure(message: "snapshot: cannot write \(file.path)"))
+                }
+                CGImageDestinationAddImage(destination, cgImage, nil)
+                guard CGImageDestinationFinalize(destination) else {
+                    return done.resume(throwing: Failure(message: "snapshot: cannot write \(file.path)"))
+                }
+                done.resume()
+            }
+        }
     }
 }

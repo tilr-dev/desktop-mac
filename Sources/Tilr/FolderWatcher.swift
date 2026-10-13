@@ -2,12 +2,13 @@ import CoreServices
 import Foundation
 
 /// Calls `onChange` on the main queue with the paths that changed under `root`. FSEvents
-/// coalesces bursts (an editor's save, a build writing many files) into one call.
+/// coalesces bursts (an editor's save, a build writing many files) into one call, `latency`
+/// seconds (`watch.latency`) after the first change of the burst.
 final class FolderWatcher {
     private var stream: FSEventStreamRef?
     private let onChange: ([String]) -> Void
 
-    init(_ root: URL, onChange: @escaping ([String]) -> Void) {
+    init(_ root: URL, latency: Double, onChange: @escaping ([String]) -> Void) {
         self.onChange = onChange
         var context = FSEventStreamContext()
         context.info = Unmanaged.passUnretained(self).toOpaque()
@@ -18,9 +19,10 @@ final class FolderWatcher {
         }
         stream = FSEventStreamCreate(
             nil, callback, &context, [root.path] as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2,
-            FSEventStreamCreateFlags(
-                kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagUseCFTypes)
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency,
+            // No kFSEventStreamCreateFlagNoDefer: it reports the first change at once and the rest
+            // `latency` later, two reloads for one build.
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
         )
         guard let stream else { return }
         FSEventStreamSetDispatchQueue(stream, .main)

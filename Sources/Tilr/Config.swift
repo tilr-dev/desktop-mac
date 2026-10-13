@@ -17,9 +17,10 @@ struct Config: Decodable {
     var sshAgent: SSHAgent
     var debug: Debug
     var localServer: LocalServer
+    var watch: Watch
 
     enum CodingKeys: String, CodingKey {
-        case site, apps, window, control, browser, debug
+        case site, apps, window, control, browser, debug, watch
         case nativePlugins = "native_plugins"
         case sshAgent = "ssh_agent"
         case switching = "switch"
@@ -94,6 +95,35 @@ struct Config: Decodable {
         var previous: Shortcut
         /// Modifiers only; with 1..9 they jump to the window at that place in `apps`.
         var jump: Shortcut
+        /// When the apps that are not on screen load their page. At launch.
+        var preload: Preload
+    }
+
+    /// `switch.preload`: `false` loads an app when it is first selected, `true` loads every app
+    /// at launch, a number of seconds loads the rest that long after the first app's page finished.
+    enum Preload: Decodable, Equatable {
+        case onSelect
+        case atLaunch
+        case after(Double)
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            if let all = try? c.decode(Bool.self) {
+                self = all ? .atLaunch : .onSelect
+                return
+            }
+            let seconds = try c.decode(Double.self)
+            guard seconds.isFinite, seconds >= 0 else {
+                throw DecodingError.dataCorruptedError(in: c, debugDescription: "switch.preload: false, true or seconds >= 0")
+            }
+            self = .after(seconds)
+        }
+    }
+
+    /// FSEvents for the apps' folders and config.yml (FolderWatcher.swift).
+    struct Watch: Decodable {
+        /// Seconds: changes within that window are reported together as one batch.
+        var latency: Double
     }
 
     enum Easing: String, Decodable {
@@ -131,6 +161,19 @@ struct Config: Decodable {
         var socket: String
         /// Console messages kept per app.
         var console: Int
+        /// Seconds a command for an app whose page is not loaded yet waits for it to load.
+        var loadTimeout: Double
+        /// The page's console is caught at all (the relay script is installed). At launch.
+        var consoleCapture: Bool
+        /// Characters one caught console entry keeps; longer ones are cut and end in "…". At launch.
+        var consoleEntryMax: Int
+
+        enum CodingKeys: String, CodingKey {
+            case socket, console
+            case loadTimeout = "load_timeout"
+            case consoleCapture = "console_capture"
+            case consoleEntryMax = "console_entry_max"
+        }
     }
 
     struct NativePlugins: Decodable {
@@ -221,9 +264,11 @@ struct Config: Decodable {
         var footprintTimeout: Double
         /// Seconds `squeeze` waits after the low-memory notification before reading `after`.
         var squeezeSettle: Double
+        /// The page's web view can be inspected (Safari → Develop → Tilr). At launch.
+        var inspectable: Bool
 
         enum CodingKeys: String, CodingKey {
-            case enabled, dir, history, sample
+            case enabled, dir, history, sample, inspectable
             case footprintTimeout = "footprint_timeout"
             case squeezeSettle = "squeeze_settle"
         }
@@ -342,6 +387,20 @@ struct Config: Decodable {
           previous: ctrl+alt+left
           # Modifiers only: with 1..9 they jump to the app at that place in apps.
           jump: ctrl+alt
+          # When the apps not on screen load their page (each loaded app is a WebContent process):
+          #   false  an app loads when it is first selected;
+          #   true   every app loads at launch;
+          #   N      seconds after the first app's page has finished loading, the rest load in
+          #          the background (an app selected earlier loads at once).
+          # At launch; apps added later load when selected (true: at once).
+          preload: 2
+
+        # Watching the apps' folders (a change reloads the page) and config.yml (a save reloads
+        # the config).
+        watch:
+          # Seconds: changes within that many seconds are reported together, so a save or a short
+          # build makes one reload. Applies to folders watched after the change; config.yml at launch.
+          latency: 0.2
 
         control_plane:
           # Opens the palette.
@@ -377,6 +436,13 @@ struct Config: Decodable {
           socket: \(shownDir)/control.sock
           # Console messages kept per app for the console command.
           console: 500
+          # Seconds a command for an app whose page is not loaded yet (switch.preload) waits for
+          # it to load before running anyway.
+          load_timeout: 10
+          # Catch the page's console for the console command (a script in every frame). At launch.
+          console_capture: true
+          # Characters one caught console entry keeps; a longer one is cut and ends in "…". At launch.
+          console_entry_max: 4096
 
         # Independently compiled native plugins. User versions override bundled versions.
         # Directory and enabled set apply at launch; replacing loaded code needs a restart.
@@ -432,6 +498,7 @@ struct Config: Decodable {
           sample: 0.5     # deprecated; shared web sampler runs once per second
           footprint_timeout: 5  # seconds /usr/bin/footprint may run for Performance footprint / ctl debug footprint
           squeeze_settle: 2     # seconds squeeze (org.WebKit.lowMemory) waits before reading the footprint again
+          inspectable: true     # Safari → Develop → Tilr can inspect the page's web view (not the browser views); at launch
 
         """
 
@@ -446,14 +513,20 @@ struct Config: Decodable {
 
     /// The defaults alone, for before the config is read. They are part of the program, so a
     /// failure to parse them is a programming error.
-    static let fallback: Config = try! YAMLDecoder().decode(Config.self, from: defaultText)
+    static let fallback: Config = try! YAMLDecoder().decode(Config.self, from: defaultNode)
 
-    /// Writes `default.yml`, and `config.yml` when there is none yet. Once, at launch.
+    /// `defaultText` parsed once; `load()` merges config.yml over a copy of it.
+    private static let defaultNode: Node = try! Yams.compose(yaml: defaultText)!
+
+    /// Writes `default.yml` when its contents differ from the defaults, and `config.yml` when
+    /// there is none yet. At launch and from Native Plugin Settings….
     static func writeDefaults() {
         let files = FileManager.default
         do {
             try files.createDirectory(at: dir, withIntermediateDirectories: true)
-            try defaultText.write(to: defaultsFile, atomically: true, encoding: .utf8)
+            if (try? String(contentsOf: defaultsFile, encoding: .utf8)) != defaultText {
+                try defaultText.write(to: defaultsFile, atomically: true, encoding: .utf8)
+            }
             if !files.fileExists(atPath: file.path) {
                 try userText.write(to: file, atomically: true, encoding: .utf8)
             }
@@ -465,7 +538,7 @@ struct Config: Decodable {
     /// The defaults with config.yml's overrides merged in.
     static func load() -> Config? {
         do {
-            var merged = try Yams.compose(yaml: defaultText)!
+            var merged = defaultNode
             // A missing or empty (comments only) file overrides nothing.
             let userText = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
             if let overrides = try Yams.compose(yaml: userText) {

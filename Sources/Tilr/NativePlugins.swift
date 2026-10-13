@@ -188,11 +188,22 @@ final class NativePluginSession: @unchecked Sendable {
     private(set) var pluginOptions: [String: Any] = [:]
     private var pending: [UUID: (Result<[String: Any], Error>) -> Void] = [:]
     private var stopped = false
+    private var started = false
 
+    /// Records the settings only; the providers are made and started by `start()`, when the
+    /// tab first loads its page (`switch.preload`).
     init(tab: Tab, settings: Config.NativePlugins, browser: Config.Browser) {
         self.tab = tab
         self.settings = settings
         configure(browser: browser, options: settings.options)
+    }
+
+    /// Opens, makes and starts the enabled providers and registers their bridges with the
+    /// controller given to `attach`. Once, before the tab's first page load.
+    func start() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !started, !stopped else { return }
+        started = true
         for id in settings.enabled {
             guard providers[id] == nil else { continue }
             do {
@@ -216,13 +227,14 @@ final class NativePluginSession: @unchecked Sendable {
                 print("native plugin \(id):", error.localizedDescription)
             }
         }
+        controller?.add(NativePluginRelay(self), name: "tilrNative")
+        for name in bridges.keys { controller?.add(NativePluginRelay(self), name: name) }
     }
 
+    /// The page's controller; the bridges are added to it by `start()`.
     func attach(to controller: WKUserContentController) {
         dispatchPrecondition(condition: .onQueue(.main))
         self.controller = controller
-        controller.add(NativePluginRelay(self), name: "tilrNative")
-        for name in bridges.keys { controller.add(NativePluginRelay(self), name: name) }
     }
 
     func configure(browser: Config.Browser, options: [String: Config.PluginValue]) {
@@ -271,21 +283,20 @@ final class NativePluginSession: @unchecked Sendable {
 
     func emit(_ event: String, detail: [String: Any]) {
         dispatchPrecondition(condition: .onQueue(.main))
-        guard !stopped, let tab, let url = tab.webView.url, trusted(url, tab: tab),
-              let data = try? JSONSerialization.data(withJSONObject: detail),
-              let json = String(data: data, encoding: .utf8) else { return }
+        guard !stopped, let tab, let url = tab.webView.url, trusted(url, tab: tab), let json = Tab.json(detail) else { return }
         let expected = Site.devURL ?? tab.app.origin
-        // Check again in JS: navigation may finish between scheduling and evaluation.
-        let source = """
-        (() => {
-          if (location.protocol !== \(Tab.literal((expected.scheme ?? "") + ":")) ||
-              location.hostname !== \(Tab.literal(expected.host ?? "")) ||
-              location.port !== \(Tab.literal(expected.port.map(String.init) ?? ""))) return;
-          window.dispatchEvent(new CustomEvent(\(Tab.literal(event)), {detail: \(json)}));
-        })()
-        """
-        tab.webView.evaluateJavaScript(source, completionHandler: nil)
+        tab.webView.callAsyncJavaScript(Self.emitSource, arguments: [
+            "name": event, "detail": json,
+            "scheme": (expected.scheme ?? "") + ":", "host": expected.host ?? "", "port": expected.port.map(String.init) ?? "",
+        ], in: nil, in: .page, completionHandler: nil)
     }
+
+    /// Checks the origin again in JS (navigation may finish between scheduling and evaluation),
+    /// then dispatches as `Tab.dispatch`: one constant source for every event.
+    private static let emitSource = """
+        if (location.protocol !== scheme || location.hostname !== host || location.port !== port) return;
+        \(Tab.dispatch)
+        """
 
     private func trusted(_ url: URL, tab: Tab) -> Bool {
         let expected = Site.devURL ?? tab.app.origin
@@ -333,6 +344,8 @@ final class NativePluginSession: @unchecked Sendable {
                         "publisher": provider.library.thirdParty ? "third-party" : "app-publisher",
                         "updatePolicy": "restart-app"]
             }
+            // A tab that has not loaded its page yet (switch.preload) has not started its providers.
+            guard started else { return ["id": id, "state": "pending", "error": "app not loaded yet (switch.preload)"] }
             return ["id": id, "state": "unavailable", "error": failures[id] ?? "disabled"]
         }
     }
@@ -341,8 +354,10 @@ final class NativePluginSession: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(.main))
         guard !stopped else { return }
         stopped = true
-        controller?.removeScriptMessageHandler(forName: "tilrNative")
-        for name in bridges.keys { controller?.removeScriptMessageHandler(forName: name) }
+        if started {
+            controller?.removeScriptMessageHandler(forName: "tilrNative")
+            for name in bridges.keys { controller?.removeScriptMessageHandler(forName: name) }
+        }
         controller = nil
         let completions = pending.values
         pending.removeAll()

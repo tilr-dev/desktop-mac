@@ -2,6 +2,10 @@
 
 WKWebView shell: one window, a tab per app from the config (no tab bar, switched by shortcut),
 each a folder served as `tilr://<name>/`.
+Tabs are lazy: an app's page, folder watcher and native providers start when it is first
+selected, by `switch.preload` (`false` | `true` | seconds after the first page), or by a Tilr
+Control command that needs the page (`control.load_timeout`). A hidden tab's container does not
+follow window resizes; a switch slides the containers' layers (`layer.transform`), never view frames.
 The page's web views (the `webviews` service of the web repo, a plugin's browser window) are
 WKWebViews supplied by the separately compiled `browser-webkit` plugin
 (`../../native-plugins/Sources/BrowserWebKit`), in an AppKit SDK overlay of their
@@ -15,7 +19,8 @@ updates take effect after restart. Package/ABI checks: `python3 scripts/test_nat
 add `--gui` in a desktop session for the browser/app probes.
 
 Swift Package, AppKit, no Xcode project. `./run.sh` builds and starts the app; `./run.sh --probe`
-runs the self-check (page, palette, app switching, Space move) and quits — run it after changes,
+runs the self-check (page, page plumbing — scheme handler, native events, console relay,
+snapshot PNG —, palette, app switching and slide, lazy tabs, Space move) and quits — run it after changes,
 as `./run.sh --test --probe`. The config folder (`~/Library/Application Support/dev.tilr.mac`, or `--config DIR` / `TILR_CONFIG`)
 names an instance (`Sources/Tilr/Instance.swift`): another folder is another app running beside
 the user's, with its own config, control socket, web storage, pid file and window title.
@@ -64,3 +69,7 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
 - To see and drive the running app, use Tilr Control (`Sources/Tilr/Control.swift`): `tilr ctl
   snapshot PATH`, `tilr ctl console`, `tilr ctl call SERVICE.METHOD …` (the CLI of the web repo),
   or the `tilr` MCP server. After a Swift change, check it in the test instance (`./run.sh --test`).
+  `tilr ctl switch` accepts `"slide": true`. The console is caught only with
+  `control.console_capture` (at launch), batched per microtask and cut at
+  `control.console_entry_max` characters; `debug.inspectable` (at launch) controls Safari → Develop.
+  `SiteSchemeHandler` serves the apps' files on a background queue.

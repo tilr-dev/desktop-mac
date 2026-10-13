@@ -159,7 +159,9 @@ final class Shell: NSObject, NSWindowDelegate {
     /// `window:` from the config; the owner updates it when the config changes.
     var settings: Config.Windows
     let window = Window(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
-    /// Holds the tabs' web views, all the size of the content; only the current one is unhidden.
+    /// Holds the tabs' containers (`Tab.container`, each filled by its web view); only the
+    /// current one is unhidden, fills the content and resizes with it. Hidden ones keep their
+    /// last size until shown (`reveal`).
     let content = NSView()
     private(set) var tabs: [Tab] = []
     private(set) var current: Tab?
@@ -201,13 +203,14 @@ final class Shell: NSObject, NSWindowDelegate {
     /// one stays if it is still listed; else the first one is shown.
     func setTabs(_ new: [Tab]) {
         for tab in tabs where !new.contains(where: { $0 === tab }) {
-            tab.webView.removeFromSuperview()
+            tab.container.removeFromSuperview()
             tab.watcher = nil
         }
-        for tab in new where tab.webView.superview !== content {
-            tab.webView.frame = content.bounds
-            tab.webView.isHidden = true
-            content.addSubview(tab.webView)
+        for tab in new where tab.container.superview !== content {
+            tab.container.isHidden = true
+            tab.container.autoresizingMask = []
+            tab.container.frame = content.bounds
+            content.addSubview(tab.container)
         }
         tabs = new
         if let current, tabs.contains(where: { $0 === current }) {
@@ -221,58 +224,116 @@ final class Shell: NSObject, NSWindowDelegate {
 
     /// Shows `tab` at once, with no slide.
     func select(_ tab: Tab) {
+        slideGeneration += 1
         settle()
-        for other in tabs {
-            other.webView.isHidden = other !== tab
-            other.webView.frame = content.bounds
-        }
+        tab.loadIfNeeded()
+        for other in tabs where other !== tab { conceal(other) }
+        reveal(tab, at: content.bounds)
         current = tab
         window.title = Instance.title(tab.app.name)
         window.makeFirstResponder(tab.webView)
         changed?(self)
     }
 
-    /// The slide under way, if any: the tab going out and the one coming in.
+    /// The slide under way, if any: the tab going out and the one coming in. Set from the
+    /// moment the switch is asked for, through the turn before the animation starts, to its end.
     private var slide: (from: Tab, to: Tab)?
     var sliding: Bool { slide != nil }
+    /// Counts selects: a slide's deferred start and its completion act only while no other
+    /// select has come since (A→B, B→A, A→B in one turn must not start or settle twice).
+    private var slideGeneration = 0
 
     /// Switches to `tab` with a slide: `direction` 1 brings it in from the right (the way
     /// `switch.next` goes), -1 from the left. Both pages move together inside the window, like
     /// Spaces do, for `switching.duration` seconds; 0 switches at once. A switch that comes
     /// while one is under way finishes that one first.
+    ///
+    /// What moves is the containers' layers (a translation transform animated by Core
+    /// Animation), not view frames: the web views keep their frames, so WebKit gets no
+    /// view-frame update per animation frame. The incoming page is unhidden (off to the side)
+    /// one run loop turn before the animation starts, so WebKit can repaint what it dropped
+    /// while hidden.
     func select(_ tab: Tab, direction: Int, switching: Config.Switching) {
         guard let from = current, from !== tab, switching.duration > 0 else { return select(tab) }
+        slideGeneration += 1
+        let generation = slideGeneration
         settle()
+        tab.loadIfNeeded()
         let bounds = content.bounds
         let offset = CGFloat(direction) * bounds.width
-        tab.webView.frame = bounds.offsetBy(dx: offset, dy: 0)
-        tab.webView.isHidden = false
+        // Neither page follows a resize until the slide settles (which sizes the incoming one).
+        from.container.autoresizingMask = []
+        reveal(tab, at: bounds, resizing: false)
+        setTranslation(tab.container, offset)
         slide = (from, tab)
         current = tab
         window.title = Instance.title(tab.app.name)
         window.makeFirstResponder(tab.webView)
         changed?(self)
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = switching.duration
-            context.timingFunction = switching.easing.function
-            from.webView.animator().frame = bounds.offsetBy(dx: -offset, dy: 0)
-            tab.webView.animator().frame = bounds
-        }, completionHandler: { [weak self] in
-            // Another switch may have settled this one already.
-            guard let self, let slide, slide.to === tab else { return }
-            settle()
-        })
+        DispatchQueue.main.async { [weak self] in
+            // Another switch may have settled this one already; the newest one starts its own.
+            guard let self, generation == slideGeneration, slide != nil else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            CATransaction.setCompletionBlock { [weak self] in
+                // An interrupted slide's animations are removed (settle), which completes this
+                // transaction early: only the newest slide settles itself.
+                guard let self, generation == slideGeneration else { return }
+                settle()
+            }
+            slideLayer(from.container, from: 0, to: -offset, switching)
+            slideLayer(tab.container, from: offset, to: 0, switching)
+            CATransaction.commit()
+        }
     }
 
     /// Ends the slide under way: the page that came in fills the content, the one that went out hides.
     private func settle() {
         guard let (from, to) = slide else { return }
         slide = nil
-        from.webView.layer?.removeAllAnimations()
-        to.webView.layer?.removeAllAnimations()
-        from.webView.isHidden = true
-        from.webView.frame = content.bounds
-        to.webView.frame = content.bounds
+        for view in [from.container, to.container] {
+            view.layer?.removeAllAnimations()
+            setTranslation(view, 0)
+        }
+        conceal(from)
+        reveal(to, at: content.bounds)
+    }
+
+    /// Moves `view`'s layer `dx` points sideways, with no animation and no change to its frame.
+    private func setTranslation(_ view: NSView, _ dx: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.layer?.transform = CATransform3DMakeTranslation(dx, 0, 0)
+        CATransaction.commit()
+    }
+
+    /// Animates `view`'s layer translation from `start` to `end` points, leaving the model at `end`.
+    private func slideLayer(_ view: NSView, from start: CGFloat, to end: CGFloat, _ switching: Config.Switching) {
+        guard let layer = view.layer else { return }
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = CATransform3DMakeTranslation(start, 0, 0)
+        animation.toValue = CATransform3DMakeTranslation(end, 0, 0)
+        animation.duration = switching.duration
+        animation.timingFunction = switching.easing.function
+        layer.transform = CATransform3DMakeTranslation(end, 0, 0)
+        layer.add(animation, forKey: "slide")
+    }
+
+    /// Unhides `tab`'s page at `frame`. The frame is set before the view shows, so its first
+    /// frame on screen has the window's current size, not the one it had when hidden.
+    private func reveal(_ tab: Tab, at frame: NSRect, resizing: Bool = true) {
+        let view = tab.container
+        view.autoresizingMask = []
+        if view.frame != frame { view.frame = frame }
+        view.isHidden = false
+        if resizing { view.autoresizingMask = [.width, .height] }
+    }
+
+    /// Hides `tab`'s page; a hidden page does not follow window resizes (each resize of a
+    /// WKWebView is work in its WebContent process).
+    private func conceal(_ tab: Tab) {
+        tab.container.isHidden = true
+        tab.container.autoresizingMask = []
     }
 
     // MARK: Window modes
@@ -311,9 +372,9 @@ final class Shell: NSObject, NSWindowDelegate {
             window.styleMask = [.borderless, .resizable]
             window.setFrame(windowFrame, display: true)
         }
-        // A style change swaps the content view's frame; the pages follow it.
+        // A style change swaps the content view's frame; the current page follows it
+        // (autoresizing), a slide under way ends sized to it.
         settle()
-        tabs.forEach { $0.webView.frame = content.bounds }
         NSApp.presentationOptions = presentationOptions
         // Not active and not to take focus (window.activate_at_launch false): shown behind the
         // active app; ordering it front would cover the user's windows.
