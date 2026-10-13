@@ -9,7 +9,6 @@ Chromium is not included.
 | --- | --- |
 | `SDK/Sources/TilrPluginABI` | Versioned Objective-C binary contract and C factory entry point |
 | `SDK/Sources/TilrPluginViews` | Generic AppKit surfaces, placement, stacking, masks and hit testing |
-| `SDK/web` | Optional JavaScript bridge for new paired web/native plugins |
 | `Sources/BrowserWebKit` | Browser WKWebViews, profiles, proxies, tunnels, native automation |
 | `Sources/NativeAudio` | AVPlayer, Now Playing and media keys |
 | `manifests` | Independently versioned package manifests |
@@ -18,7 +17,8 @@ Chromium is not included.
 The existing Cordis `webviews` / `audio` contracts, browser UI plugin and Webamp
 continue to work. The `tilrWebViews` and `tilrAudio` bridge aliases are declared
 by these packages, not hardcoded into Tilr's loader. New plugins can use the
-generic `tilrNative` bridge through `SDK/web/native.mjs`.
+generic `tilrNative` bridge: `connectNative()` from `'tilr/native'`, a module of the
+Tilr page (its import map; types in `@tilr-dev/plugin`, see `../web/docs/plugin-sdk.md`).
 
 ## Build and install
 
@@ -161,7 +161,7 @@ pages and subframes get no native bridge. Events are origin-checked again inside
 the destination JavaScript to prevent delivery across navigation.
 
 ```js
-import { connectNative } from './native.mjs'
+import { connectNative } from 'tilr/native'
 const native = connectNative()
 const providers = await native.describe()
 const off = native.on('tilr-audio', state => console.log(state))
@@ -182,7 +182,7 @@ separate Swift package and can be used by plugin repositories outside this tree.
 ```sh
 swift test --disable-sandbox
 swift test --disable-sandbox --package-path SDK
-node --test SDK/web/native.test.mjs
+# The JavaScript bridge ('tilr/native') is tested in ../web: src/tilr/native.test.ts (npm run test:unit)
 python3 ../apps/mac/scripts/test_native_plugins.py
 # In a logged-in desktop session, includes the existing browser and app probes:
 python3 ../apps/mac/scripts/test_native_plugins.py --gui
