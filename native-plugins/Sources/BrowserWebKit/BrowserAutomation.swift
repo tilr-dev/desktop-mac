@@ -15,10 +15,14 @@ final class BrowserAutomation: NSObject, WKScriptMessageHandler {
         self.timeout = timeout; self.privateInput = privateInput; self.inputInterval = inputInterval
     }
 
-    func install(_ controller: WKUserContentController) {
+    /// A new web view (a discarded one made again): the old documents' frames are gone.
+    func reset() { frames.removeAll() }
+
+    /// `mainFrameOnly`: iframes (often ads) get no script, and so no frame handle.
+    func install(_ controller: WKUserContentController, mainFrameOnly: Bool = false) {
         controller.add(self, contentWorld: Self.world, name: "tilrBrowserFrame")
         controller.addUserScript(WKUserScript(source: Self.script, injectionTime: .atDocumentStart,
-                                             forMainFrameOnly: false, in: Self.world))
+                                             forMainFrameOnly: mainFrameOnly, in: Self.world))
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -68,6 +72,20 @@ final class BrowserAutomation: NSObject, WKScriptMessageHandler {
         try Task.checkCancellation()
         guard let text = result as? String else { return NSNull() }
         return try JSONSerialization.jsonObject(with: Data(text.utf8), options: .fragmentsAllowed)
+    }
+
+    /// Whether a document of the view plays media: a `video` / `audio` element neither paused
+    /// nor ended, in the main frame or a frame with the automation script. A frame that does not
+    /// answer counts as not playing. (WebKit's `requestMediaPlaybackState` says `playing` for
+    /// any page with a media element the app did not pause, so it cannot tell.)
+    @MainActor
+    func playing() async -> Bool {
+        let targets: [String?] = [nil] + frames.filter { !$0.value.isMainFrame }.map(\.key)
+        for frame in targets {
+            let found = try? await evaluate("return [...document.querySelectorAll('video,audio')].some(m => !m.paused && !m.ended)", frame: frame)
+            if found as? Bool == true { return true }
+        }
+        return false
     }
 
     @MainActor
@@ -269,6 +287,8 @@ extension WebViewHost {
         if action == "list" { return ["browsers": browserList()] }
         guard let id = request["browser"] as? String else { throw PluginFailure(message: "browser id required; call browser list") }
         let view = try browser(id)
+        // A discarded view comes back for automation (loaded, or after automation_timeout).
+        if action != "navigate" { await view.wake() }
         let automation = view.automation
         automation.timeout = settings.automationTimeout
         automation.privateInput = settings.automationPrivateInput

@@ -23,7 +23,12 @@ final class BrowserPlugin: NSObject, TLRNativePlugin {
             let data = try JSONSerialization.data(withJSONObject: host.configuration["browser"] ?? [:])
             let settings = try JSONDecoder().decode(BrowserSettings.self, from: data)
             guard settings.tunnelChunk > 0, settings.automationTimeout.isFinite, settings.automationTimeout > 0,
-                  settings.automationInputInterval > 0, settings.automationInputInterval <= settings.automationTimeout else {
+                  settings.automationInputInterval > 0, settings.automationInputInterval <= settings.automationTimeout,
+                  ["all", "main"].contains(settings.automationFrames),
+                  settings.liveResizeInterval.isFinite, settings.liveResizeInterval >= 0,
+                  settings.progressInterval.isFinite, settings.progressInterval >= 0,
+                  settings.adoptGrace.isFinite, settings.adoptGrace >= 0,
+                  settings.discardAfter.isFinite, settings.discardAfter >= 0 else {
                 throw PluginFailure(message: "invalid browser configuration")
             }
             if let views { views.settings = settings }
@@ -45,7 +50,7 @@ final class BrowserPlugin: NSObject, TLRNativePlugin {
             do {
                 try Task.checkCancellation()
                 if request["action"] as? String == "probe" {
-                    try await probeBrowserAutomation(settings: views.settings)
+                    try await probeBrowserAutomation(settings: views.settings, host: self?.host)
                     completion(["ok": true], nil)
                 } else { completion(try await views.browserCommand(request), nil) }
             } catch { completion(nil, error) }
@@ -54,6 +59,7 @@ final class BrowserPlugin: NSObject, TLRNativePlugin {
 
     func cancelRequest(_ identifier: String) { requests.removeValue(forKey: identifier)?.cancel() }
     private func cancelAll() { for task in requests.values { task.cancel() }; requests.removeAll() }
-    func pageDidNavigate() { cancelAll(); views?.removeAll() }
+    /// Views with a key wait for the new page to adopt them (`browser.adopt_grace`).
+    func pageDidNavigate() { cancelAll(); views?.park() }
     func stop() { cancelAll(); views?.removeAll(); views = nil; host = nil }
 }
