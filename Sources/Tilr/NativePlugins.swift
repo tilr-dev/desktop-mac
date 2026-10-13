@@ -186,15 +186,20 @@ final class NativePluginSession: @unchecked Sendable {
     private let settings: Config.NativePlugins
     private(set) var configuration: [String: Any] = [:]
     private(set) var pluginOptions: [String: Any] = [:]
+    /// Host settings added to the plugins' `browser` map, over any key of that name:
+    /// `inspectable` (`debug.inspectable`) and `high_refresh_rate` (`web.high_refresh_rate`),
+    /// as the tab was made with them (both apply at launch).
+    private let hostBrowser: [String: Any]
     private var pending: [UUID: (Result<[String: Any], Error>) -> Void] = [:]
     private var stopped = false
     private var started = false
 
     /// Records the settings only; the providers are made and started by `start()`, when the
     /// tab first loads its page (`switch.preload`).
-    init(tab: Tab, settings: Config.NativePlugins, browser: Config.Browser) {
+    init(tab: Tab, settings: Config.NativePlugins, browser: Config.Browser, inspectable: Bool, highRefreshRate: Bool) {
         self.tab = tab
         self.settings = settings
+        hostBrowser = ["inspectable": inspectable, "high_refresh_rate": highRefreshRate]
         configure(browser: browser, options: settings.options)
     }
 
@@ -240,10 +245,10 @@ final class NativePluginSession: @unchecked Sendable {
     func configure(browser: Config.Browser, options: [String: Config.PluginValue]) {
         dispatchPrecondition(condition: .onQueue(.main))
         pluginOptions = options.mapValues(\.value)
-        if let data = try? JSONEncoder().encode(browser),
-           let value = try? JSONSerialization.jsonObject(with: data) {
-            configuration["browser"] = value
-        }
+        var value = (try? JSONEncoder().encode(browser))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        value.merge(hostBrowser) { _, host in host }
+        configuration["browser"] = value
         for provider in providers.values { provider.plugin.configurationDidChange() }
     }
 

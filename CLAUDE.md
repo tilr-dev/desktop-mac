@@ -10,6 +10,12 @@ The page's web views (the `webviews` service of the web repo, a plugin's browser
 WKWebViews supplied by the separately compiled `browser-webkit` plugin
 (`../../native-plugins/Sources/BrowserWebKit`), in an AppKit SDK overlay of their
 own, ordered and masked (holes) as the page stacks their hosts: a float over a browser tile shows.
+A reload of the page parks the views made with a `key` (a browser window's id) for
+`browser.adopt_grace` seconds; the new page's `create` with that key adopts the live view.
+A view wholly under the holes or off the overlay is hidden (no rendering; automation
+`evaluate` still answers, click and hover refuse a hidden view); size changes during a live resize reach it every `browser.live_resize_interval` ms.
+A view hidden (or parked, in a concealed tab, in an occluded or minimized window) for `browser.discard_after` seconds drops its WKWebView (process exits,
+last picture kept, `discarded: true`) and comes back with history and scroll when shown.
 Native audio also lives in `../../native-plugins`. This app depends only on the SDK's
 Objective-C ABI headers; never add provider implementations back to this target. Generic
 native placement belongs in `TilrPluginViews`, not the browser engine. See
@@ -56,6 +62,8 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
   | `Shell.swift` | `CGSMainConnectionID`, `CGSGetActiveSpace`, `CGSCopyManagedDisplaySpaces`, `CGSCopySpacesForWindows`; `SLSBridgedMoveWindowsToManagedSpaceOperation.initWithWindows:spaceID:` / `performWithWMBridgeDelegate` (symbol/class/method/ABI guards); `CGSMoveWindowsToManagedSpace` only before macOS 14.5 | `next-desktop`, `--probe` round trip | explicit unavailable on unsupported systems; async result verified by exact desktop membership, timeout reports failure; no SIP changes |
   | `../../native-plugins/Sources/BrowserWebKit/BrowserAutomation.swift` | `WKWebView._simulateMouseMove:` (`NSSelectorFromString`, `responds(to:)`) | native browser hover; enabled by `browser.automation_private_input` | explicit unavailable error; click uses public AppKit input, scroll uses DOM `scrollBy` |
   | `Debug.swift` | `WKWebView._webProcessIdentifier` (`NSSelectorFromString` + `responds(to:)`, `value(forKey:)`) | demand-driven Performance bridge: WebContent pids | unavailable (never includes unrelated apps) |
+  | `Tab.swift` (`WebKitFeatures`) | `+[WKPreferences _features]` → `_WKFeature.key`; `-[WKPreferences _setEnabled:forFeature:]` (BOOL, `@convention(c)` cast of `method(for:)`), read back with `_isEnabledForFeature:` — all `NSSelectorFromString` + `responds(to:)` | `web.high_refresh_rate`: `PreferPageRenderingUpdatesNear60FPSEnabled` off, pages render at 120 Hz on ProMotion; also handed to the browser plugin as `browser.high_refresh_rate` | stays at 60 Hz; logged once, `tilr ctl debug status` → `highRefreshRate: unavailable` |
+  | `../../native-plugins/Sources/BrowserWebKit/WebKitFeatures.swift` (copy of `Tab.swift`'s) | `+[WKPreferences _features]`, `-_setEnabled:forFeature:`, `-_isEnabledForFeature:` (`NSSelectorFromString`, `responds(to:)`, `@convention(c)` cast) | `browser.high_refresh_rate` (from `web.high_refresh_rate`): browser views without WebKit's 60 Hz cap | logged once as unavailable; the views stay at 60 Hz |
   | `Memory.swift` | `WKWebView._inspector` → `_WKInspector.show`; `WKPreferences._setDeveloperExtrasEnabled:` (KVC `developerExtrasEnabled`, set on request only) — all `NSSelectorFromString` + `responds(to:)`, never linked | Performance `{type:'inspector'}`, `tilr ctl debug inspect`: open Web Inspector for the tab's page | `{ shown: false, reason }`; Safari → Develop → Tilr (`isInspectable`) |
 
 - **Memory diagnosis** (`Memory.swift`, Performance bridge `{type:'footprint'|'squeeze'|'inspector'}`,
@@ -73,3 +81,12 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
   `control.console_capture` (at launch), batched per microtask and cut at
   `control.console_entry_max` characters; `debug.inspectable` (at launch) controls Safari → Develop.
   `SiteSchemeHandler` serves the apps' files on a background queue.
+  The relay serializes an object argument only up to the cut (a `JSON.stringify` replacer that
+  rebuilds the text and stops the walk), so a huge object costs about `console_entry_max`
+  characters; the kept text equals a full `JSON.stringify` cut (`--probe` compares them).
+- **Refresh rate**: `web.high_refresh_rate` (at launch) lifts WebKit's 60 Hz rendering cap on
+  120 Hz panels (no effect on a 75 Hz display). `--probe` asserts the switch only; check the rate
+  by hand in the test instance with the window on the built-in display:
+  `tilr ctl debug status` (`highRefreshRate: true`) and
+  `tilr ctl eval 'const ts=[]; await new Promise(r => { const f = t => { ts.push(t); t - ts[0] < 2000 ? requestAnimationFrame(f) : r() }; requestAnimationFrame(f) }); return (ts.length - 1) / ((ts.at(-1) - ts[0]) / 1000)'`
+  (≈120 with the key, ≈60 without; the window must be visible, `document.visibilityState`).

@@ -13,6 +13,7 @@ struct Config: Decodable {
     var controlPlane: ControlPlane
     var control: Control
     var browser: Browser
+    var web: Web
     var nativePlugins: NativePlugins
     var sshAgent: SSHAgent
     var debug: Debug
@@ -20,7 +21,7 @@ struct Config: Decodable {
     var watch: Watch
 
     enum CodingKeys: String, CodingKey {
-        case site, apps, window, control, browser, debug, watch
+        case site, apps, window, control, browser, web, debug, watch
         case nativePlugins = "native_plugins"
         case sshAgent = "ssh_agent"
         case switching = "switch"
@@ -224,6 +225,16 @@ struct Config: Decodable {
         var automationTimeout: Double
         var automationPrivateInput: Bool
         var automationInputInterval: Double
+        /// `all` | `main`: which frames get the browser automation script.
+        var automationFrames: String
+        /// Milliseconds between relayouts of an embedded page while its tile is being resized.
+        var liveResizeInterval: Double
+        /// Milliseconds between progress-only `tilr-webview` reports.
+        var progressInterval: Double
+        /// Seconds a browser view of a reloaded page waits to be adopted by the new page.
+        var adoptGrace: Double
+        /// Seconds a hidden browser view waits before its web content is released; 0: never.
+        var discardAfter: Double
 
         enum CodingKeys: String, CodingKey {
             case userAgent = "user_agent"
@@ -231,6 +242,22 @@ struct Config: Decodable {
             case automationTimeout = "automation_timeout"
             case automationPrivateInput = "automation_private_input"
             case automationInputInterval = "automation_input_interval"
+            case automationFrames = "automation_frames"
+            case liveResizeInterval = "live_resize_interval"
+            case progressInterval = "progress_interval"
+            case adoptGrace = "adopt_grace"
+            case discardAfter = "discard_after"
+        }
+    }
+
+    /// How the page's web views render (Tab.swift; the browser plugin gets the same values).
+    struct Web: Decodable {
+        /// Pages may render at the display's native rate (120 Hz on ProMotion) instead of
+        /// WebKit's 60 Hz cap (a guarded WebKit SPI, WebKitFeatures). At launch.
+        var highRefreshRate: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case highRefreshRate = "high_refresh_rate"
         }
     }
 
@@ -264,7 +291,8 @@ struct Config: Decodable {
         var footprintTimeout: Double
         /// Seconds `squeeze` waits after the low-memory notification before reading `after`.
         var squeezeSettle: Double
-        /// The page's web view can be inspected (Safari → Develop → Tilr). At launch.
+        /// The page's web view can be inspected (Safari → Develop → Tilr); also handed to the
+        /// browser plugin as `browser.inspectable`. At launch.
         var inspectable: Bool
 
         enum CodingKeys: String, CodingKey {
@@ -453,20 +481,59 @@ struct Config: Decodable {
           request_timeout: 30  # seconds before a native control request fails; at launch
           options: {}         # per-plugin JSON settings, keyed by plugin id; hot reloaded
 
+        # How the apps' pages render.
+        web:
+          # true: pages render at the display's native rate (120 Hz on a ProMotion panel) instead
+          # of WebKit's 60 Hz cap; costs up to 2× CPU/GPU while something animates. No effect on a
+          # display whose rate is not a multiple of 60 (a 75 Hz one runs at its own rate anyway).
+          # Uses a WebKit feature switch that is not public API; where it is missing the pages stay
+          # at 60 Hz. Also applied to the browser plugin's web views (handed to it as
+          # browser.high_refresh_rate, not a key of browser: below). At launch.
+          high_refresh_rate: false
+
         # The page's web views: a plugin's browser window is a WKWebView of the app's, placed over
-        # the window's content (the webviews service of the page). Applies to views made after
-        # the change.
+        # the window's content (the webviews service of the page). A key applies to views made
+        # after the change unless its comment says otherwise.
         browser:
           # The User-Agent the views send. Empty: WebKit's own, which some sites take for an old
           # browser; Safari's own string makes them behave, e.g.
           # "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15".
           user_agent: ""
-          # Seconds allowed for one browser automation JavaScript operation.
+          # Seconds allowed for one browser automation JavaScript operation. Also the most a
+          # discard waits for its media check, and how long a view coming back from a discard
+          # keeps its picture when its page does not finish loading. On reload.
           automation_timeout: 10
           # Seconds between checks that native input focus reached the browser.
           automation_input_interval: 0.05
           # Allow guarded WebKit SPI for native hover; unavailable if disabled.
           automation_private_input: true
+          # Which frames get the browser automation script: all, or main (iframes, often ads,
+          # get none: less work per page, but automation cannot target an iframe).
+          automation_frames: all
+          # Milliseconds: how often an embedded page is relaid out while its tile is being
+          # resized; the final size is always applied when the changes stop. Meanwhile the view
+          # keeps its last size, clipped to the tile. 0: on every change. Moves apply at once.
+          # Also the delay before a view that went hidden is pictured for discard_after (a float
+          # dragged over it is not pictured on every cover). On reload.
+          live_resize_interval: 40
+          # Milliseconds between the views' load progress reports to the page that change only
+          # the progress; the start, the end and every other change are reported at once. On
+          # reload.
+          progress_interval: 100
+          # Seconds a browser view of a reloaded page (also a rebuild of the site) waits to be
+          # adopted by the new page before it is disposed: the same window of the new page gets
+          # the same view back, its content, scroll, forms and script state kept, nothing loaded
+          # again. 0 disables adoption: every view goes with the page. Read at each navigation.
+          adopt_grace: 10
+          # Seconds a browser view stays hidden (not visible to the page, covered, or off-screen;
+          # a parked view, a view in a concealed tab, or in a window that is occluded, minimized
+          # or on another Space too) before its web content is released: its process exits and
+          # its memory goes, its last picture stays in place, and history and scroll are restored
+          # when it is shown again (the page loads again; script state, forms and media are
+          # lost). A view playing media or using the camera or microphone is kept; the media
+          # check waits up to automation_timeout, and the picture stays at most that long while
+          # the view comes back. 0 never discards. On reload.
+          discard_after: 0
           # A profile's tunnel (a tilr server's /socks, bridged to a local SOCKS port for WebKit):
           # bytes read from a connection at a time, the most one WebSocket message carries; the
           # next read waits until they are sent. Applies to tunnels started after the change.
@@ -498,7 +565,9 @@ struct Config: Decodable {
           sample: 0.5     # deprecated; shared web sampler runs once per second
           footprint_timeout: 5  # seconds /usr/bin/footprint may run for Performance footprint / ctl debug footprint
           squeeze_settle: 2     # seconds squeeze (org.WebKit.lowMemory) waits before reading the footprint again
-          inspectable: true     # Safari → Develop → Tilr can inspect the page's web view (not the browser views); at launch
+          # Safari → Develop → Tilr can inspect the page's web view; also applied to the browser
+          # plugin's web views (handed to it as browser.inspectable, not a key of browser:). At launch.
+          inspectable: true
 
         """
 

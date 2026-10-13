@@ -127,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func makeTab(_ app: Site.App) -> Tab {
         // Control is read at launch: a tab made later still follows that choice.
         let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser, native: nativePluginSettings,
-                      sshAgent: config.sshAgent, watchLatency: config.watch.latency, inspectable: config.debug.inspectable,
+                      sshAgent: config.sshAgent, watchLatency: config.watch.latency, inspectable: config.debug.inspectable, web: config.web,
                       collector: debug.collector)
         tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
         tab.didLoad = { [weak self] in self?.loaded($0) }
@@ -371,7 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defer { try? FileManager.default.removeItem(at: root) }
         let app = Site.App(name: "history-probe", root: root)
         let tab = Tab(app: app, control: config.control, browser: config.browser, native: config.nativePlugins, sshAgent: config.sshAgent,
-                      watchLatency: config.watch.latency, inspectable: config.debug.inspectable)
+                      watchLatency: config.watch.latency, inspectable: config.debug.inspectable, web: config.web)
         func loaded() async {
             for _ in 0..<200 {
                 if tab.isLoaded { return }
@@ -422,7 +422,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `--probe`, the page's plumbing on a temporary app: the scheme handler (files, directories,
     /// SPA fallback, missing files, MIME types, a double reload), native → page events (`Tab.send`
     /// and `NativePluginSession.emit` deliver the detail unchanged), the console relay (batched,
-    /// in order, cut at `control.console_entry_max`), snapshot PNGs and `debug.inspectable`.
+    /// in order, cut at `control.console_entry_max`, objects serialized only up to the cut),
+    /// snapshot PNGs, `debug.inspectable`, the `web.high_refresh_rate` switch and the host
+    /// settings handed to the browser plugin.
     @MainActor
     func probePagePlumbing() async {
         guard Site.devURL == nil else { return print("skipped (dev server)") }
@@ -443,7 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let tab = Tab(app: Site.App(name: "plumbing-probe", root: root), control: config.control, browser: config.browser,
                       native: config.nativePlugins, sshAgent: config.sshAgent, watchLatency: config.watch.latency,
-                      inspectable: config.debug.inspectable)
+                      inspectable: config.debug.inspectable, web: config.web)
         defer { tab.nativePlugins.stop() }
         func loaded() async {
             await tab.firstLoad(within: config.control.loadTimeout)
@@ -507,7 +509,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          && entries.last?.text == String(repeating: "x", count: max) + "…",
                          "console caught \(entries.map { ($0.type, $0.text.prefix(40), $0.text.count) })")
             check(entries.allSatisfy { abs($0.time - Date().timeIntervalSince1970) < 60 }, "console times are off")
+
+            // Objects are serialized only up to the cut, and the kept text is a full
+            // JSON.stringify's cut (toJSON, omitted members, boxed values, shared objects, ...).
+            tab.console.removeAll()
+            let expected = await js("""
+                const max = \(max), shared = { q: [1, { z: 2 }], e: {} }, sparse = [1, , 3]; sparse.x = 5
+                const cases = [
+                  [{ a: shared, b: shared, c: [shared, {}], d: [], u: undefined, f: () => 1, n: NaN, z: -0 }],
+                  [sparse, new Map([[1, 2]]), new Date(0), { toJSON: k => ({ key: k }) }],
+                  [[undefined, () => 1, Symbol('s')], { s: new String('s'), b: new Boolean(false), n: new Number(2) }],
+                  ['lead', { big: 'y'.repeat(max * 2) }, 'tail'],
+                  [{ text: 'quote " newline \\n \\u2028 😀'.repeat(max) }],
+                  [undefined], [() => 1],
+                ]
+                let reads = 0
+                const counted = Array.from({ length: 50000 }, (_, i) => ({ get v() { reads++; return i } }))
+                const cut = text => text.length > max ? text.slice(0, max) + '…' : text
+                const full = args => cut(args.map(a => typeof a === 'string' ? a : JSON.stringify(a) ?? String(a)).join(' '))
+                for (const args of cases) console.log(...args)
+                console.log(counted)
+                return JSON.stringify({ texts: cases.map(full), reads })
+                """) as? String ?? ""
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            let want = (try? JSONSerialization.jsonObject(with: Data(expected.utf8))) as? [String: Any] ?? [:]
+            let texts = want["texts"] as? [String] ?? []
+            let caught = tab.console.entries.map(\.text)
+            check(!texts.isEmpty && Array(caught.prefix(texts.count)) == texts,
+                  "console serialization: \(zip(caught, texts).filter { $0 != $1 }.map { ($0.prefix(60), $1.prefix(60)) })")
+            let reads = want["reads"] as? Int ?? .max
+            check(caught.count == texts.count + 1 && caught.last?.hasSuffix("…") == true && reads <= max,
+                  "console serialization is not bounded: \(reads) getter reads for a \(max)-character entry")
         }
+
+        // web.high_refresh_rate: WebKit's 60 Hz switch can be turned off (on a throwaway
+        // preferences object, whatever the config says); with the key on, the page has it off.
+        // The rate itself depends on the display the window is on: checked by hand (CLAUDE.md).
+        check(WebKitFeatures.set(WebKitFeatures.near60FPS, enabled: false, on: WKPreferences()),
+              "WebKit feature \(WebKitFeatures.near60FPS) unavailable")
+        check((tab.highRefreshRate as? Bool) == config.web.highRefreshRate, "web.high_refresh_rate not applied: \(tab.highRefreshRate)")
+        let pluginBrowser = tab.nativePlugins.configuration["browser"] as? [String: Any] ?? [:]
+        check(pluginBrowser["inspectable"] as? Bool == config.debug.inspectable
+              && pluginBrowser["high_refresh_rate"] as? Bool == config.web.highRefreshRate,
+              "the browser plugin's host settings: \(pluginBrowser)")
 
         // Snapshot → PNG off the main thread.
         let png = files.temporaryDirectory.appendingPathComponent("tilr-plumbing-\(UUID().uuidString).png")
@@ -520,7 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch { check(false, "snapshot: \(error)") }
         let header = (try? Data(contentsOf: png))?.prefix(8)
         check(header == Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), "snapshot is not a PNG")
-        print("page plumbing: scheme handler, double reload, native events, console relay, snapshot PNG: ok")
+        print("page plumbing: scheme handler, double reload, native events, console relay and its bounded serialization, high refresh rate switch, plugin host settings, snapshot PNG: ok")
     }
 
     /// `--probe`, web part: reports what loaded, clicks through the header's clock menu from JS and,

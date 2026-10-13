@@ -41,6 +41,9 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// The page's console, the last `control.console` entries (Tilr Control's `console`).
     var console: ConsoleLog
     private let relay = ConsoleRelay()
+    /// `web.high_refresh_rate` as applied to this page: true, false, or "unavailable" (asked
+    /// for, but WebKit has no such switch here). `tilr ctl debug status` reports it.
+    let highRefreshRate: Any
 
     /// The page has finished loading and no navigation is under way: JavaScript may be
     /// evaluated (during a navigation it can hang the call). Debug mode's `status` and `record`
@@ -78,9 +81,10 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     /// `control`: with Tilr Control on, the page's console is caught for it (`control.console_capture`).
     /// `browser`: how the page's web views are made. `inspectable`: `debug.inspectable`.
+    /// `web`: how the page renders (`web.high_refresh_rate`).
     /// `collector`: debug mode's script (Debug.swift), nil while off.
     init(app: Site.App, control: Config.Control?, browser: Config.Browser, native: Config.NativePlugins, sshAgent: Config.SSHAgent,
-         watchLatency: Double, inspectable: Bool, collector: String? = nil) {
+         watchLatency: Double, inspectable: Bool, web: Config.Web, collector: String? = nil) {
         self.app = app
         self.watchLatency = watchLatency
         let catchesConsole = control?.consoleCapture == true
@@ -90,6 +94,14 @@ final class Tab: NSObject, WKNavigationDelegate {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = Instance.store
         configuration.setURLSchemeHandler(site, forURLScheme: SiteSchemeHandler.scheme)
+        // WebKit caps rendering updates (rAF) near 60 Hz unless this feature is off; read when
+        // the web view is made, so it is set before.
+        if web.highRefreshRate {
+            highRefreshRate = WebKitFeatures.set(WebKitFeatures.near60FPS, enabled: false, on: configuration.preferences)
+                ? true : "unavailable"
+        } else {
+            highRefreshRate = false
+        }
         let controller = configuration.userContentController
         if catchesConsole, let control {
             controller.addUserScript(WKUserScript(source: ConsoleRelay.script(entryMax: control.consoleEntryMax),
@@ -105,7 +117,8 @@ final class Tab: NSObject, WKNavigationDelegate {
         relay.tab = self
         localServer.tab = self
         performanceBridge.tab = self
-        nativePlugins = NativePluginSession(tab: self, settings: native, browser: browser)
+        nativePlugins = NativePluginSession(tab: self, settings: native, browser: browser, inspectable: inspectable,
+                                           highRefreshRate: web.highRefreshRate)
         nativePlugins.attach(to: controller)
         agent.send = { [weak self] in self?.send(event: AgentHost.event, detail: $0) }
         webView.navigationDelegate = self
@@ -324,5 +337,46 @@ final class Tab: NSObject, WKNavigationDelegate {
         // The key tab takes the keyboard once it has a page; a hidden one must not steal it.
         if !webView.isHiddenOrHasHiddenAncestor { webView.window?.makeFirstResponder(webView) }
         didLoad?(self)
+    }
+}
+
+/// WebKit's feature switches (`+[WKPreferences _features]`, the flags Safari's Develop →
+/// Feature Flags shows): private API, resolved at run time and guarded (CLAUDE.md lists it).
+enum WebKitFeatures {
+    /// On by default: rendering updates (rAF, CSS animations) near 60 Hz even on a 120 Hz panel.
+    static let near60FPS = "PreferPageRenderingUpdatesNear60FPSEnabled"
+
+    private typealias SetEnabled = @convention(c) (AnyObject, Selector, Bool, AnyObject) -> Void
+    private typealias IsEnabled = @convention(c) (AnyObject, Selector, AnyObject) -> Bool
+    private static var reported = false
+
+    /// Sets the feature `key` on `preferences` (before a web view is made with them). False when
+    /// WebKit has no such feature or switch, or the switch did not take; that is logged once.
+    @discardableResult
+    static func set(_ key: String, enabled: Bool, on preferences: WKPreferences) -> Bool {
+        let setter = NSSelectorFromString("_setEnabled:forFeature:")
+        let list = NSSelectorFromString("_features")
+        let features = (WKPreferences.self as AnyObject).responds(to: list)
+            ? (WKPreferences.self as AnyObject).perform(list)?.takeUnretainedValue() as? [NSObject] : nil
+        let feature = features?.first { $0.responds(to: NSSelectorFromString("key")) && $0.value(forKey: "key") as? String == key }
+        guard let feature, preferences.responds(to: setter) else {
+            return unavailable(key, "no _features entry or _setEnabled:forFeature:")
+        }
+        unsafeBitCast(preferences.method(for: setter), to: SetEnabled.self)(preferences, setter, enabled, feature)
+        // Read back where WebKit can say: a switch that did not take is no success.
+        let getter = NSSelectorFromString("_isEnabledForFeature:")
+        guard preferences.responds(to: getter) else { return true }
+        guard unsafeBitCast(preferences.method(for: getter), to: IsEnabled.self)(preferences, getter, feature) == enabled else {
+            return unavailable(key, "the switch did not take")
+        }
+        return true
+    }
+
+    private static func unavailable(_ key: String, _ why: String) -> Bool {
+        if !reported {
+            reported = true
+            print("WebKit feature \(key): unavailable (\(why))")
+        }
+        return false
     }
 }

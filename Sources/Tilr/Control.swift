@@ -19,7 +19,9 @@ import WebKit
 ///   { "cmd": "debug", "action": "status" }         Performance service: enabled, react (the page's
 ///                                                   build), mechanism, active (a page recording), dir,
 ///                                                   recording (a CLI record); mechanism 'none' + reason
-///                                                   while the page loads or without the plugin
+///                                                   while the page loads or without the plugin;
+///                                                   highRefreshRate: true, false or 'unavailable'
+///                                                   (web.high_refresh_rate as applied to the page)
 ///   { "cmd": "debug", "action": "on" }              shared Performance switch in the selected tab; reload scheduled
 ///   { "cmd": "debug", "action": "record", "seconds": 5, "path": "~/x.json" }
 ///                                                   performance.record(), waits, writes finish()'s recording
@@ -282,6 +284,7 @@ final class ControlServer {
             }
             result["dir"] = debug.dir
             result["recording"] = debug.recording
+            result["highRefreshRate"] = tab.highRefreshRate
             return result
         case "on", "off":
             return try await evaluate(tab, body: service + "if (p.enabled !== on) setTimeout(() => { void p.enable(on) }, 0); return { mechanism: 'performance', requested: on, reloading: p.enabled !== on };", arguments: ["on": action == "on"]) as? [String: Any] ?? [:]
@@ -354,6 +357,12 @@ final class ConsoleRelay: NSObject, WKScriptMessageHandler {
     /// Wraps console.* and reports window errors, at document start, in every frame. Entries
     /// are queued and posted as one array per microtask checkpoint; each keeps at most
     /// `entryMax` characters (`control.console_entry_max`), a cut one ends in "…".
+    /// An object argument is JSON as `JSON.stringify` makes it (`String(a)` when that fails),
+    /// but serializing stops once the entry is over `entryMax`: a replacer rebuilds the text
+    /// as it goes and ends the walk there, so a huge object costs about its first `entryMax`
+    /// characters (plus enumerating the keys of the objects it opens). The kept text is the
+    /// same as a full `JSON.stringify` cut; only a cycle or BigInt past the cut no longer turns
+    /// the argument into `String(a)`.
     static func script(entryMax: Int) -> String {
         """
         (() => {
@@ -364,12 +373,49 @@ final class ConsoleRelay: NSObject, WKScriptMessageHandler {
             queue = []
             try { window.webkit.messageHandlers.\(name).postMessage(entries) } catch {}
           }
+          const stringify = JSON.stringify, isArray = Array.isArray
+          const over = {}
+          // JSON.stringify(a), or, once that is longer than budget characters, its first budget
+          // characters and a bit more: the replacer rebuilds the text as JSON.stringify walks
+          // (preorder, values after toJSON) and stops it there.
+          const encode = (a, budget) => {
+            if (typeof a === 'string') return a
+            if (a instanceof Error) return a.stack || a.message
+            let out = ''
+            // The open objects and arrays: [holder, is an array, members written].
+            const open = []
+            try {
+              return stringify(a, function (k, v) {
+                const omitted = v === undefined || typeof v === 'function' || typeof v === 'symbol'
+                if (open.length) {
+                  while (open[open.length - 1][0] !== this) out += open.pop()[1] ? ']' : '}'
+                  const top = open[open.length - 1]
+                  if (omitted && !top[1]) return v
+                  if (top[2]++) out += ','
+                  if (!top[1]) out += stringify(k) + ':'
+                } else if (omitted) return v
+                let w = v
+                if (w instanceof Number) w = Number(w)
+                else if (w instanceof String) w = String(w)
+                else if (w instanceof Boolean) w = w.valueOf()
+                if (omitted || w === null) out += 'null'
+                else if (typeof w === 'boolean') out += w ? 'true' : 'false'
+                else if (typeof w === 'number') out += isFinite(w) ? String(w) : 'null'
+                else if (typeof w === 'string') out += stringify(w.slice(0, Math.max(budget - out.length + 2, 0)))
+                else if (typeof w === 'object') { const list = isArray(w); out += list ? '[' : '{'; open.push([w, list, 0]) }
+                if (out.length > budget) throw over
+                return v
+              }) ?? String(a)
+            } catch (e) {
+              return e === over ? out : String(a)
+            }
+          }
           const post = (type, args) => {
-            let text = args.map(a => {
-              if (typeof a === 'string') return a
-              if (a instanceof Error) return a.stack || a.message
-              try { return JSON.stringify(a) ?? String(a) } catch { return String(a) }
-            }).join(' ')
+            let text = ''
+            for (let i = 0; i < args.length && text.length <= max; i++) {
+              if (i) text += ' '
+              text += encode(args[i], max - text.length)
+            }
             if (text.length > max) text = text.slice(0, max) + '…'
             if (queue.push({ type, text, time: Date.now() }) === 1) queueMicrotask(flush)
           }
