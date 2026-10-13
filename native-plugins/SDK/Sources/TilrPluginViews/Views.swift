@@ -57,21 +57,35 @@ public final class ViewSurface: NSView {
         return super.hitTest(point)
     }
 
+    /// The holes, bounds and flip the mask was last built for; unchanged input skips the layers.
+    private var masked: (holes: [CGRect], bounds: CGRect, flipped: Bool)?
+
     private func mask() {
         guard let layer else { return }
-        guard !holes.isEmpty else { layer.mask = nil; return }
+        // Standalone layers animate implicitly (0.25 s): the hole would trail a moving float.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard !holes.isEmpty else {
+            masked = nil
+            if layer.mask != nil { layer.mask = nil }
+            return
+        }
+        let bounds = layer.bounds
+        let flipped = layer.isGeometryFlipped || layer.contentsAreFlipped()
+        if let masked, layer.mask is CAShapeLayer, masked.holes == holes, masked.bounds == bounds, masked.flipped == flipped { return }
         let shape = (layer.mask as? CAShapeLayer) ?? CAShapeLayer()
-        shape.frame = layer.bounds
+        if shape.frame != bounds { shape.frame = bounds }
         shape.fillRule = .evenOdd
         let path = CGMutablePath()
-        path.addRect(layer.bounds)
-        let flipped = layer.isGeometryFlipped || layer.contentsAreFlipped()
+        path.addRect(bounds)
         let rects = holes.map { hole in
-            (flipped ? hole : CGRect(x: hole.minX, y: layer.bounds.height - hole.maxY, width: hole.width, height: hole.height)).intersection(layer.bounds)
+            (flipped ? hole : CGRect(x: hole.minX, y: bounds.height - hole.maxY, width: hole.width, height: hole.height)).intersection(bounds)
         }
         for rect in disjoint(rects) { path.addRect(rect) }
         shape.path = path
-        layer.mask = shape
+        if layer.mask !== shape { layer.mask = shape }
+        masked = (holes, bounds, flipped)
     }
 }
 

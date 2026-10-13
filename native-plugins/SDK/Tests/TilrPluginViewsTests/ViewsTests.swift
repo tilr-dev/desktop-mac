@@ -27,4 +27,23 @@ final class ViewsTests: XCTestCase {
         surface.place(CGRect(x: 0, y: 0, width: 100, height: 100), visible: false, z: 0, holes: [])
         XCTAssertTrue(surface.isHidden)
     }
+
+    @MainActor
+    func testMaskIsNotAnimatedAndReusedWhenUnchanged() throws {
+        let overlay = ViewOverlay(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        let surface = ViewSurface(content: NSView(), parent: overlay)
+        let holes = [CGRect(x: 10, y: 10, width: 20, height: 20)]
+        surface.place(CGRect(x: 0, y: 0, width: 200, height: 100), visible: true, z: 0, holes: holes)
+        let shape = try XCTUnwrap(surface.layer?.mask as? CAShapeLayer)
+        let path = shape.path
+        surface.place(CGRect(x: 50, y: 0, width: 200, height: 100), visible: true, z: 0, holes: holes)
+        XCTAssertTrue(surface.layer?.mask === shape)
+        XCTAssertTrue(shape.path === path, "same holes and bounds keep the mask untouched")
+        surface.place(CGRect(x: 50, y: 0, width: 200, height: 100), visible: true, z: 0,
+                      holes: [CGRect(x: 40, y: 10, width: 20, height: 20)])
+        XCTAssertFalse(shape.path === path)
+        XCTAssertNil(shape.animationKeys(), "hole changes apply at once")
+        surface.place(CGRect(x: 50, y: 0, width: 200, height: 100), visible: true, z: 0, holes: [])
+        XCTAssertNil(surface.layer?.mask)
+    }
 }

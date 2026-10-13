@@ -91,7 +91,6 @@ final class WebViewHost: NSObject {
                 return CGRect(x: x, y: y, width: width, height: height)
             }
             views[id]?.place(CGRect(x: x, y: y, width: width, height: height), visible: body["visible"] as? Bool ?? true, z: body["z"] as? Int ?? 0, holes: holes)
-            overlay?.order()
         case "navigate":
             views[id]?.load(body["url"] as? String ?? "about:blank")
         case "back": views[id]?.webView.goBack()

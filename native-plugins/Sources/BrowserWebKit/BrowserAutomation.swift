@@ -22,6 +22,11 @@ final class BrowserAutomation: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        // A document leaving (pagehide: navigation, iframe removal) drops its frame handle.
+        if let gone = (message.body as? [String: Any])?["gone"] as? String {
+            frames.removeValue(forKey: gone)
+            return
+        }
         guard let id = message.body as? String else { return }
         if message.frameInfo.isMainFrame { frames.removeAll() }
         frames[id] = message.frameInfo
@@ -35,7 +40,14 @@ final class BrowserAutomation: NSObject, WKScriptMessageHandler {
             guard let found = frames[id] else { throw PluginFailure(message: "unknown frame; list frames again") }
             frame = found
             // A WKFrameInfo may outlive the document. Never reuse a ref in a new document.
-            let current = try await webView.callAsyncJavaScript("return globalThis.__tilrBrowser?.id", arguments: [:], in: frame, contentWorld: Self.world)
+            let current: Any?
+            do {
+                current = try await webView.callAsyncJavaScript("return globalThis.__tilrBrowser?.id", arguments: [:], in: frame, contentWorld: Self.world)
+            } catch {
+                // The frame is gone (WebKit has no public subframe-removal signal besides pagehide).
+                frames.removeValue(forKey: id)
+                throw PluginFailure(message: "frame is gone; list frames again")
+            }
             guard current as? String == id else {
                 frames.removeValue(forKey: id)
                 throw PluginFailure(message: "stale frame; list frames again")
@@ -166,7 +178,9 @@ final class BrowserAutomation: NSObject, WKScriptMessageHandler {
     static let script = #"""
     (() => {
       const id = Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-      const refs = new Map(), ids = new WeakMap(), children = new Map();
+      // Refs live from one snapshot to the next; next keeps counting so an older ref never resolves.
+      let refs = new Map(), ids = new WeakMap();
+      const children = new Map();
       let next = 0;
       function ref(el) { if (!ids.has(el)) { const r = `${id}:${++next}`; ids.set(el, r); refs.set(r, el); } return ids.get(el); }
       function element(t) {
@@ -189,6 +203,7 @@ final class BrowserAutomation: NSObject, WKScriptMessageHandler {
       globalThis.__tilrBrowser = {
         id,
         snapshot() {
+          refs = new Map(); ids = new WeakMap();
           return {url: location.href, title: document.title, text: document.body?.innerText ?? '',
             elements: [...document.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable],iframe,frame')].map(el => {
               const r = el.getBoundingClientRect();
@@ -238,7 +253,11 @@ final class BrowserAutomation: NSObject, WKScriptMessageHandler {
       webkit.messageHandlers.tilrBrowserFrame.postMessage(id);
       function announce() { if (parent !== window) parent.postMessage({tilrBrowserFrame:id}, '*'); }
       addEventListener('DOMContentLoaded', announce);
-      addEventListener('pageshow', announce);
+      addEventListener('pageshow', event => {
+        if (event.persisted) webkit.messageHandlers.tilrBrowserFrame.postMessage(id);
+        announce();
+      });
+      addEventListener('pagehide', () => webkit.messageHandlers.tilrBrowserFrame.postMessage({gone: id}));
     })();
     """#
 }
