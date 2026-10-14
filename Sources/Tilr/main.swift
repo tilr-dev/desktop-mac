@@ -1,6 +1,7 @@
 import AppKit
 import WebKit
 import Sparkle
+import AppUpdates
 
 // Prints reach a log file or a pipe as they happen (run.sh with its output redirected), not in blocks.
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -19,7 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var debug: DebugMode!
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
-    var updater: SPUStandardUpdaterController?
+    var appUpdates: AppUpdates?
+    var updater: SPUStandardUpdaterController? { appUpdates?.controller }
     let about = About()
     /// `switch.preload` as read at launch.
     var preload: Config.Preload = .onSelect
@@ -41,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") is String,
            Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") is String {
             // Started once the window is up (below), so the first check does not delay it.
-            updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: about, userDriverDelegate: nil)
+            appUpdates = AppUpdates(updaterDelegate: about)
         }
         Config.writeDefaults()
         Instance.launched()
@@ -63,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The window first, empty; the tabs' views are added to it as they are made.
         shell.open()
         applyConfig()
-        if let updater { DispatchQueue.main.async { updater.startUpdater() } }
+        if let appUpdates { DispatchQueue.main.async { appUpdates.start() } }
         // default.yml is ours; only the user's file matters.
         configWatcher = FolderWatcher(Config.dir, latency: config.watch.latency) { [weak self] paths in
             if paths.contains(where: { $0.hasSuffix("/config.yml") }) { self?.reloadConfig() }

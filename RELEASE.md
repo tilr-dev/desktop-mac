@@ -144,7 +144,8 @@ only be used immediately after a successful matching build.
 ## Publish a Sparkle update
 
 The app uses SPUStandardUpdaterController and the native “Check for Updates…”
-menu. Sparkle manages automatic-check consent and update installation. The release
+menu. Automatic checks default to enabled (existing user preferences are respected);
+Sparkle manages download, signature verification, installation and relaunch. The release
 feed and public key are sealed into Info.plist before code signing. No updater
 contacts a feed during `--probe` or in unconfigured local builds.
 
@@ -311,3 +312,28 @@ the canonical download URL and SHA-256 before updating the feed. Canonical 404s
 are retried for up to 200 seconds to cover caches from earlier attempts. A checksum
 mismatch still fails immediately. Retry the same publish-only command after a failed
 publication; do not rebuild or change immutable DMGs to work around a cached 404.
+
+### Native update reminders
+
+`AppUpdates` is a separate Swift library target/product in this package. The host
+retains `AppUpdates(updaterDelegate:)`, calls `start()` after opening its window,
+and uses its `controller` for Check for Updates and About. A host with its own
+UNUserNotificationCenter delegate must forward update notification callbacks.
+Feed URL and public key still come from the signed host bundle.
+
+Sparkle checks every hour while the app is running (`SUScheduledCheckInterval` in
+Info.plist, in seconds; Sparkle enforces a one-hour minimum). It uses the last
+check time when scheduling after launch and respects saved user preferences.
+
+Scheduled updates show a native macOS banner and a persistent Dock arrow. Clicking
+the banner or Check for Updates opens Sparkle's install dialog. Permission denial
+uses Sparkle's normal presentation; notification submission errors also open it.
+Manual checks keep the normal UI. Reminders are cleared when the update receives
+attention or its session ends. macOS controls banner appearance and Focus filtering.
+Downloads/installation remain governed by Sparkle's preferences and user consent.
+Development builds, `--probe` and `--no-updates` never start this module.
+
+Acceptance on two signed builds: allow notifications, let a scheduled check find
+the newer build, verify banner and Dock arrow, click and install/relaunch; repeat
+with notifications denied and with a manual check. Opening About only requests
+version information and must not post a banner. Verify dismissal clears reminders.

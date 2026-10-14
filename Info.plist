@@ -31,6 +31,12 @@
     </dict>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- Sparkle respects the user’s saved preference over this initial default. -->
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <!-- Seconds between background checks while the app is running. -->
+    <key>SUScheduledCheckInterval</key>
+    <integer>3600</integer>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>
