@@ -100,6 +100,11 @@ def main():
         swift += ["--arch", arch]
     if args.swift_disable_sandbox:
         swift += ["--disable-sandbox"]
+    # The plugin manager (Rust static library, linked into the executable: nothing to bundle or
+    # sign) must exist before SwiftPM reads the package; rebuilt only when its sources changed.
+    pm_script = args.build_package.resolve() / "scripts/build-plugin-manager.sh"
+    if pm_script.exists():
+        run(pm_script, "--arch", *(["arm64", "--arch", "x86_64"] if args.arch == "universal" else [args.arch]))
     if not args.skip_build:
         run(*swift, env=env)
     binary_dir = Path(subprocess.check_output(swift + ["--show-bin-path"], env=env, text=True).strip())

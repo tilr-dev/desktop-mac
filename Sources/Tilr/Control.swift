@@ -32,6 +32,9 @@ import WebKit
 ///   { "cmd": "debug", "action": "squeeze" }         posts org.WebKit.lowMemory (every WebKit process on the Mac);
 ///                                                   { method: 'notify', before, after, processes, … } (bytes)
 ///   { "cmd": "debug", "action": "inspect" }         opens Web Inspector for the tab: { shown } or { shown: false, reason }
+///   { "cmd": "plugin-manager" }                     read-only: { workspace, catalog, open, git: "ok" or why not,
+///                                                   plugins: [{ id, source, version, commit, enabled, previous?, forkOf? }] }
+///                                                   (state.json, the workspace is not opened; error: { kind, message })
 ///
 /// `call` runs a method of a service of the page's cordis root (`window.tilr.root.get(service)`):
 /// `plugins.list / toggle / reload`, `layout.list / open / close / float / tile`,
@@ -51,16 +54,19 @@ final class ControlServer {
     /// `control.load_timeout`: seconds a command waits for an app's first page load.
     private let loadTimeout: () -> Double
     private let debug: DebugMode
+    /// `plugin-manager`: the plugin manager's state (PluginManagerHost.swift).
+    private let pluginManager: () async throws -> [String: Any]
     private var listener: NWListener?
 
     init(path: String, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab, Bool) -> Bool,
-         loadTimeout: @escaping () -> Double, debug: DebugMode) {
+         loadTimeout: @escaping () -> Double, debug: DebugMode, pluginManager: @escaping () async throws -> [String: Any]) {
         self.path = path
         self.tabs = tabs
         self.current = current
         self.select = select
         self.loadTimeout = loadTimeout
         self.debug = debug
+        self.pluginManager = pluginManager
     }
 
     func start() {
@@ -256,8 +262,10 @@ final class ControlServer {
             return try await page().nativePlugins.request(service: service, body: request["request"] as? [String: Any] ?? [:])
         case "browser":
             return try await page().nativePlugins.request(service: "browser", body: request)
+        case "plugin-manager":
+            return try await pluginManager()
         default:
-            throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug, browser")
+            throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug, browser, plugin-manager")
         }
     }
 

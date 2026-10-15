@@ -12,7 +12,12 @@ let package = Package(
     ],
     targets: [
         .target(name: "AppUpdates", dependencies: ["Sparkle"]),
-        .executableTarget(name: "Tilr", dependencies: ["Yams", "Sparkle", "AppUpdates", .product(name: "TilrPluginABI", package: "SDK")], path: "Sources/Tilr",
+        // The plugin manager (Rust, ../../plugin-manager) as a static library with UniFFI's Swift
+        // API. Both are generated and gitignored: scripts/build-plugin-manager.sh (run.sh and
+        // scripts/release.py call it) builds Vendor/ and Sources/TilrPluginManager/Generated/.
+        .binaryTarget(name: "TilrPluginManagerFFI", path: "Vendor/TilrPluginManagerFFI.xcframework"),
+        .target(name: "TilrPluginManager", dependencies: ["TilrPluginManagerFFI"]),
+        .executableTarget(name: "Tilr", dependencies: ["Yams", "Sparkle", "AppUpdates", "TilrPluginManager", .product(name: "TilrPluginABI", package: "SDK")], path: "Sources/Tilr",
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])])
     ]
 )

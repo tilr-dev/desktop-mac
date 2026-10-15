@@ -3,3 +3,6 @@ build/
 __pycache__/
 release.local.json
 archives/
+# scripts/build-plugin-manager.sh
+Vendor/
+Sources/TilrPluginManager/Generated/

@@ -2,6 +2,7 @@ import AppKit
 import WebKit
 import Sparkle
 import AppUpdates
+import TilrPluginManager
 
 // Prints reach a log file or a pipe as they happen (run.sh with its output redirected), not in blocks.
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -18,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var control: ControlServer?
     /// Compatibility settings and JSON export for the single Performance collector.
     var debug: DebugMode!
+    /// `plugin_manager:` (PluginManagerHost.swift); its workspace opens on the first operation.
+    var pluginManager: PluginManagerService!
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
     var appUpdates: AppUpdates?
@@ -52,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let loaded = Config.load() { config = loaded }
         nativePluginSettings = config.nativePlugins
         preload = config.switching.preload
+        pluginManager = PluginManagerService(settings: config.pluginManager.service)
         LocalServerHost.shared.didUpdate = { [weak self] in
             self?.tabs.forEach { $0.send(event: "tilr-local-server-ready", detail: [:]) }
         }
@@ -85,7 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return false
                 },
                 loadTimeout: { [unowned self] in config.control.loadTimeout },
-                debug: debug
+                debug: debug,
+                pluginManager: { [unowned self] in try await pluginManagerStatus() }
             )
             control?.start()
         }
@@ -196,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await probePagePlumbing()
             await probeWeb(tab)
             await probeLazyTabs()
+            await probePluginManager()
             probePalette()
             await probeSpaces()
         }
@@ -209,6 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyConfig()
         debug.configChanged(config.debug)
         Memory.settings = config.debug
+        pluginManager.configure(config.pluginManager.service)
         LocalServerHost.shared.configChanged(settings: config.localServer,
                                              origins: Site.apps(config: config).map { "tilr://\($0.host)" },
                                              allowed: Config.isDefaultDir && !probing)

@@ -61,6 +61,10 @@ def preflight(config, publish, build=True):
         if f'"{config["TILR_SIGN_IDENTITY"]}"' not in identities:
             raise ValueError("Configured Developer ID identity is unavailable to THIS process. Check the runner's login Keychain and execution permissions; do not recreate the certificate.")
         run(["xcrun", "notarytool", "history", "--keychain-profile", config["TILR_NOTARY_PROFILE"]], stdout=subprocess.DEVNULL)
+    if build:
+        # Both slices of the plugin manager's static library before SwiftPM reads the package
+        # (its binaryTarget must exist even for `swift package resolve`).
+        run([ROOT / "scripts/build-plugin-manager.sh", "--arch", "arm64", "--arch", "x86_64"])
     tools = ROOT / ".build/artifacts/sparkle/Sparkle/bin"
     if not (tools / "generate_keys").exists():
         if not build:

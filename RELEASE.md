@@ -28,7 +28,8 @@ Install by opening the DMG and dragging Tilr into Applications. Launch the copy
 in Applications, not the one on the mounted disk image. The welcome page's
 “Use your own interface” section explains how to load a folder with index.html.
 Plain HTML/CSS/JS needs no npm; TypeScript/plugin development currently needs
-Node >=22.18. Files and settings remain outside the signed application bundle.
+Node >=22.18. Installing plugins with the built-in plugin manager runs the system `git`
+(Xcode Command Line Tools) for now; without it the install fails with an error saying so. Files and settings remain outside the signed application bundle.
 
 ## One-time release setup
 
@@ -55,12 +56,20 @@ Copy its complete `Developer ID Application: … (TEAMID)` name. Keep the privat
 key in Keychain, not the repository. If Xcode sees the certificate but an agent's
 restricted shell sees zero identities, run the release from your normal Terminal.
 
-Install Xcode command-line tools and resolve the pinned Swift dependencies:
+Install Xcode command-line tools, Rust (rustup, with `rustup target add aarch64-apple-darwin
+x86_64-apple-darwin`) and the plugin manager checkout next to this repo (`../../plugin-manager`,
+or `TILR_PLUGIN_MANAGER_DIR`), then build its static library and resolve the pinned Swift
+dependencies (the binaryTarget must exist before SwiftPM reads the package):
 
 ```sh
 cd /path/to/tilr/apps/mac
+scripts/build-plugin-manager.sh --arch arm64 --arch x86_64
 swift package resolve
 ```
+
+`release.py` and `release_all.py` run `scripts/build-plugin-manager.sh` themselves (a no-op
+when up to date). The library is linked statically into `Contents/MacOS/Tilr`: no extra file
+in the bundle, nothing extra to sign or notarize.
 
 Sparkle 2.10.0 is pinned in Package.swift and Package.resolved. Its tools live in:
 

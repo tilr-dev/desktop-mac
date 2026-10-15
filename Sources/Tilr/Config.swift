@@ -19,9 +19,11 @@ struct Config: Decodable {
     var debug: Debug
     var localServer: LocalServer
     var watch: Watch
+    var pluginManager: PluginManagerSettings
 
     enum CodingKeys: String, CodingKey {
         case site, apps, window, control, browser, web, debug, watch
+        case pluginManager = "plugin_manager"
         case nativePlugins = "native_plugins"
         case sshAgent = "ssh_agent"
         case switching = "switch"
@@ -119,6 +121,15 @@ struct Config: Decodable {
             }
             self = .after(seconds)
         }
+    }
+
+    /// The plugin manager (PluginManagerHost.swift, the Rust library ../../plugin-manager).
+    /// Both keys apply on reload: the open workspace is closed, the next operation opens the new one.
+    struct PluginManagerSettings: Decodable {
+        /// The workspace folder (Config.resolve'd).
+        var workspace: String
+        /// Catalog location: HTTP(S) URL, local folder or JSON file; empty: none.
+        var catalog: String
     }
 
     /// FSEvents for the apps' folders and config.yml (FolderWatcher.swift).
@@ -471,6 +482,19 @@ struct Config: Decodable {
           console_capture: true
           # Characters one caught console entry keeps; a longer one is cut and ends in "…". At launch.
           console_entry_max: 4096
+
+        # The plugin manager: installs plugins (Git repositories with a plugin.json and a ready
+        # dist/ folder) into a workspace and keeps their versions. It runs the system git (and
+        # curl for an HTTP catalog): without git (the Xcode Command Line Tools) an install fails
+        # with an error that says so. Both keys apply on reload: the open workspace is closed and
+        # the next operation opens the new one.
+        plugin_manager:
+          # The workspace folder: installed plugins, their repositories and state.json. ~ is the
+          # home folder; a relative path is inside the config folder, so every instance has its own.
+          workspace: plugins
+          # Where plugins are browsed and installed from: an HTTP(S) URL, a local folder or a
+          # catalog JSON file. Empty: no catalog (installs from a Git source only).
+          catalog: https://pkg.tilr.dev
 
         # Independently compiled native plugins. User versions override bundled versions.
         # Directory and enabled set apply at launch; replacing loaded code needs a restart.

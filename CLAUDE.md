@@ -24,6 +24,20 @@ native placement belongs in `TilrPluginViews`, not the browser engine. See
 updates take effect after restart. Package/ABI checks: `python3 scripts/test_native_plugins.py`;
 add `--gui` in a desktop session for the browser/app probes.
 
+The plugin manager is the Rust library `../../plugin-manager` (its UniFFI wrapper), linked
+statically: `scripts/build-plugin-manager.sh` (run by `run.sh` and the release scripts; rebuilds
+when the library's sources are newer, needs cargo + rustup targets then) puts
+`Vendor/TilrPluginManagerFFI.xcframework` and `Sources/TilrPluginManager/Generated/` (both
+gitignored) in place; `Sources/TilrPluginManager/PluginManagerService.swift` runs it off the main
+thread (async, errors as `PluginManagerFailure` kind + message), `PluginManagerHost.swift` feeds it
+`plugin_manager.workspace` (default `<config folder>/plugins`) and `plugin_manager.catalog`
+(`https://pkg.tilr.dev`), both on reload. No UI or page bridge yet; `tilr ctl` raw command
+`{"cmd":"plugin-manager"}` reads the state, `--probe` exercises it on a temporary workspace.
+The library runs the system `git` for now (git must exist on the machine): install, update,
+rollback, restore, fork and auth check first ask `PluginManagerService.gitProblem()` and fail
+with kind `git` and a message saying to install the Command Line Tools, instead of running the
+`/usr/bin/git` stub (which would pop up the CLT installer); the probe skips its git step then.
+
 Swift Package, AppKit, no Xcode project. `./run.sh` builds and starts the app; `./run.sh --probe`
 runs the self-check (page, page plumbing — scheme handler, native events, console relay,
 snapshot PNG —, palette, app switching and slide, lazy tabs, Space move) and quits — run it after changes,
