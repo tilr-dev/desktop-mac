@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 import Sparkle
 import AppUpdates
-import TilrPluginManager
+import Gitpm
 
 // Prints reach a log file or a pipe as they happen (run.sh with its output redirected), not in blocks.
 setvbuf(stdout, nil, _IOLBF, 0)

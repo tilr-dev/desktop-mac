@@ -64,7 +64,7 @@ def preflight(config, publish, build=True):
     if build:
         # Both slices of the plugin manager's static library before SwiftPM reads the package
         # (its binaryTarget must exist even for `swift package resolve`).
-        run([ROOT / "scripts/build-plugin-manager.sh", "--arch", "arm64", "--arch", "x86_64"])
+        run([ROOT / "scripts/build-gitpm.sh", "--arch", "arm64", "--arch", "x86_64"])
     tools = ROOT / ".build/artifacts/sparkle/Sparkle/bin"
     if not (tools / "generate_keys").exists():
         if not build:

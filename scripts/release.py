@@ -102,7 +102,7 @@ def main():
         swift += ["--disable-sandbox"]
     # The plugin manager (Rust static library, linked into the executable: nothing to bundle or
     # sign) must exist before SwiftPM reads the package; rebuilt only when its sources changed.
-    pm_script = args.build_package.resolve() / "scripts/build-plugin-manager.sh"
+    pm_script = args.build_package.resolve() / "scripts/build-gitpm.sh"
     if pm_script.exists():
         run(pm_script, "--arch", *(["arm64", "--arch", "x86_64"] if args.arch == "universal" else [args.arch]))
     if not args.skip_build:

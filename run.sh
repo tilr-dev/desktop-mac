@@ -72,9 +72,9 @@ echo "web sources: $(cd ../../web 2>/dev/null && pwd)/src   (npm run dev:site th
 echo "site folder: $site"
 echo "config:      $cfg"
 
-# The plugin manager's static library and Swift API (Vendor/, Sources/TilrPluginManager/Generated/,
+# The plugin manager's static library and Swift API (Vendor/, Sources/Gitpm/Generated/,
 # gitignored): rebuilt from ../../plugin-manager when its sources changed, else a no-op.
-scripts/build-plugin-manager.sh
+scripts/build-gitpm.sh
 swift build --build-system native -c release
 app=build/Tilr.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"

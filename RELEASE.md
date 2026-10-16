@@ -57,17 +57,17 @@ key in Keychain, not the repository. If Xcode sees the certificate but an agent'
 restricted shell sees zero identities, run the release from your normal Terminal.
 
 Install Xcode command-line tools, Rust (rustup, with `rustup target add aarch64-apple-darwin
-x86_64-apple-darwin`) and the plugin manager checkout next to this repo (`../../plugin-manager`,
-or `TILR_PLUGIN_MANAGER_DIR`), then build its static library and resolve the pinned Swift
+x86_64-apple-darwin`) and the plugin manager (gitpm) checkout next to this repo (`../../plugin-manager`,
+or `GITPM_DIR`), then build its static library and resolve the pinned Swift
 dependencies (the binaryTarget must exist before SwiftPM reads the package):
 
 ```sh
 cd /path/to/tilr/apps/mac
-scripts/build-plugin-manager.sh --arch arm64 --arch x86_64
+scripts/build-gitpm.sh --arch arm64 --arch x86_64
 swift package resolve
 ```
 
-`release.py` and `release_all.py` run `scripts/build-plugin-manager.sh` themselves (a no-op
+`release.py` and `release_all.py` run `scripts/build-gitpm.sh` themselves (a no-op
 when up to date). The library is linked statically into `Contents/MacOS/Tilr`: no extra file
 in the bundle, nothing extra to sign or notarize.
 

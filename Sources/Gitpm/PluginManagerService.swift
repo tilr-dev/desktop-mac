@@ -1,7 +1,7 @@
 import Foundation
 
 // The plugin manager (Rust, ../../plugin-manager) for the app. UniFFI's generated API
-// (Generated/tilr_plugin_manager_ffi.swift: PluginManager, InstalledPlugin, UninstallPlan, …)
+// (Generated/Gitpm.swift: PluginManager, InstalledPlugin, UninstallPlan, …)
 // blocks on Git and the network; this file runs it on a queue of its own and hands back
 // async results. Records come through as generated (public); errors become
 // `PluginManagerFailure`. No UI here.
@@ -188,18 +188,18 @@ public final class PluginManagerService: @unchecked Sendable {
 
     /// Read access to a Git repository with the user's credentials (`git ls-remote`).
     public func authCheck(source: String, customSSH: Bool = false) async throws -> AuthCheck {
-        try await detached(git: true) { try TilrPluginManager.authCheck(source: source, customSsh: customSSH) }
+        try await detached(git: true) { try Gitpm.authCheck(source: source, customSsh: customSSH) }
     }
     /// An overview of any catalog location.
     public func browseCatalog(location: String) async throws -> CatalogOverview {
-        try await detached { try TilrPluginManager.browseCatalog(location: location) }
+        try await detached { try Gitpm.browseCatalog(location: location) }
     }
     public func catalogRelease(location: String, id: String, version: String? = nil) async throws -> CatalogRelease {
-        try await detached { try TilrPluginManager.catalogRelease(location: location, id: id, version: version) }
+        try await detached { try Gitpm.catalogRelease(location: location, id: id, version: version) }
     }
     /// The installed plugins of a workspace without opening (locking or creating) it.
     public func readInstalled(root: String) async throws -> [InstalledPlugin] {
-        try await detached { try TilrPluginManager.readInstalled(root: root) }
+        try await detached { try Gitpm.readInstalled(root: root) }
     }
     /// One line for a lost-work item, for a confirmation.
     public static func describe(_ item: LostWork) -> String { describeLostWork(item: item) }

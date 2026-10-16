@@ -1,8 +1,8 @@
 import AppKit
-import TilrPluginManager
+import Gitpm
 
 // The plugin manager in the app: `plugin_manager:` of the config → PluginManagerService
-// (Sources/TilrPluginManager, the Rust library ../../plugin-manager). No UI and no page bridge
+// (Sources/Gitpm, the Rust library gitpm, ../../plugin-manager). No UI and no page bridge
 // yet; Tilr Control `plugin-manager` reads the state, `--probe` checks the library on a
 // temporary workspace.
 
@@ -59,7 +59,7 @@ extension AppDelegate {
             exit(EXIT_FAILURE)
         }
         let files = FileManager.default
-        let base = files.temporaryDirectory.appendingPathComponent("tilr-plugin-manager-\(UUID().uuidString)")
+        let base = files.temporaryDirectory.appendingPathComponent("tilr-gitpm-probe-\(UUID().uuidString)")
         defer { try? files.removeItem(at: base) }
         let first = base.appendingPathComponent("workspace").path
         let second = base.appendingPathComponent("other").path
