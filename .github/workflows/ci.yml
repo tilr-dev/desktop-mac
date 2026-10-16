@@ -94,26 +94,15 @@ jobs:
       - name: Probe
         run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
 
-      - name: Crash report
+      # The runner keeps no crash reports: rerun the probe from a debug build under lldb.
+      - name: Probe backtrace
         if: failure()
         run: |
-          for f in ~/Library/Logs/DiagnosticReports/Tilr*.ips; do
-            [ -f "$f" ] || continue
-            echo "== $f"
-            python3 - "$f" <<'PY'
-          import json, sys
-          text = open(sys.argv[1]).read()
-          body = json.loads(text[text.index('\n') + 1:])
-          print(body.get('exception'), body.get('termination', {}).get('indicator'))
-          images = body.get('usedImages', [])
-          for thread in body.get('threads', []):
-              if not thread.get('triggered'):
-                  continue
-              for frame in thread.get('frames', [])[:25]:
-                  image = images[frame['imageIndex']].get('name', '?') if frame.get('imageIndex') is not None else '?'
-                  print(f"  {image:28} {frame.get('symbol', '?')} {frame.get('sourceFile', '')}:{frame.get('sourceLine', '')}")
-          PY
-          done
+          swift build --build-system native
+          cp .build/debug/Tilr build/Tilr.app/Contents/MacOS/Tilr
+          codesign --force --sign - --entitlements Tilr.entitlements build/Tilr.app
+          perl -e 'alarm 600; exec @ARGV' lldb --batch -o run -k 'bt 40' -k quit -- \
+            build/Tilr.app/Contents/MacOS/Tilr --config "$HOME/Library/Application Support/dev.tilr.mac.test" --probe 2>&1 | tail -80
 
       - name: Probe log
         if: failure()
