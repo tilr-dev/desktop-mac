@@ -94,15 +94,15 @@ jobs:
       - name: Probe
         run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
 
-      # The runner keeps no crash reports: rerun the probe from a debug build under lldb.
+      # The runner keeps no crash reports: rerun the probe as before, lldb attached to it.
       - name: Probe backtrace
         if: failure()
         run: |
-          swift build --build-system native
-          cp .build/debug/Tilr build/Tilr.app/Contents/MacOS/Tilr
-          codesign --force --sign - --entitlements Tilr.entitlements build/Tilr.app
-          perl -e 'alarm 600; exec @ARGV' lldb --batch -o run -k 'bt 40' -k quit -- \
-            build/Tilr.app/Contents/MacOS/Tilr --config "$HOME/Library/Application Support/dev.tilr.mac.test" --probe 2>&1 | tail -80
+          lldb --batch -o 'process attach --name Tilr --waitfor' -o continue -k 'bt 40' -k quit > lldb.log 2>&1 &
+          perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe > probe-again.log 2>&1 || true
+          sleep 5
+          tail -5 probe-again.log
+          grep -vE 'WebContent\[' lldb.log | tail -60
 
       - name: Probe log
         if: failure()
