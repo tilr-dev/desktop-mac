@@ -1,6 +1,6 @@
 import Foundation
 
-// The plugin manager (Rust, ../../plugin-manager) for the app. UniFFI's generated API
+// The plugin manager (Rust, ../plugin-manager) for the app. UniFFI's generated API
 // (Generated/Gitpm.swift: PluginManager, InstalledPlugin, UninstallPlan, …)
 // blocks on Git and the network; this file runs it on a queue of its own and hands back
 // async results. Records come through as generated (public); errors become

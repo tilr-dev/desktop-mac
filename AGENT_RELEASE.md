@@ -60,7 +60,7 @@ be answered by these scripts. Never enable blanket private-key access to fix a p
 
 ## Agent commands
 
-From `apps/mac`, first verify the actual execution context:
+From the repository root, first verify the actual execution context:
 
 ```sh
 python3 scripts/release_all.py --check --publish

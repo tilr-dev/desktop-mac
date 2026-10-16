@@ -1,5 +1,5 @@
 #!/bin/sh
-# Make the plugin manager (gitpm, Rust, ../../plugin-manager) available to SwiftPM:
+# Make the plugin manager (gitpm, Rust, ../plugin-manager) available to SwiftPM:
 #   Vendor/GitpmFFI.xcframework            static library + C module GitpmFFI (binaryTarget)
 #   Sources/Gitpm/Generated/Gitpm.swift    UniFFI's Swift API (target Gitpm)
 # Both are generated and gitignored. They are rebuilt (plugin-manager/scripts/build-apple.sh,
@@ -9,12 +9,12 @@
 #   scripts/build-gitpm.sh [--arch ARCH]... [--force]
 #     --arch   a slice the library must contain (default: this Mac's); repeat for several
 #     --force  rebuild even when up to date
-# GITPM_DIR: the library's checkout (default ../../plugin-manager).
+# GITPM_DIR: the library's checkout (default ../plugin-manager).
 # Needs cargo + rustup targets aarch64-apple-darwin / x86_64-apple-darwin only to rebuild.
 set -eu
 cd "$(dirname "$0")/.."
 here=$PWD
-pm=${GITPM_DIR:-"$here/../../plugin-manager"}
+pm=${GITPM_DIR:-"$here/../plugin-manager"}
 xcf="$here/Vendor/GitpmFFI.xcframework"
 swift_out="$here/Sources/Gitpm/Generated/Gitpm.swift"
 stamp="$here/Vendor/.gitpm-built"

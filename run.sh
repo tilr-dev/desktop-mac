@@ -14,7 +14,7 @@
 #   --url URL                show a dev server instead (or TILR_URL), e.g. http://127.0.0.1:7891/
 # Without --test it restarts the user's instance (config ~/Library/Application Support/dev.tilr.mac, or TILR_CONFIG): stops the
 # Tilr recorded in that folder's tilr.pid; no pid file means no process is stopped.
-# The page's TypeScript lives in the web repo (../../web); `npm run dev:site` there builds it and
+# The page's TypeScript lives in the web repo (../web); `npm run dev:site` there builds it and
 # installs into the site folder this app serves (<config>/apps/default unless `site:` in the config folder's
 # config.yml or --site says otherwise; with `apps:` every app has a folder of its own). Both paths are printed below.
 # A real bundle with a bundle id is what lets the Dock remember "Assign To → This Desktop".
@@ -68,12 +68,12 @@ if [ -n "$site" ] && [ -z "$explicit_site" ]; then
 fi
 site=${site:-"$cfg/apps/default"}
 case $site in "~"|"~/"*) site=$HOME${site#"~"} ;; esac
-echo "web sources: $(cd ../../web 2>/dev/null && pwd)/src   (npm run dev:site there)"
+echo "web sources: $(cd ../web 2>/dev/null && pwd)/src   (npm run dev:site there)"
 echo "site folder: $site"
 echo "config:      $cfg"
 
 # The plugin manager's static library and Swift API (Vendor/, Sources/Gitpm/Generated/,
-# gitignored): rebuilt from ../../plugin-manager when its sources changed, else a no-op.
+# gitignored): rebuilt from ../plugin-manager when its sources changed, else a no-op.
 scripts/build-gitpm.sh
 swift build --build-system native -c release
 app=build/Tilr.app
@@ -95,7 +95,7 @@ ditto .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sp
 rm -rf "$app/Contents/Resources/web"
 cp placeholder.html "$app/Contents/Resources/"
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
-python3 ../../native-plugins/scripts/plugin.py build --output "$app/Contents/PlugIns"
+python3 native-plugins/scripts/plugin.py build --output "$app/Contents/PlugIns"
 codesign --force --sign - --entitlements Tilr.entitlements "$app"
 # One Tilr per config folder: the one running holds that folder's control socket and window.
 # Stops the instance in $cfg/tilr.pid when that pid is a Tilr of this folder (one started with

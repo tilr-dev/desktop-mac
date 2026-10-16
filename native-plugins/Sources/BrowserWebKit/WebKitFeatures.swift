@@ -2,7 +2,7 @@ import WebKit
 
 /// Guarded WebKit SPI: a copy of the app's WebKitFeatures (Tab.swift); a plugin cannot import the app.
 /// `+[WKPreferences _features]` and `-_setEnabled:forFeature:`,
-/// resolved at run time and never linked; listed in apps/mac/CLAUDE.md.
+/// resolved at run time and never linked; listed in the repository's CLAUDE.md.
 enum WebKitFeatures {
     /// On by default: rendering updates (rAF, CSS animations) near 60 Hz even on a 120 Hz panel.
     static let near60FPS = "PreferPageRenderingUpdatesNear60FPSEnabled"

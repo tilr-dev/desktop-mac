@@ -18,19 +18,19 @@ The existing Cordis `webviews` / `audio` contracts, browser UI plugin and Webamp
 continue to work. The `tilrWebViews` and `tilrAudio` bridge aliases are declared
 by these packages, not hardcoded into Tilr's loader. New plugins can use the
 generic `tilrNative` bridge: `connectNative()` from `'tilr/native'`, a module of the
-Tilr page (its import map; types in `@tilr-dev/plugin`, see `../web/docs/plugin-sdk.md`).
+Tilr page (its import map; types in `@tilr-dev/plugin`, see `../../web/docs/plugin-sdk.md`).
 
 ## Build and install
 
 Requires macOS, Python 3, Xcode/Command Line Tools with Swift 6, and the following
-checkout layout for the app's local SDK dependency:
+checkout layout (the SDK is a local package of the app):
 
 ```text
 tilr/
-  apps/mac/          application repository
-  native-plugins/    this repository, including SDK/
-  web/              existing web SDK repository
-  plugins/browser/  existing browser UI repository
+  tilr-mac/              application repository
+    native-plugins/      this folder, including SDK/
+  plugin-manager/        gitpm (github.com/tilr-dev/gitpm)
+  web/                   web SDK repository (for the page and JS bridge tests)
 ```
 
 ```sh
@@ -40,11 +40,11 @@ python3 scripts/plugin.py build audio --arch arm64 --version 0.1.1
 
 # Local ad-hoc builds go into an independently signed development/test app:
 python3 scripts/plugin.py install dist/arm64/audio.tilrplugin \
-  --app ../apps/mac/build/Tilr.app --development \
+  --app ../build/Tilr.app --development \
   --directory /tmp/tilr-test/native-plugins
 
 python3 scripts/plugin.py list --directory /tmp/tilr-test/native-plugins
-python3 scripts/plugin.py rollback audio --app ../apps/mac/build/Tilr.app \
+python3 scripts/plugin.py rollback audio --app ../build/Tilr.app \
   --development --directory /tmp/tilr-test/native-plugins
 ```
 
@@ -262,10 +262,10 @@ separate Swift package and can be used by plugin repositories outside this tree.
 ```sh
 swift test --disable-sandbox
 swift test --disable-sandbox --package-path SDK
-# The JavaScript bridge ('tilr/native') is tested in ../web: src/tilr/native.test.ts (npm run test:unit)
-python3 ../apps/mac/scripts/test_native_plugins.py
+# The JavaScript bridge ('tilr/native') is tested in ../../web: src/tilr/native.test.ts (npm run test:unit)
+python3 ../scripts/test_native_plugins.py
 # In a logged-in desktop session, includes the existing browser and app probes:
-python3 ../apps/mac/scripts/test_native_plugins.py --gui
+python3 ../scripts/test_native_plugins.py --gui
 ```
 
 The package tests exercise real signed modules and the actual app loader:
@@ -281,7 +281,7 @@ continue to route through the native browser provider. For headless validation:
 /path/to/Tilr.app/Contents/MacOS/Tilr --config /tmp/tilr-test --check-native-plugins
 ```
 
-`apps/mac/run.sh` and release packaging include bootstrap packages. Public app
+`../run.sh` and release packaging include bootstrap packages. Public app
 releases sign them with the app's identity and include them in notarization.
 The vendor release set is every `manifests/*.json` in this repository. Add the
 manifest and its SwiftPM dynamic product to include a new vendor plugin in future

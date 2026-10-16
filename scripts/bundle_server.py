@@ -9,7 +9,7 @@ import subprocess
 from release_packaging import strip_executable
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE = ROOT.parents[1] / "core"
+CORE = ROOT.parent / "core"
 TARGETS = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}
 
 

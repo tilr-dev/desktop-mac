@@ -8,7 +8,7 @@ Control command that needs the page (`control.load_timeout`). A hidden tab's con
 follow window resizes; a switch slides the containers' layers (`layer.transform`), never view frames.
 The page's web views (the `webviews` service of the web repo, a plugin's browser window) are
 WKWebViews supplied by the separately compiled `browser-webkit` plugin
-(`../../native-plugins/Sources/BrowserWebKit`), in an AppKit SDK overlay of their
+(`native-plugins/Sources/BrowserWebKit`), in an AppKit SDK overlay of their
 own, ordered and masked (holes) as the page stacks their hosts: a float over a browser tile shows.
 A reload of the page parks the views made with a `key` (a browser window's id) for
 `browser.adopt_grace` seconds; the new page's `create` with that key adopts the live view.
@@ -16,15 +16,15 @@ A view wholly under the holes or off the overlay is hidden (no rendering; automa
 `evaluate` still answers, click and hover refuse a hidden view); size changes during a live resize reach it every `browser.live_resize_interval` ms.
 A view hidden (or parked, in a concealed tab, in an occluded or minimized window) for `browser.discard_after` seconds drops its WKWebView (process exits,
 last picture kept, `discarded: true`) and comes back with history and scroll when shown.
-Native audio also lives in `../../native-plugins`. This app depends only on the SDK's
+Native audio also lives in `native-plugins`. This app depends only on the SDK's
 Objective-C ABI headers; never add provider implementations back to this target. Generic
 native placement belongs in `TilrPluginViews`, not the browser engine. See
-[native plugin SDK, installation and lifecycle](../../native-plugins/README.md).
+[native plugin SDK, installation and lifecycle](native-plugins/README.md).
 `NativePlugins.swift` loads signed versioned packages and owns per-tab sessions. Native
 updates take effect after restart. Package/ABI checks: `python3 scripts/test_native_plugins.py`;
 add `--gui` in a desktop session for the browser/app probes.
 
-The plugin manager is the Rust library gitpm (`../../plugin-manager`, its UniFFI wrapper
+The plugin manager is the Rust library gitpm (`../plugin-manager`, its UniFFI wrapper
 `gitpm-ffi`), linked statically: `scripts/build-gitpm.sh` (run by `run.sh` and the release scripts; rebuilds
 when the library's sources are newer, needs cargo + rustup targets then) puts
 `Vendor/GitpmFFI.xcframework` (C module `GitpmFFI`) and `Sources/Gitpm/Generated/Gitpm.swift` (both
@@ -74,10 +74,10 @@ header's clock. `--probe` asserts frame restoration and the header / resize hit 
   | File | Symbol | Feature | Fallback |
   |---|---|---|---|
   | `Shell.swift` | `CGSMainConnectionID`, `CGSGetActiveSpace`, `CGSCopyManagedDisplaySpaces`, `CGSCopySpacesForWindows`; `SLSBridgedMoveWindowsToManagedSpaceOperation.initWithWindows:spaceID:` / `performWithWMBridgeDelegate` (symbol/class/method/ABI guards); `CGSMoveWindowsToManagedSpace` only before macOS 14.5 | `next-desktop`, `--probe` round trip | explicit unavailable on unsupported systems; async result verified by exact desktop membership, timeout reports failure; no SIP changes |
-  | `../../native-plugins/Sources/BrowserWebKit/BrowserAutomation.swift` | `WKWebView._simulateMouseMove:` (`NSSelectorFromString`, `responds(to:)`) | native browser hover; enabled by `browser.automation_private_input` | explicit unavailable error; click uses public AppKit input, scroll uses DOM `scrollBy` |
+  | `native-plugins/Sources/BrowserWebKit/BrowserAutomation.swift` | `WKWebView._simulateMouseMove:` (`NSSelectorFromString`, `responds(to:)`) | native browser hover; enabled by `browser.automation_private_input` | explicit unavailable error; click uses public AppKit input, scroll uses DOM `scrollBy` |
   | `Debug.swift` | `WKWebView._webProcessIdentifier` (`NSSelectorFromString` + `responds(to:)`, `value(forKey:)`) | demand-driven Performance bridge: WebContent pids | unavailable (never includes unrelated apps) |
   | `Tab.swift` (`WebKitFeatures`) | `+[WKPreferences _features]` → `_WKFeature.key`; `-[WKPreferences _setEnabled:forFeature:]` (BOOL, `@convention(c)` cast of `method(for:)`), read back with `_isEnabledForFeature:` — all `NSSelectorFromString` + `responds(to:)` | `web.high_refresh_rate`: `PreferPageRenderingUpdatesNear60FPSEnabled` off, pages render at 120 Hz on ProMotion; also handed to the browser plugin as `browser.high_refresh_rate` | stays at 60 Hz; logged once, `tilr ctl debug status` → `highRefreshRate: unavailable` |
-  | `../../native-plugins/Sources/BrowserWebKit/WebKitFeatures.swift` (copy of `Tab.swift`'s) | `+[WKPreferences _features]`, `-_setEnabled:forFeature:`, `-_isEnabledForFeature:` (`NSSelectorFromString`, `responds(to:)`, `@convention(c)` cast) | `browser.high_refresh_rate` (from `web.high_refresh_rate`): browser views without WebKit's 60 Hz cap | logged once as unavailable; the views stay at 60 Hz |
+  | `native-plugins/Sources/BrowserWebKit/WebKitFeatures.swift` (copy of `Tab.swift`'s) | `+[WKPreferences _features]`, `-_setEnabled:forFeature:`, `-_isEnabledForFeature:` (`NSSelectorFromString`, `responds(to:)`, `@convention(c)` cast) | `browser.high_refresh_rate` (from `web.high_refresh_rate`): browser views without WebKit's 60 Hz cap | logged once as unavailable; the views stay at 60 Hz |
   | `Memory.swift` | `WKWebView._inspector` → `_WKInspector.show`; `WKPreferences._setDeveloperExtrasEnabled:` (KVC `developerExtrasEnabled`, set on request only) — all `NSSelectorFromString` + `responds(to:)`, never linked | Performance `{type:'inspector'}`, `tilr ctl debug inspect`: open Web Inspector for the tab's page | `{ shown: false, reason }`; Safari → Develop → Tilr (`isInspectable`) |
 
 - **Memory diagnosis** (`Memory.swift`, Performance bridge `{type:'footprint'|'squeeze'|'inspector'}`,

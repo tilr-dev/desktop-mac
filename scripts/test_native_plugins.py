@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-REPO = ROOT.parent.parent / 'native-plugins'
+REPO = ROOT / 'native-plugins'
 
 
 def run(*args, **kwargs):
@@ -59,7 +59,7 @@ def main():
             (config / 'config.yml').write_text('window: { mode: window, activate_at_launch: false }\nlocal_server: { enabled: false }\n')
             # This exact test process exits itself after probing. No pid/name-based kill.
             run(contents / 'MacOS/Tilr', '--config', config, '--no-updates', '--probe',
-                '--site', ROOT.parent.parent / 'web/site', timeout=120)
+                '--site', ROOT.parent / 'web/site', timeout=120)
 
 
 if __name__ == '__main__':

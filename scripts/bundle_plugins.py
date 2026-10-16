@@ -8,7 +8,7 @@ import hashlib
 import plistlib
 
 ROOT = Path(__file__).resolve().parent.parent
-REPO = ROOT.parent.parent / 'native-plugins'
+REPO = ROOT / 'native-plugins'
 
 
 def plugin_inventory(app):

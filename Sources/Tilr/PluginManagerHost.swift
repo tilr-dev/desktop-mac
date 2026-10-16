@@ -2,7 +2,7 @@ import AppKit
 import Gitpm
 
 // The plugin manager in the app: `plugin_manager:` of the config → PluginManagerService
-// (Sources/Gitpm, the Rust library gitpm, ../../plugin-manager). No UI and no page bridge
+// (Sources/Gitpm, the Rust library gitpm, ../plugin-manager). No UI and no page bridge
 // yet; Tilr Control `plugin-manager` reads the state, `--probe` checks the library on a
 // temporary workspace.
 

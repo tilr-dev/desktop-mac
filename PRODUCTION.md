@@ -9,7 +9,7 @@ There are two downloads: Apple Silicon (`arm64`) and Intel (`x86_64`).
 Обычные команды запускайте из Terminal на релизном Mac:
 
 ```sh
-cd /Users/dan/projects/tilr/apps/mac
+cd /Users/dan/projects/tilr/tilr-mac
 ./release.command --status
 ./release.command
 # Проверить собранные артефакты, затем:
@@ -352,7 +352,7 @@ Compilation and simulated launchd unit checks do not establish GUI/Sparkle behav
 Use a normal Terminal on the Mac holding the Rexuni Developer ID private key:
 
 ```sh
-cd /Users/dan/projects/tilr/apps/mac
+cd /Users/dan/projects/tilr/tilr-mac
 ./setup-release.command
 ```
 
@@ -507,7 +507,7 @@ access prompts, if any, remain controlled by the key's existing access permissio
 
 ## Нативные плагины
 
-Браузер WebKit и аудио собираются из отдельного репозитория `../../native-plugins`.
+Браузер WebKit и аудио собираются из папки `native-plugins` этого репозитория.
 Приложение зависит только от его SDK. `run.sh` и `release.py` кладут стартовые
 пакеты в `Contents/PlugIns`; release подписывает их тем же Developer ID и включает
 в нотарификацию приложения. `release.py --native-plugins DIR` принимает готовые
@@ -520,7 +520,7 @@ access prompts, if any, remain controlled by the key's existing access permissio
 при следующем запуске Tilr. Cordis-плагины по-прежнему перезагружаются на лету.
 
 Сборка, установка, откат и ограничения ABI описаны в
-[README нативных плагинов](../../native-plugins/README.md). Проверка:
+[README нативных плагинов](native-plugins/README.md). Проверка:
 `python3 scripts/test_native_plugins.py`; интерактивные проверки добавляет `--gui`.
 Команда `tilr ctl native-plugins` показывает загруженные версии и ошибки.
 

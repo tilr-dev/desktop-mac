@@ -84,7 +84,7 @@ def main():
     parser.add_argument("--skip-build", action="store_true", help="Package an already-built matching binary")
     parser.add_argument("--build-package", type=Path, default=ROOT, help="Swift package directory (default: this repo)")
     parser.add_argument("--framework", type=Path, help="Override the Sparkle.framework artifact path")
-    parser.add_argument("--native-plugins", type=Path, help="Prebuilt signed bootstrap packages; default: build from ../../native-plugins")
+    parser.add_argument("--native-plugins", type=Path, help="Prebuilt signed bootstrap packages; default: build from native-plugins")
     parser.add_argument("--swift-disable-sandbox", action="store_true", help="For SwiftPM inside an existing sandbox")
     args = parser.parse_args()
     if args.preview and args.publish:
