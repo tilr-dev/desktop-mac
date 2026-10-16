@@ -54,7 +54,7 @@ def bundle_plugins(app, arch, identity='-', source=None):
         for id in ids:
             package = Path(source) / f'{id}.tilrplugin'
             subprocess.run(['codesign', '--verify', '--strict', str(package)], check=True)
-            subprocess.run(['lipo', '-verify_arch', arch, str(package / 'Contents/MacOS/Plugin')], check=True)
+            subprocess.run(['lipo', str(package / 'Contents/MacOS/Plugin'), '-verify_arch', arch], check=True)
             target = destination / package.name
             if target.exists():
                 shutil.rmtree(target)

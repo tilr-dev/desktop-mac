@@ -70,6 +70,6 @@ fi
 library=$(lib)
 for arch in $arches; do
   lipo "$library" -verify_arch "$arch" 2>/dev/null \
-    || fail "$library has no $arch slice ($(lipo -archs "$library")); rustup target add $( [ "$arch" = arm64 ] && echo aarch64 || echo "$arch" )-apple-darwin, then rerun with --force"
+    || fail "$library has no $arch slice ($(lipo "$library" -archs)); rustup target add $( [ "$arch" = arm64 ] && echo aarch64 || echo "$arch" )-apple-darwin, then rerun with --force"
 done
-echo "plugin manager: $xcf ($(lipo -archs "$library"))"
+echo "plugin manager: $xcf ($(lipo "$library" -archs))"

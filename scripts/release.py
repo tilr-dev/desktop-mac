@@ -149,7 +149,7 @@ def main():
         (contents / "MacOS").mkdir(parents=True)
         (contents / "Resources").mkdir()
         run("ditto", binary_dir / "Tilr", contents / "MacOS/Tilr")
-        run("lipo", "-verify_arch", *(["arm64", "x86_64"] if args.arch == "universal" else [args.arch]), contents / "MacOS/Tilr")
+        run("lipo", contents / "MacOS/Tilr", "-verify_arch", *(["arm64", "x86_64"] if args.arch == "universal" else [args.arch]))
         run("ditto", ROOT / "placeholder.html", contents / "Resources/placeholder.html")
         run("ditto", ROOT / "Resources/AppIcon.icns", contents / "Resources/AppIcon.icns")
         with (ROOT / "Info.plist").open("rb") as file:
