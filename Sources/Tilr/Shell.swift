@@ -355,6 +355,7 @@ final class Shell: NSObject, NSWindowDelegate {
         if mode != .fullscreen && window.frame.width > 0 && window.frame.height > 0 {
             desktopFrame = window.frame
         }
+        let leavingFullscreen = mode == .fullscreen && new != .fullscreen
         mode = new
         applyCollectionBehavior()
         let screen = window.screen ?? NSScreen.main!
@@ -375,13 +376,23 @@ final class Shell: NSObject, NSWindowDelegate {
         // A style change swaps the content view's frame; the current page follows it
         // (autoresizing), a slide under way ends sized to it.
         settle()
+        let applied = window.frame
         NSApp.presentationOptions = presentationOptions
+        let presented = window.frame
         // Not active and not to take focus (window.activate_at_launch false): shown behind the
         // active app; ordering it front would cover the user's windows.
         if NSApp.isActive || settings.activateAtLaunch {
             window.makeKeyAndOrderFront(nil)
         } else {
             window.orderBack(nil)
+        }
+        // Leaving fullscreen, the system can put the window back at an older frame of its own
+        // (seen on a 1024×768 CI display: fullscreen → window landed on the launch frame). The
+        // desktop frame wins; the log says at which step it moved.
+        if leavingFullscreen && window.frame != windowFrame {
+            print("window: \(new) frame \(window.frame), restoring \(windowFrame);",
+                  "after setFrame \(applied), presentation options \(presented)")
+            window.setFrame(windowFrame, display: true)
         }
         if let current { window.makeFirstResponder(current.webView) }
     }
