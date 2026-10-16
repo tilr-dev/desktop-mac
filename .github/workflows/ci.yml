@@ -94,6 +94,27 @@ jobs:
       - name: Probe
         run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
 
+      - name: Crash report
+        if: failure()
+        run: |
+          for f in ~/Library/Logs/DiagnosticReports/Tilr*.ips; do
+            [ -f "$f" ] || continue
+            echo "== $f"
+            python3 - "$f" <<'PY'
+          import json, sys
+          text = open(sys.argv[1]).read()
+          body = json.loads(text[text.index('\n') + 1:])
+          print(body.get('exception'), body.get('termination', {}).get('indicator'))
+          images = body.get('usedImages', [])
+          for thread in body.get('threads', []):
+              if not thread.get('triggered'):
+                  continue
+              for frame in thread.get('frames', [])[:25]:
+                  image = images[frame['imageIndex']].get('name', '?') if frame.get('imageIndex') is not None else '?'
+                  print(f"  {image:28} {frame.get('symbol', '?')} {frame.get('sourceFile', '')}:{frame.get('sourceLine', '')}")
+          PY
+          done
+
       - name: Probe log
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -101,5 +122,6 @@ jobs:
           name: probe-log
           path: |
             probe.log
+            ~/Library/Logs/DiagnosticReports/Tilr*.ips
             ~/Library/Application Support/dev.tilr.mac.test/*.log
           if-no-files-found: ignore
