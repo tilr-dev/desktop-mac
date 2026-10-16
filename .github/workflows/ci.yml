@@ -1,0 +1,105 @@
+# Builds both architectures, runs the script, SDK and native plugin tests and the app's
+# --probe self-check in a test instance. No secrets: safe for pull requests from forks.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash  # -eo pipefail: a failing probe fails the step through tee
+
+jobs:
+  mac:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      GITPM_DIR: ${{ github.workspace }}/.gitpm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the gitpm pin
+        id: gitpm
+        run: echo "sha=$(grep -v '^#' gitpm.pin | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tilr-dev/gitpm
+          ref: ${{ steps.gitpm.outputs.sha }}
+          path: .gitpm
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Toolchain
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          xcodebuild -version
+          swift --version
+
+      # The plugin manager rebuilds only when its sources or build-gitpm.sh change.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            Vendor
+            Sources/Gitpm/Generated
+          key: gitpm-${{ steps.gitpm.outputs.sha }}-${{ hashFiles('scripts/build-gitpm.sh') }}
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}
+
+      - name: Plugin manager (gitpm)
+        run: scripts/build-gitpm.sh --arch arm64 --arch x86_64
+
+      - name: Build Intel (x86_64)
+        run: swift build -c release --arch x86_64 --scratch-path .build/ci-x86_64
+
+      - name: Release script tests
+        working-directory: scripts
+        run: |
+          swift package resolve --package-path ..
+          for t in test_deltas test_packaging test_plugin_inventory test_publish test_release_all test_server_release test_signing; do
+            python3 -m unittest -v "$t"
+          done
+          python3 test_footprint.py
+          python3 test_performance_adapter.py
+          python3 test_performance_sampler.py
+
+      - name: Native plugin SDK tests
+        working-directory: native-plugins
+        run: |
+          swift test --disable-sandbox
+          swift test --disable-sandbox --package-path SDK
+
+      - name: Native plugin packages
+        run: python3 scripts/test_native_plugins.py
+
+      # Builds Tilr.app (arm64, release) and runs the self-check in a test instance.
+      - name: Probe
+        run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
+
+      - name: Probe log
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: probe-log
+          path: |
+            probe.log
+            ~/Library/Application Support/dev.tilr.mac.test/*.log
+          if-no-files-found: ignore
