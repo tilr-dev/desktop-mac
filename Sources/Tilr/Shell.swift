@@ -355,10 +355,28 @@ final class Shell: NSObject, NSWindowDelegate {
         if mode != .fullscreen && window.frame.width > 0 && window.frame.height > 0 {
             desktopFrame = window.frame
         }
+        let leavingFullscreen = mode == .fullscreen && new != .fullscreen
         mode = new
         applyCollectionBehavior()
         let screen = window.screen ?? NSScreen.main!
         let windowFrame = desktopFrame ?? screen.visibleFrame.insetBy(dx: settings.inset.x, dy: settings.inset.y)
+        // Presentation options and ordering. Changing the options (Dock and menu bar shown
+        // again) makes AppKit put an active app's window back at a frame it remembers (seen on a
+        // 1024×768 CI display: fullscreen → window landed on the launch frame), so leaving
+        // fullscreen presents first and sets the desktop frame last. Entering, the window covers
+        // the screen before the Dock and the menu bar hide.
+        func present() {
+            NSApp.presentationOptions = presentationOptions
+            // Not active and not to take focus (window.activate_at_launch false): shown behind
+            // the active app; ordering it front would cover the user's windows.
+            if NSApp.isActive || settings.activateAtLaunch {
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                window.orderBack(nil)
+            }
+        }
+        if leavingFullscreen { present() }
+        let presented = window.frame
         switch new {
         case .fullscreen:
             // Same Space as before, no animation: the window just covers the whole screen
@@ -375,13 +393,14 @@ final class Shell: NSObject, NSWindowDelegate {
         // A style change swaps the content view's frame; the current page follows it
         // (autoresizing), a slide under way ends sized to it.
         settle()
-        NSApp.presentationOptions = presentationOptions
-        // Not active and not to take focus (window.activate_at_launch false): shown behind the
-        // active app; ordering it front would cover the user's windows.
-        if NSApp.isActive || settings.activateAtLaunch {
-            window.makeKeyAndOrderFront(nil)
-        } else {
-            window.orderBack(nil)
+        let applied = window.frame
+        if !leavingFullscreen { present() }
+        // Safety net: should the system still move the window after the desktop frame, the
+        // desktop frame wins; the log says at which step it moved.
+        if leavingFullscreen && window.frame != windowFrame {
+            print("window: \(new) frame \(window.frame), restoring \(windowFrame);",
+                  "after presentation options \(presented), setFrame \(applied)")
+            window.setFrame(windowFrame, display: true)
         }
         if let current { window.makeFirstResponder(current.webView) }
     }

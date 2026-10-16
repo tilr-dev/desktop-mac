@@ -17,7 +17,7 @@ def binaries(root):
 
 
 def architectures(path):
-    return subprocess.check_output(['lipo', '-archs', str(path)], text=True).split()
+    return subprocess.check_output(['lipo', str(path), '-archs'], text=True).split()
 
 
 def thin_tree(root, arch):

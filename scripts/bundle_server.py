@@ -29,7 +29,7 @@ def build_server(destination, arch, version, build, sign, min_app_build=1, max_a
     destination.mkdir(parents=True, exist_ok=True)
     binary = destination / "tilr-server"
     subprocess.run(["ditto", str(core / "target" / target / "release/tilr-server"), str(binary)], check=True)
-    subprocess.run(["lipo", "-verify_arch", arch, str(binary)], check=True)
+    subprocess.run(["lipo", str(binary), "-verify_arch", arch], check=True)
     strip_executable(binary, destination / "symbols")
     sign(binary)
     metadata = dict(version=version, build=build, arch=arch,

@@ -46,10 +46,10 @@ def verify(directory, launch=False):
                 from release_packaging import audit
                 audit(app, meta["arch"])
             binary = app / "Contents/MacOS/Tilr"
-            run("lipo", "-verify_arch", meta["arch"], binary)
+            run("lipo", binary, "-verify_arch", meta["arch"])
             verify_server(app, meta["version"], meta["build"], meta["arch"])
             server = app / "Contents/Helpers/tilr-server"
-            run("lipo", "-verify_arch", meta["arch"], server)
+            run("lipo", server, "-verify_arch", meta["arch"])
             run("codesign", "--verify", "--strict", server)
             if digest(binary) != digest(directory / "Tilr.app/Contents/MacOS/Tilr"):
                 raise ValueError("DMG contains a different application executable")

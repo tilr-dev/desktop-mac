@@ -754,36 +754,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Regression checks for desktop geometry and the frameless drag / resize boundary.
     func probeWindowGeometry() {
         let originalMode = shell.mode
+        /// Release builds drop a precondition's message: say it with the numbers, then fail.
+        func check(_ ok: Bool, _ step: String, _ expected: NSRect? = nil) {
+            guard !ok else { return }
+            let screen = NSScreen.main
+            print("window geometry: FAILED \(step): expected \(expected.map { "\($0)" } ?? "-") actual \(shell.window.frame)",
+                  "screen \(screen.map { "\($0.frame)" } ?? "none") visible \(screen.map { "\($0.visibleFrame)" } ?? "none")",
+                  "fullScreen \(shell.window.styleMask.contains(.fullScreen)) mode \(shell.mode)")
+            Instance.terminating()
+            exit(EXIT_FAILURE)
+        }
         /// A mode switch changes the content view's frame: the current page follows it.
         func set(_ mode: Mode) {
             shell.set(mode)
-            precondition(current.map { $0.container.frame == shell.content.bounds && $0.webView.frame == $0.container.bounds } ?? true,
-                         "the current page did not follow the \(mode) content")
+            check(current.map { $0.container.frame == shell.content.bounds && $0.webView.frame == $0.container.bounds } ?? true,
+                  "the current page did not follow the \(mode) content")
         }
         set(.window)
         let desktop = shell.window.frame
         let chosen = desktop.insetBy(dx: 20, dy: 20).offsetBy(dx: 10, dy: -10)
         shell.window.setFrame(chosen, display: true)
         set(.frameless)
-        precondition(shell.window.frame == chosen, "frameless lost desktop geometry")
+        check(shell.window.frame == chosen, "after window → frameless", chosen)
         set(.fullscreen)
         set(.window)
-        precondition(shell.window.frame == chosen, "fullscreen lost desktop geometry")
+        check(shell.window.frame == chosen, "after fullscreen → window", chosen)
         set(.window)
-        precondition(shell.window.frame == chosen, "same mode reset geometry")
+        check(shell.window.frame == chosen, "after window → window", chosen)
         set(.frameless)
         let size = shell.window.frame.size
         let border = shell.settings.resizeBorder
         let height = shell.settings.dragHeight
         if height > border && size.width > border * 2 {
-            precondition(shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height - (height + border) / 2)), "header cannot drag")
+            check(shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height - (height + border) / 2)), "header cannot drag")
         }
         if border > 0 {
-            precondition(!shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height - border / 2)), "top resize edge drags")
-            precondition(!shell.shouldDrag(at: NSPoint(x: border / 2, y: size.height - border / 2)), "resize corner drags")
-            precondition(!shell.shouldDrag(at: NSPoint(x: size.width - border / 2, y: size.height - border / 2)), "resize corner drags")
+            check(!shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height - border / 2)), "top resize edge drags")
+            check(!shell.shouldDrag(at: NSPoint(x: border / 2, y: size.height - border / 2)), "resize corner drags")
+            check(!shell.shouldDrag(at: NSPoint(x: size.width - border / 2, y: size.height - border / 2)), "resize corner drags")
         }
-        precondition(!shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height / 2)), "body drags")
+        check(!shell.shouldDrag(at: NSPoint(x: size.width / 2, y: size.height / 2)), "body drags")
         set(.window)
         shell.window.setFrame(desktop, display: true)
         set(originalMode)

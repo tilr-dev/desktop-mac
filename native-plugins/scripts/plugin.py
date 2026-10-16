@@ -74,7 +74,7 @@ def verify(package, app=None, development=False, arch=None, allow_third_party=Fa
         info = plistlib.load(stream)
     if info.get('CFBundleExecutable') != 'Plugin' or info.get('CFBundleShortVersionString') != data['version']:
         raise ValueError('Info.plist and manifest disagree')
-    run('lipo', '-verify_arch', arch or platform.machine(), package / 'Contents/MacOS/Plugin', capture_output=True)
+    run('lipo', package / 'Contents/MacOS/Plugin', '-verify_arch', arch or platform.machine(), capture_output=True)
     return data
 
 
