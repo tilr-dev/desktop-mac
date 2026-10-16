@@ -94,15 +94,45 @@ jobs:
       - name: Probe
         run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
 
-      # The runner keeps no crash reports: rerun the probe as before, lldb attached to it.
-      - name: Probe backtrace
+      # ReportCrash writes the .ips a while after the crash: wait for it, print the faulting thread.
+      - name: Crash report
         if: failure()
         run: |
-          lldb --batch -o 'process attach --name Tilr --waitfor' -o continue -k 'bt 40' -k quit > lldb.log 2>&1 &
-          perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe > probe-again.log 2>&1 || true
-          sleep 5
-          tail -5 probe-again.log
-          grep -vE 'WebContent\[' lldb.log | tail -60
+          shopt -s nullglob
+          reports=()
+          for _ in $(seq 18); do
+            reports=(~/Library/Logs/DiagnosticReports/Tilr*.ips /Library/Logs/DiagnosticReports/Tilr*.ips)
+            [ ${#reports[@]} -gt 0 ] && break
+            sleep 5
+          done
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No Tilr crash report after 90 s; system log:"
+            log show --predicate 'process == "Tilr" OR process == "ReportCrash" OR process == "kernel"' --last 15m --style compact | grep -iv 'WebContent\[' | tail -150
+            exit 0
+          fi
+          for f in "${reports[@]}"; do
+            echo "== $f"
+            python3 - "$f" <<'EOF'
+          import json, sys
+          text = open(sys.argv[1]).read()
+          header, _, body = text.partition("\n")
+          report = json.loads(body)
+          print("exception:", json.dumps(report.get("exception")))
+          print("termination:", json.dumps(report.get("termination")))
+          images = report.get("usedImages", [])
+          for thread in report.get("threads", []):
+              if not thread.get("triggered"):
+                  continue
+              print("faulting thread:", thread.get("name") or thread.get("queue") or thread.get("id"))
+              for i, frame in enumerate(thread.get("frames", [])[:30]):
+                  index = frame.get("imageIndex")
+                  image = images[index].get("name", "?") if index is not None and index < len(images) else "?"
+                  line = f"{i:2} {image} {frame.get('symbol', '?')} +{frame.get('imageOffset', '?')}"
+                  if "sourceFile" in frame:
+                      line += f" {frame['sourceFile']}:{frame.get('sourceLine', '?')}"
+                  print(line)
+          EOF
+          done
 
       - name: Probe log
         if: failure()
@@ -112,5 +142,6 @@ jobs:
           path: |
             probe.log
             ~/Library/Logs/DiagnosticReports/Tilr*.ips
+            /Library/Logs/DiagnosticReports/Tilr*.ips
             ~/Library/Application Support/dev.tilr.mac.test/*.log
           if-no-files-found: ignore
