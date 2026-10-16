@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 from publish import CDN, validate_manifest
-from release import ROOT
+from release import ROOT, sign
 
 ARCHES = ("arm64", "x86_64")
 SETTING_NAMES = ("TILR_SIGN_IDENTITY", "TILR_NOTARY_PROFILE", "TILR_UPDATE_PUBLIC_KEY")
@@ -81,7 +81,7 @@ def preflight(config, publish, build=True):
             # copystat/chflags fails even in a normal user Terminal. Only copy bytes.
             shutil.copyfile("/usr/bin/true", target / "signing-probe")
             (target / "signing-probe").chmod(0o755)
-            run(["codesign", "--force", "--sign", config["TILR_SIGN_IDENTITY"], "--options", "runtime", "--timestamp", target / "signing-probe"])
+            sign(target / "signing-probe", config["TILR_SIGN_IDENTITY"])
             run(["hdiutil", "create", "-size", "8m", "-fs", "HFS+", "-volname", "Tilr release check", target / "probe.dmg"])
     if publish:
         # Checks access to the actual bucket, not just whether a user is logged in.

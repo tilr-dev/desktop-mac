@@ -10,7 +10,9 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 from release_packaging import thin_tree, strip_executable, audit, size_report
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +43,34 @@ def sign(path, identity, entitlements=None):
         args += ["--options", "runtime", "--timestamp"]
     if entitlements:
         args += ["--entitlements", entitlements]
-    run(*args, path)
+    if identity == "-":
+        run(*args, path)
+        return
+    policy = json.loads((ROOT / "release-packaging.json").read_text())
+    attempts = policy["codesign_attempts"]
+    delay = policy["codesign_retry_delay_seconds"]
+    if type(attempts) is not int or not 1 <= attempts <= 10:
+        raise ValueError("codesign_attempts must be an integer from 1 to 10")
+    if type(delay) not in (int, float) or not 0 <= delay <= 60:
+        raise ValueError("codesign_retry_delay_seconds must be between 0 and 60")
+    for attempt in range(1, attempts + 1):
+        try:
+            result = run(*args, path, stderr=subprocess.PIPE, text=True,
+                         env={**os.environ, "LC_ALL": "C"})
+        except subprocess.CalledProcessError as error:
+            diagnostic = error.stderr or ""
+            print(diagnostic, end="", file=sys.stderr, flush=True)
+            # A timestamp-service failure may be transient. Keychain, identity and
+            # bundle errors must fail immediately; never fall back to unsigned code.
+            if "a timestamp was expected but was not found" not in diagnostic.lower() or attempt == attempts:
+                raise
+            print(f"Secure timestamp missing for {path}; retrying codesign in {delay:g}s "
+                  f"(attempt {attempt + 1}/{attempts}).", file=sys.stderr, flush=True)
+            time.sleep(delay)
+        else:
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr, flush=True)
+            return
 
 
 def main():

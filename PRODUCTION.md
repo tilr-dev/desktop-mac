@@ -93,6 +93,16 @@ Mac с существующим сертификатом и приватным �
 Процесс сборки не останавливает development-сервер. Если он занимает порт 7890,
 остановите именно его в терминале запуска (Ctrl+C) перед запуском новой версии.
 
+При `A timestamp was expected but was not found` ошибка возникает при получении
+обязательной secure timestamp у Apple, уже после компиляции. `release.py` повторяет
+подпись того же файла до трёх попыток с паузой 5 секунд. Это также применяется к
+Sparkle, серверному бинарнику и проверке подписи в preflight. Число попыток и пауза
+заданы в `release-packaging.json`: `codesign_attempts`, `codesign_retry_delay_seconds`.
+Ошибки сертификата/Keychain не повторяются; `--timestamp` остаётся обязательным.
+Если все попытки исчерпаны, проверьте доступ к `timestamp.apple.com` из релизного
+процесса и повторите сборку через описанный выше `--resume`, сохранив завершённую
+архитектуру и переместив незавершённый каталог в архив.
+
 ## Compact packaging and delta updates (implemented)
 
 New application releases contain only their target architecture, including all
