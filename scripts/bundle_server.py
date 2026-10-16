@@ -9,7 +9,7 @@ import subprocess
 from release_packaging import strip_executable
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE = ROOT.parent / "core"
+TILRD = ROOT.parent / "tilrd"
 TARGETS = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}
 
 
@@ -17,7 +17,7 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build_server(destination, arch, version, build, sign, min_app_build=1, max_app_build=None, core=CORE):
+def build_server(destination, arch, version, build, sign, min_app_build=1, max_app_build=None, core=TILRD):
     commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=core, text=True).strip()
     protocol = int(re.search(r"PROTOCOL_VERSION: u32 = (\d+)", (core / "crates/tilr-proto/src/lib.rs").read_text())[1])
     env = dict(os.environ, TILR_BUILD_VERSION=f"{version}-build{build}", TILR_BUILD_COMMIT=commit,
