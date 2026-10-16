@@ -90,6 +90,13 @@ jobs:
       - name: Native plugin packages
         run: python3 scripts/test_native_plugins.py
 
+      - name: Native plugin diagnostics (temporary)
+        if: failure()
+        run: |
+          which -a lipo; lipo -version 2>&1 || true
+          f=native-plugins/dist/arm64/audio.tilrplugin/Contents/MacOS/Plugin
+          file "$f"; lipo -info "$f"; lipo -verify_arch arm64 "$f"; echo "verify=$?"
+
       # Builds Tilr.app (arm64, release) and runs the self-check in a test instance.
       - name: Probe
         run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
