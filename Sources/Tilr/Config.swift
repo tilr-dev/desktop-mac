@@ -123,7 +123,7 @@ struct Config: Decodable {
         }
     }
 
-    /// The plugin manager (PluginManagerHost.swift, the Rust library ../plugin-manager).
+    /// The plugin manager (PluginManagerHost.swift, the Rust library ../git/gitpm).
     /// Both keys apply on reload: the open workspace is closed, the next operation opens the new one.
     struct PluginManagerSettings: Decodable {
         /// The workspace folder (Config.resolve'd).

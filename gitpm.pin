@@ -1,3 +1,3 @@
 # The gitpm (github.com/tilr-dev/gitpm) commit CI and releases build the plugin manager from:
-# a tag, then its full commit SHA. Local builds use the ../plugin-manager checkout (or GITPM_DIR).
+# a tag, then its full commit SHA. Local builds use the ../git/gitpm checkout (or GITPM_DIR).
 v0.2.0 948319308903cec6d7fc6a19b6bcde6c2345e696

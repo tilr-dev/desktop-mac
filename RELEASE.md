@@ -57,7 +57,7 @@ key in Keychain, not the repository. If Xcode sees the certificate but an agent'
 restricted shell sees zero identities, run the release from your normal Terminal.
 
 Install Xcode command-line tools, Rust (rustup, with `rustup target add aarch64-apple-darwin
-x86_64-apple-darwin`) and the plugin manager (gitpm) checkout next to this repo (`../plugin-manager`,
+x86_64-apple-darwin`) and the plugin manager (gitpm) checkout next to this repo (`../git/gitpm`,
 or `GITPM_DIR`), then build its static library and resolve the pinned Swift
 dependencies (the binaryTarget must exist before SwiftPM reads the package):
 

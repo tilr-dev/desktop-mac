@@ -24,7 +24,7 @@ native placement belongs in `TilrPluginViews`, not the browser engine. See
 updates take effect after restart. Package/ABI checks: `python3 scripts/test_native_plugins.py`;
 add `--gui` in a desktop session for the browser/app probes.
 
-The plugin manager is the Rust library gitpm (`../plugin-manager`, its UniFFI wrapper
+The plugin manager is the Rust library gitpm (`../git/gitpm`, its UniFFI wrapper
 `gitpm-ffi`), linked statically: `scripts/build-gitpm.sh` (run by `run.sh` and the release scripts; rebuilds
 when the library's sources are newer, needs cargo + rustup targets then) puts
 `Vendor/GitpmFFI.xcframework` (C module `GitpmFFI`) and `Sources/Gitpm/Generated/Gitpm.swift` (both
