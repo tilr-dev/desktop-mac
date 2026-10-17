@@ -12,7 +12,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "AppUpdates", dependencies: ["Sparkle"]),
-        // The plugin manager (Rust, ../plugin-manager) as a static library with UniFFI's Swift
+        // The plugin manager (Rust, ../git/gitpm) as a static library with UniFFI's Swift
         // API. Both are generated and gitignored: scripts/build-gitpm.sh (run.sh and
         // scripts/release.py call it) builds Vendor/ and Sources/Gitpm/Generated/.
         .binaryTarget(name: "GitpmFFI", path: "Vendor/GitpmFFI.xcframework"),

@@ -2,7 +2,7 @@ import AppKit
 import Gitpm
 
 // The plugin manager in the app: `plugin_manager:` of the config → PluginManagerService
-// (Sources/Gitpm, the Rust library gitpm, ../plugin-manager). No UI and no page bridge
+// (Sources/Gitpm, the Rust library gitpm, ../git/gitpm). No UI and no page bridge
 // yet; Tilr Control `plugin-manager` reads the state, `--probe` checks the library on a
 // temporary workspace.
 
@@ -68,7 +68,7 @@ extension AppDelegate {
         check(await Self.outcome { try await pm.open() } == "ok", "open of an empty workspace")
         let empty = (try? await pm.list()) ?? [InstalledPlugin(id: "?", source: "", current: .init(version: "", commit: ""),
                                                               previous: nil, enabled: false, forkOf: nil, replaces: nil,
-                                                              catalog: nil, dependencies: [], replacing: [], dependents: [])]
+                                                              catalog: nil, path: nil, dependencies: [], replacing: [], dependents: [])]
         check(empty.isEmpty, "a new workspace lists \(empty.count) plugins")
         let gitProblem = await Task.detached(operation: { PluginManagerService.gitProblem() }).value
         let missing = await Self.outcome { _ = try await pm.uninstallPlan(id: "probe/missing") }

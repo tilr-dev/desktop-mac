@@ -29,7 +29,7 @@ checkout layout (the SDK is a local package of the app):
 tilr/
   tilr-mac/              application repository
     native-plugins/      this folder, including SDK/
-  plugin-manager/        gitpm (github.com/tilr-dev/gitpm)
+  git/gitpm/             gitpm (github.com/tilr-dev/gitpm)
   web/                   web SDK repository (for the page and JS bridge tests)
 ```
 

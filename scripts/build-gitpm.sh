@@ -1,20 +1,20 @@
 #!/bin/sh
-# Make the plugin manager (gitpm, Rust, ../plugin-manager) available to SwiftPM:
+# Make the plugin manager (gitpm, Rust, ../git/gitpm) available to SwiftPM:
 #   Vendor/GitpmFFI.xcframework            static library + C module GitpmFFI (binaryTarget)
 #   Sources/Gitpm/Generated/Gitpm.swift    UniFFI's Swift API (target Gitpm)
-# Both are generated and gitignored. They are rebuilt (plugin-manager/scripts/build-apple.sh,
+# Both are generated and gitignored. They are rebuilt (git/gitpm/scripts/build-apple.sh,
 # universal arm64 + x86_64) when missing or when the SHA-256 of the library sources differs
 # from the last build's (a checkout or touch alone does not rebuild); otherwise this is a no-op. run.sh and scripts/release.py call it before `swift build`.
 #
 #   scripts/build-gitpm.sh [--arch ARCH]... [--force]
 #     --arch   a slice the library must contain (default: this Mac's); repeat for several
 #     --force  rebuild even when up to date
-# GITPM_DIR: the library's checkout (default ../plugin-manager).
+# GITPM_DIR: the library's checkout (default ../git/gitpm).
 # Needs cargo + rustup targets aarch64-apple-darwin / x86_64-apple-darwin only to rebuild.
 set -eu
 cd "$(dirname "$0")/.."
 here=$PWD
-pm=${GITPM_DIR:-"$here/../plugin-manager"}
+pm=${GITPM_DIR:-"$here/../git/gitpm"}
 xcf="$here/Vendor/GitpmFFI.xcframework"
 swift_out="$here/Sources/Gitpm/Generated/Gitpm.swift"
 stamp="$here/Vendor/.gitpm-built"
@@ -40,7 +40,7 @@ present=
 
 stale=
 if [ ! -d "$pm/crates/gitpm-ffi" ]; then
-  [ -n "$present" ] || fail "plugin-manager sources not found at $pm and no built artifacts in Vendor/; check out the library there or set GITPM_DIR"
+  [ -n "$present" ] || fail "gitpm sources not found at $pm and no built artifacts in Vendor/; check out the library there or set GITPM_DIR"
   echo "build-gitpm: sources not found at $pm; using the existing Vendor/ build" >&2
 else
   pm=$(cd "$pm" && pwd -P)

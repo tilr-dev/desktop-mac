@@ -73,7 +73,7 @@ echo "site folder: $site"
 echo "config:      $cfg"
 
 # The plugin manager's static library and Swift API (Vendor/, Sources/Gitpm/Generated/,
-# gitignored): rebuilt from ../plugin-manager when its sources changed, else a no-op.
+# gitignored): rebuilt from ../git/gitpm when its sources changed, else a no-op.
 scripts/build-gitpm.sh
 swift build --build-system native -c release
 app=build/Tilr.app

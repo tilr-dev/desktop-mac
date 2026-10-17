@@ -1,6 +1,6 @@
 import Foundation
 
-// The plugin manager (Rust, ../plugin-manager) for the app. UniFFI's generated API
+// The plugin manager (Rust, ../git/gitpm) for the app. UniFFI's generated API
 // (Generated/Gitpm.swift: PluginManager, InstalledPlugin, UninstallPlan, …)
 // blocks on Git and the network; this file runs it on a queue of its own and hands back
 // async results. Records come through as generated (public); errors become
@@ -139,7 +139,7 @@ public final class PluginManagerService: @unchecked Sendable {
     /// From a Git source (URL or local path): the latest release tag, `reference`, or the
     /// branch head with `.dev`.
     public func install(source: String, reference: String? = nil, channel: Channel = .stable) async throws -> InstallResult {
-        try await run(git: true) { try $0.install(source: source, reference: reference, channel: channel) }
+        try await run(git: true) { try $0.install(source: source, reference: reference, channel: channel, package: nil) }
     }
     /// An exact catalog release (latest when `version` is nil), hashes verified.
     public func installFromCatalog(id: String, version: String? = nil) async throws -> InstallResult {
