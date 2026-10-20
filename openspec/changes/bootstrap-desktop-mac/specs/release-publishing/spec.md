@@ -21,6 +21,8 @@ App publication SHALL validate completed receipts and exact artifacts, upload im
 - **AND** stable feeds are /mac/<arch>/appcast.xml and beta feeds /mac/beta/<arch>/appcast.xml; each app reads only its built architecture/channel and a leftover TILR_UPDATE_FEED cannot override coordinator routing
 - **AND** only HTTP 404 means an absent previous feed; other failures stop publication, and compatible feed history is retained
 - **AND** immutable DMGs and checksum files are uploaded and fetched from the canonical CDN to verify bytes before appcast publication with configured cache control; existence checks use a unique query key and canonical cached-404 retries last at most 200 seconds, while checksum mismatches fail immediately
+- **AND** normal releases preserve bundle ID, feed URLs and signing keys; key rotation is a separate migration, and correcting/reverting a bad public release requires a higher build
+- **AND** a CDN rule overriding origin cache headers must exclude mac/**/appcast.xml before distribution; signed DMGs/bundles are never edited after appcast generation, and changed contents require rebuilding/signing/notarization
 - **AND** --notes may embed release notes; a changed archive at an existing URL or an attempted downgrade/newer-feed overwrite is rejected
 - **AND** failed builds publish neither architecture; serial feed writes are not atomic, require one release runner and are not coordinated across Macs by the local lock
 
