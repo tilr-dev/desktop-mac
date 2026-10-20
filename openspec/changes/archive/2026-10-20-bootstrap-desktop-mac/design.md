@@ -96,3 +96,15 @@ Finish archives the ADDED deltas into openspec/specs and validates again. The
 existing automated suite remains the runtime regression check; manual release
 acceptance above describes the product workflow, not a claim it was performed
 for this documentation-only migration.
+
+## Review coverage corrections
+
+The source-to-spec check after review also explicitly preserves:
+
+- RELEASE.md 99–104, 179–189; AGENT_RELEASE.md 11–16; PRODUCTION.md 174–177; scripts/release.py 194: canonical https://cdn.tilr.dev app/server feeds and version/build/architecture DMG names, including -preview (release-publishing: Immutable publication with feed last; Independent signed server publication; release-packaging: Architecture-specific signed artifacts; Build switches and preview isolation).
+- RELEASE.md 179–189 and scripts/publish.py 268–271, 346–351: exact appcast Cache-Control, published-feed byte comparison, published.json success record and local appcast copy (release-publishing: Immutable publication with feed last).
+- CLAUDE.md 77 and Sources/Tilr/Config.swift 533: browser.automation_private_input=true and unavailable hover when disabled, preserving public click/DOM scroll (native-plugins: Browser reporting and automation configuration).
+- PRODUCTION.md 215–217: current shared app/server release key and CryptoKit runtime verification (release-publishing: Independent signed server publication; local-server: Authenticated and compatible replacement).
+- RELEASE.md 74, 155 and native-plugins/README.md 13–21: Sparkle pin/controller/menu, audio provider scope and named JavaScript aliases/module (release-publishing: Application updater lifecycle and consent; native-plugins: Independent plugin packages and ABI; Session and host isolation).
+
+These corrections update this task's own ADDED baseline and archived deltas together; no requirement already present in dev is modified.

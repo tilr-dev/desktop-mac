@@ -6,3 +6,5 @@
 - [x] 2.1 Check document coverage and run openspec validate --all --strict.
 - [x] 2.2 Complete independent self-review and resolve findings.
 - [x] 2.3 Run the task's checks and archive the baseline through bin/finish.
+
+- [x] Restore concrete feed/artifact/publication, private hover and server signing-key contracts identified in review; synchronize archived deltas and coverage ledger.

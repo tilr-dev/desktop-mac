@@ -29,6 +29,7 @@ Public app releases SHALL contain two DMGs, arm64 and x86_64, sharing marketing 
 #### Scenario: Build public artifacts
 - **WHEN** release.py/release_all.py builds an architecture
 - **THEN** each Mach-O, including all five Sparkle executables, is audited/thinned to that architecture, embedded code is signed inside-out with hardened runtime and secure timestamp, signatures are verified and app/DMG notarized and stapled
+- **AND** public DMGs are named Tilr-<version>-<build>-<arch>.dmg and published at https://cdn.tilr.dev/mac/<arch>/Tilr-<version>-<build>-<arch>.dmg
 - **AND** the DMG contains Tilr.app and an Applications link; user configuration and installed applications are untouched; there is no unsigned production fallback or App Sandbox requirement
 - **AND** build-time stable/beta feed and public key are embedded in the signed bundle; changing channel requires a new build/test
 - **AND** release.json is written only after completion and records identity/metadata and archive SHA-256; existing completed output is never overwritten
@@ -49,7 +50,7 @@ The release tools SHALL support explicit build inputs and ad-hoc previews withou
 
 #### Scenario: Local preview or custom build
 - **WHEN** --preview is selected
-- **THEN** artifacts are ad-hoc signed, not notarized, not publishable and lack an active updater
+- **THEN** the DMG is named Tilr-<version>-<build>-<arch>-preview.dmg; artifacts are ad-hoc signed, not notarized, not publishable and lack an active updater
 - **AND** --swift-disable-sandbox only changes SwiftPM build isolation, --build-package selects package input, --framework selects framework input and --skip-build consumes a successfully compiled matching executable immediately after that build; these do not bypass production signing/notarization requirements
 
 ### Requirement: Bounded timestamp signing retries

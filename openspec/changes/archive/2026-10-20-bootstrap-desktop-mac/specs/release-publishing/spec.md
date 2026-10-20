@@ -18,9 +18,10 @@ App publication SHALL validate completed receipts and exact artifacts, upload im
 #### Scenario: Publish a pair
 - **WHEN** release_all.py publishes or --publish-only is used
 - **THEN** version/build/channel/key, hashes, signatures, stapling and feed metadata are checked; both appcasts are prepared/validated before either feed is changed
-- **AND** stable feeds are /mac/<arch>/appcast.xml and beta feeds /mac/beta/<arch>/appcast.xml; each app reads only its built architecture/channel and a leftover TILR_UPDATE_FEED cannot override coordinator routing
+- **AND** the public host is https://cdn.tilr.dev; stable feeds are https://cdn.tilr.dev/mac/<arch>/appcast.xml and beta feeds https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml, where <arch> is arm64 or x86_64; each app reads only its built architecture/channel and a leftover TILR_UPDATE_FEED cannot override coordinator routing
 - **AND** only HTTP 404 means an absent previous feed; other failures stop publication, and compatible feed history is retained
-- **AND** immutable DMGs and checksum files are uploaded and fetched from the canonical CDN to verify bytes before appcast publication with configured cache control; existence checks use a unique query key and canonical cached-404 retries last at most 200 seconds, while checksum mismatches fail immediately
+- **AND** immutable DMGs and checksum files are uploaded and fetched from the canonical CDN to verify bytes before appcast.xml is published last with Cache-Control: no-cache, max-age=0, must-revalidate; existence checks use a unique query key and canonical cached-404 retries last at most 200 seconds, while checksum mismatches fail immediately
+- **AND** the published feed is downloaded back and compared byte-for-byte with the prepared feed; a mismatch fails publication, published.json records successful publication, and appcast.xml is saved beside the local release for inspection
 - **AND** normal releases preserve bundle ID, feed URLs and signing keys; key rotation is a separate migration, and correcting/reverting a bad public release requires a higher build
 - **AND** a CDN rule overriding origin cache headers must exclude mac/**/appcast.xml before distribution; signed DMGs/bundles are never edited after appcast generation, and changed contents require rebuilding/signing/notarization
 - **AND** --notes may embed release notes; a changed archive at an existing URL or an attempted downgrade/newer-feed overwrite is rejected
@@ -46,11 +47,11 @@ The app publisher SHALL generate at most maximum_deltas previous-source patches 
 - **AND** server updates continue to download full binaries
 
 ### Requirement: Independent signed server publication
-Server publication SHALL use Ed25519-signed JSON with explicit component/architecture/channel metadata, independently of Sparkle app publication.
+Server publication SHALL use Ed25519-signed JSON with explicit component/architecture/channel metadata, independently of Sparkle app publication. The current contract shares the existing app release Ed25519 key with server feeds, verified at runtime using CryptoKit and the public key embedded in the signed app bundle.
 
 #### Scenario: Publish a completed server
 - **WHEN** release_server.py --publish-only runs
-- **THEN** receipts/checksums and public immutable binaries are verified before the signed server feed is published last, preserving previous compatible releases
+- **THEN** server feeds use https://cdn.tilr.dev/server/macos/<arch>/<stable|beta>.json for arm64 or x86_64; receipts/checksums and public immutable binaries are verified before the signed server feed is published last, preserving previous compatible releases
 - **AND** a failed public check requires retrying identical publication rather than replacing a URL; architecture feed writes require one runner and are not atomic
 - **AND** sign_update signs bytes only; no application DMG or Sparkle feed is published, and app publication never implicitly publishes a server feed
 
@@ -60,7 +61,7 @@ Server publication SHALL use Ed25519-signed JSON with explicit component/archite
 - **AND** resume leaves previously published feeds unchanged; dismissing the prompt does not mark the version skipped, and installation still requires consent
 
 ### Requirement: Application updater lifecycle and consent
-Release apps SHALL retain the AppUpdates target/delegate and start Sparkle after the main window, with hourly checks, preferences and visible update attention.
+Release apps SHALL use Sparkle pinned to 2.10.0 in Package.swift/Package.resolved and SPUStandardUpdaterController with the native “Check for Updates…” menu, retain the AppUpdates target/delegate and start Sparkle after the main window, with hourly checks, preferences and visible update attention.
 
 #### Scenario: Present an update
 - **WHEN** a newer app update is available

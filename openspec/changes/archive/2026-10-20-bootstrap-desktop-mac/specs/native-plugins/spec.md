@@ -8,7 +8,7 @@ Tilr SHALL load native packages built against the separate SDK, without exposing
 - **THEN** `tilr_plugin_create_v1` returns a retained TLRNativePlugin object using Objective-C/Foundation/AppKit boundary values; calls and callbacks run on the main thread and the host is retained weakly
 - **AND** stop releases resources and stops events, cancelRequest cancels outstanding control work, and breaking required selectors/semantics require a new ABI
 - **AND** manifests declare id, numeric major.minor.patch version, abi, minOS, bridges, services and events; source manifests also select the SwiftPM product; duplicate services/handlers and reserved handlers are rejected
-- **AND** existing browser/audio aliases and the generic `tilrNative` bridge remain supported without requiring web-plugin changes
+- **AND** the `tilrWebViews` and `tilrAudio` aliases and the generic `tilrNative` bridge via `connectNative()` from `tilr/native` remain supported without requiring web-plugin changes
 
 ### Requirement: Verified installation and persistent selection
 Tilr SHALL install immutable, per-architecture plugin versions without modifying the application bundle and select them atomically through active.json.
@@ -45,6 +45,7 @@ Tilr SHALL create a native session per app/tab, keep the main interface WKWebVie
 - **THEN** enabled defaults are browser-webkit and audio, request timeout defaults to 30 seconds at launch, and plugin options hot reload through configurationDidChange
 - **AND** browser configuration is provided separately, with host inspectable/high_refresh_rate values overriding user keys and fixed to the tab's launch values
 - **AND** the SDK supplies generic AppKit overlay/surface containers, JSON configuration, event delivery and site URL resolution without depending on app internals; existing browser cookies and profile locations remain stable, macOS supplies system WebKit and iPad retains its built-in implementation
+- **AND** the audio provider supplies AVPlayer, Now Playing and media-key integration
 - **AND** closing a tab stops all native resources; navigation and session stop are distinct, and audio survives page navigation
 
 ### Requirement: Trusted message and event delivery
@@ -70,6 +71,7 @@ The browser provider SHALL honor documented defaults for automation and layout w
 #### Scenario: Configure browser work
 - **WHEN** views are created or browser config reloads
 - **THEN** automation_frames defaults to all (main excludes iframes) and applies to new views, automation_timeout defaults to 10 seconds, live_resize_interval to 40 milliseconds, progress_interval to 100 milliseconds and discard_after to zero (disabled)
+- **AND** browser.automation_private_input defaults to true; false disables private native hover and hover reports unavailable, while public AppKit click and DOM scrollBy keep working
 - **AND** progress-only reports are throttled, identical reports are dropped, and load start/end and other changes are immediate
 - **AND** live resize always applies the final size; zero interval applies every change
 

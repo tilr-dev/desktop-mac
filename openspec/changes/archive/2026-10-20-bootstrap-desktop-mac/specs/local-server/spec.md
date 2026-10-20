@@ -44,7 +44,7 @@ Tilr SHALL authenticate signed server feed metadata and downloaded bytes before 
 
 #### Scenario: Install an update
 - **WHEN** a server update is chosen
-- **THEN** Ed25519 verification covers explicit component/architecture/channel metadata; protocol, app-build range, architecture, size limits, SHA-256 and reload-state compatibility are checked before replacement
+- **THEN** CryptoKit verifies server-feed Ed25519 signatures with the existing app release public key embedded in the signed app bundle (currently shared between app and server feeds); verification covers explicit component/architecture/channel metadata; protocol, app-build range, architecture, size limits, SHA-256 and reload-state compatibility are checked before replacement
 - **AND** the binary is staged privately and its size/hash verified before executable use; malformed feeds and same-build changed manifests are rejected
 - **AND** fixed-path replacement is atomic and waits for an authenticated expected-version response without stopping the running supervisor; sessions survive reload
 - **AND** an incompatible live-state migration leaves the old service running until the user stops it
