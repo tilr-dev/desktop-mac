@@ -5,4 +5,4 @@
 ## 2. Verification and delivery
 - [x] 2.1 Check document coverage and run openspec validate --all --strict.
 - [x] 2.2 Complete independent self-review and resolve findings.
-- [ ] 2.3 Run the task's checks and archive the baseline through bin/finish.
+- [x] 2.3 Run the task's checks and archive the baseline through bin/finish.
