@@ -3,7 +3,9 @@
 name: CI
 
 on:
+  # PRs into dev: no CI for now, the tests run locally (review-bot, merge-bot) (Dan, 2026-10-20).
   pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
