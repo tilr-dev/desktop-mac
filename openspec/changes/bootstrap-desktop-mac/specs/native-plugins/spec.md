@@ -27,9 +27,15 @@ Tilr SHALL treat native plugins as in-process trusted code and require signed, i
 
 #### Scenario: Opt into another publisher
 - **WHEN** a different-team or ad-hoc package is selected
-- **THEN** it is permitted only with launch-time `native_plugins.allow_third_party: true` and an enabled plugin id; unsigned or damaged packages are still rejected
+- **THEN** a release host permits it only with launch-time `native_plugins.allow_third_party: true` and an enabled plugin id; unsigned or damaged packages are still rejected
+- **AND** an ad-hoc development host accepts valid ad-hoc packages by default
 - **AND** either direction of this permission change requires restart; installer `--allow-third-party` and `--config` never edit the app's permission
 - **AND** library-validation entitlement is fixed at app signing, quarantine is retained, and the package remains subject to macOS distribution policy
+
+#### Scenario: Inspect and configure plugins
+- **WHEN** the user opens About or Native Plugin Settings
+- **THEN** About shows actually loaded versions, third-party publishers and errors; Native Plugin Settings opens this instance's config.yml
+- **AND** enabling an id or granting publisher permission does not install every package
 
 ### Requirement: Session and host isolation
 Tilr SHALL create a native session per app/tab, keep the main interface WKWebView in the app and embedded browser views in the browser plugin, and retain instance-scoped profile storage identifiers.

@@ -67,5 +67,6 @@ release_server.py SHALL build/sign/notarize servers independently from applicati
 - **WHEN** --version/--build are supplied
 - **THEN** both architectures build by default, --arch selects one, --channel beta selects the independent beta feed and --min-app-build/--max-app-build constrain compatibility; protocol comes from server source
 - **AND** output is build/server-releases/<version>-<build>-<arch> with a preview suffix for --preview; incomplete directories are not reused
+- **AND** building servers requires Rust, Zig 0.15.2, protoc, Apple signing/notarization credentials and aarch64-apple-darwin/x86_64-apple-darwin Rust targets
 - **AND** server-release.json pins the completed version/build/protocol; TILR_SERVER_RELEASE_ROOT may supply downloaded completed artifacts; public apps require public servers, preview apps may use matching preview artifacts if no public artifact exists
 - **AND** application packaging copies exact server bytes/signature/manifest, without recompiling, renumbering or using universal server artifacts

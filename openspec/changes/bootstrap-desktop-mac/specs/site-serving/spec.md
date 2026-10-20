@@ -14,6 +14,11 @@ Tilr SHALL load local app folders under distinct `tilr://<name>/` origins, or a 
 - **WHEN** a selected folder lacks `index.html`
 - **THEN** Tilr creates missing parent folders without overwriting contents and shows a bundled placeholder naming the site and config paths
 
+#### Scenario: Install and load a custom interface
+- **WHEN** a recipient installs Tilr
+- **THEN** macOS 14+ is required without a Node/npm/Homebrew/Xcode prerequisite; the bundle contains a welcome page and local server but no preinstalled web/plugin workspace
+- **AND** the user drags Tilr from the DMG into Applications and launches that copy; the welcome page explains loading a custom index.html folder and preserves site/apps/--site/--url choices
+
 ### Requirement: Local asset serving
 Tilr SHALL serve local app files with MIME types, directory indexes and extensionless SPA fallback while rejecting parent-directory traversal components.
 
