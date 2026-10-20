@@ -1,7 +1,7 @@
 # local-server Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define offline bootstrap, ownership, independent authenticated updating and session-preserving management of the local terminal server.
 
 ## Requirements
 

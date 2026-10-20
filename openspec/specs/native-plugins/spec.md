@@ -1,7 +1,7 @@
 # native-plugins Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define the native module ABI, package verification and trust, per-tab sessions and embedded browser resource lifecycle.
 
 ## Requirements
 

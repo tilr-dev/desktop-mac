@@ -1,7 +1,7 @@
 # configuration Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define generated defaults, user overrides, configuration reload and isolation between application instances.
 
 ## Requirements
 

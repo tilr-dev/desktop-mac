@@ -1,7 +1,7 @@
 # development Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define isolated development probes, native-module verification and the evidence required for release acceptance.
 
 ## Requirements
 

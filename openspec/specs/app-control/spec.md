@@ -1,7 +1,7 @@
 # app-control Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define instance-scoped automation, bounded console capture, plugin-manager inspection and SSH agent stream lifetime.
 
 ## Requirements
 

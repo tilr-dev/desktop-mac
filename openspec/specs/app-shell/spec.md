@@ -1,7 +1,7 @@
 # app-shell Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define the native window, app switching, command palette and verified desktop placement behavior.
 
 ## Requirements
 

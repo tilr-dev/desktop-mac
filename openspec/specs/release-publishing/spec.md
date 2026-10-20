@@ -1,7 +1,7 @@
 # release-publishing Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define verified immutable app/server publication, update compatibility, delta generation and application update consent.
 
 ## Requirements
 

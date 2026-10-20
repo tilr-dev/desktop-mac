@@ -1,7 +1,7 @@
 # site-serving Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define local app selection, custom origins, file responses and reload behavior for page content.
 
 ## Requirements
 

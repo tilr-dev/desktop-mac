@@ -1,7 +1,7 @@
 # release-packaging Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define reproducible completed app/server artifacts, architecture-specific signing and separate setup/build/publication stages.
 
 ## Requirements
 

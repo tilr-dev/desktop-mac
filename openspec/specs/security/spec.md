@@ -1,7 +1,7 @@
 # security Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define private vulnerability reporting, report evidence, supported security scope and release maintenance policy.
 
 ## Requirements
 

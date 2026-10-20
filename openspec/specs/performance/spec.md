@@ -1,7 +1,7 @@
 # performance Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-desktop-mac. Update Purpose after archive.
+Define demand-driven performance diagnosis, controlled export and guarded optional platform features.
 
 ## Requirements
 
