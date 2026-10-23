@@ -5,4 +5,4 @@
 
 ## 2. Verify
 - [x] 2.1 Demonstrate the regression without the fix and run the installation tests with the fix.
-- [ ] 2.2 Review the diff and run repository checks.
+- [x] 2.2 Review the diff and run repository checks.
