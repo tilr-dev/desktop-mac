@@ -3,7 +3,7 @@ import CryptoKit
 import Darwin
 
 /// A stable executable outside .app, seeded by the bundle and independently updated.
-/// An app upgrade retains a newer compatible installed server. launchd and the server's reload watcher keep
+/// An app upgrade retains a newer compatible installed server. launchd and explicit server reloads keep
 /// using that same path. Never restart a running job during an upgrade.
 struct ServerInstallation {
     struct Manifest: Codable, Equatable {
@@ -117,15 +117,19 @@ struct ServerInstallation {
         defer { flock(fd, LOCK_UN); close(fd) }
 
         // Recover the binary/receipt transaction before comparing against an older bundle.
-        // Before rename: keep the old receipt. After rename: finish the new receipt.
+        // Before rename: keep the old receipt. After rename: finish the new receipt and
+        // keep the transaction pending until reload has been requested (or the job started).
         let pending = root.appendingPathComponent("pending-server.json")
+        var replacementPending = false
         if fm.fileExists(atPath: pending.path) {
             let pendingData = try Data(contentsOf: pending)
             let incoming = try JSONDecoder().decode(Manifest.self, from: pendingData)
             if (try? hash(binary)) == incoming.sha256 {
                 try pendingData.write(to: receipt, options: .atomic)
+                replacementPending = true
+            } else {
+                try fm.removeItem(at: pending)
             }
-            try fm.removeItem(at: pending)
         }
         for file in try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             where file.lastPathComponent.hasPrefix("tilr-server.new.") {
@@ -230,7 +234,7 @@ struct ServerInstallation {
             if existing == nil { try data.write(to: receipt, options: .atomic) }
             guard rename(staged.path, binary.path) == 0 else { throw Failure("Cannot replace the installed server") }
             try data.write(to: receipt, options: .atomic)
-            try fm.removeItem(at: pending)
+            replacementPending = true
         }
         if !needsCopy && configChanged { try configData.write(to: configFile, options: .atomic) }
         try fm.createDirectory(at: agents, withIntermediateDirectories: true)
@@ -257,11 +261,20 @@ struct ServerInstallation {
             // No -k: start a stopped job, never kill/restart an existing supervisor.
             let result = try launchctl(["kickstart", service])
             guard result.status == 0 else { throw Failure("Cannot start the local server: \(result.text)") }
-        } else if configChanged && !needsCopy {
-            // Reload config through the server's session-preserving path, not a restart.
-            let result = try launchctl(["kill", "SIGUSR1", service])
-            guard result.status == 0 else { throw Failure("Cannot reload the local server's allowed origins: \(result.text)") }
+        } else if replacementPending || configChanged {
+            // The server reloads only on request. One signal applies both the installed binary
+            // and origins through its session-preserving path, without restarting the job.
+            do {
+                let result = try launchctl(["kill", "SIGUSR1", service])
+                guard result.status == 0 else { throw Failure(result.text) }
+            } catch {
+                if replacementPending {
+                    throw Failure("The server update was installed, but the local server was not reloaded: \(error.localizedDescription)")
+                }
+                throw Failure("Cannot reload the local server's allowed origins: \(error.localizedDescription)")
+            }
         }
+        if replacementPending { try fm.removeItem(at: pending) }
         return wanted
     }
 
