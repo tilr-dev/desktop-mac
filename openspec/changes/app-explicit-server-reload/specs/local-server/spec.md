@@ -18,6 +18,11 @@ Tilr SHALL authenticate signed server feed metadata and downloaded bytes before 
 - **AND** Local Server reports that the update was installed but the server was not reloaded
 - **AND** the app does not stop the running supervisor or report the update as ready
 
+#### Scenario: Resume an interrupted replacement
+- **WHEN** the app resumes after replacement completed but before reload was requested, including after a failed request
+- **THEN** it reconciles the installed receipt and explicitly requests reload of a running supervisor before waiting for an authenticated expected-version response
+- **AND** it keeps the replacement transaction pending until the reload request or service start succeeds
+
 #### Scenario: Install with no running supervisor
 - **WHEN** an update is installed and the owned job is unloaded or stopped
 - **THEN** the app bootstraps or starts the job with the installed binary and waits for an authenticated expected-version response

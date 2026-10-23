@@ -45,7 +45,7 @@ import Darwin
                             expect(try String(contentsOf: root.appendingPathComponent("tilr-server"), encoding: .utf8) == expectedReloadBytes)
                             let receipt = try JSONDecoder().decode(ServerInstallation.Manifest.self, from: Data(contentsOf: root.appendingPathComponent("app-managed.json")))
                             expect(receipt.serverVersion == version)
-                            expect(!fm.fileExists(atPath: root.appendingPathComponent("pending-server.json").path))
+                            expect(fm.fileExists(atPath: root.appendingPathComponent("pending-server.json").path))
                         }
                         if reloadThrows { throw ServerInstallation.Failure("launchctl could not run") }
                         return .init(status: reloadStatus, text: reloadStatus == 0 ? "" : "no such process")
@@ -152,7 +152,9 @@ import Darwin
         // The same interruption after rename must finalize the new receipt, not downgrade.
         try incoming.write(to: pending)
         try Data("five".utf8).write(to: install.binary)
+        commands.removeAll()
         expect(try install.install().build == 5)
+        expect(commands.filter { $0.first == "launchctl" && $0[1] != "print" } == [["launchctl", "kill", "SIGUSR1", install.service]])
         expect(!fm.fileExists(atPath: pending.path))
         // The job runs the binary itself. An earlier Tilr's job, the binary through `/bin/zsh -lc`,
         // is rewritten: left running when it runs (its terminals with it), replaced when stopped.
@@ -360,6 +362,13 @@ import Darwin
             expect(try Data(contentsOf: install.receipt) == Data(contentsOf: source.appendingPathComponent("app-managed.json")))
             expect(try Data(contentsOf: install.root.appendingPathComponent("tilr-server.previous")) == previousBytes)
             expect(try Data(contentsOf: install.root.appendingPathComponent("app-managed.previous.json")) == previousReceipt)
+            expect(fm.fileExists(atPath: pending.path))
+            reloadStatus = 0
+            reloadThrows = false
+            commands.removeAll()
+            expect(try install.install().build == build)
+            expect(launchdCalls() == ["kill"])
+            expect(!fm.fileExists(atPath: pending.path))
         }
         expectedReloadBytes = nil
         reloadStatus = 0
