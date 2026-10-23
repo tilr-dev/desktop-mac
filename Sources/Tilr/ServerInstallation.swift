@@ -3,7 +3,7 @@ import CryptoKit
 import Darwin
 
 /// A stable executable outside .app, seeded by the bundle and independently updated.
-/// An app upgrade retains a newer compatible installed server. launchd and the server's reload watcher keep
+/// An app upgrade retains a newer compatible installed server. launchd and explicit server reloads keep
 /// using that same path. Never restart a running job during an upgrade.
 struct ServerInstallation {
     struct Manifest: Codable, Equatable {
@@ -257,10 +257,18 @@ struct ServerInstallation {
             // No -k: start a stopped job, never kill/restart an existing supervisor.
             let result = try launchctl(["kickstart", service])
             guard result.status == 0 else { throw Failure("Cannot start the local server: \(result.text)") }
-        } else if configChanged && !needsCopy {
-            // Reload config through the server's session-preserving path, not a restart.
-            let result = try launchctl(["kill", "SIGUSR1", service])
-            guard result.status == 0 else { throw Failure("Cannot reload the local server's allowed origins: \(result.text)") }
+        } else if needsCopy || configChanged {
+            // The server reloads only on request. One signal applies both the installed binary
+            // and origins through its session-preserving path, without restarting the job.
+            do {
+                let result = try launchctl(["kill", "SIGUSR1", service])
+                guard result.status == 0 else { throw Failure(result.text) }
+            } catch {
+                if needsCopy {
+                    throw Failure("The server update was installed, but the local server was not reloaded: \(error.localizedDescription)")
+                }
+                throw Failure("Cannot reload the local server's allowed origins: \(error.localizedDescription)")
+            }
         }
         return wanted
     }

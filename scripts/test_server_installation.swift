@@ -21,6 +21,9 @@ import Darwin
         let installedFormats = formats
         var version = "1.0-build1-test"
         var signed = true
+        var expectedReloadBytes: String?
+        var reloadStatus: Int32 = 0
+        var reloadThrows = false
         func expect(_ value: Bool, line: UInt = #line) { precondition(value, "line \(line)") }
         func payload(_ build: Int, _ bytes: String) throws {
             version = "1.0-build\(build)-test"
@@ -36,6 +39,17 @@ import Darwin
                 commands.append([executable.lastPathComponent] + args)
                 if executable.lastPathComponent == "codesign" { return .init(status: signed ? 0 : 1, text: "") }
                 if executable.lastPathComponent == "launchctl" {
+                    if args == ["kill", "SIGUSR1", "gui/\(getuid())/dev.tilr.test"] {
+                        if let expectedReloadBytes {
+                            let root = temp.appendingPathComponent("installed")
+                            expect(try String(contentsOf: root.appendingPathComponent("tilr-server"), encoding: .utf8) == expectedReloadBytes)
+                            let receipt = try JSONDecoder().decode(ServerInstallation.Manifest.self, from: Data(contentsOf: root.appendingPathComponent("app-managed.json")))
+                            expect(receipt.serverVersion == version)
+                            expect(!fm.fileExists(atPath: root.appendingPathComponent("pending-server.json").path))
+                        }
+                        if reloadThrows { throw ServerInstallation.Failure("launchctl could not run") }
+                        return .init(status: reloadStatus, text: reloadStatus == 0 ? "" : "no such process")
+                    }
                     if args[0] == "print" { return .init(status: loaded ? 0 : 1, text: loaded ? jobState : "") }
                     if args[0] == "bootstrap" { loaded = true; jobState = startsOnBootstrap ? runningState : "state = waiting" }
                     if args[0] == "kickstart" { jobState = runningState }
@@ -64,6 +78,7 @@ import Darwin
         _ = try install.install()
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "one")
         expect(commands.filter { $0.contains("bootstrap") }.count == 1)
+        expect(!commands.contains { $0.contains("kill") })
         func plistJob() throws -> [String: Any] {
             try PropertyListSerialization.propertyList(from: Data(contentsOf: install.plist), format: nil) as! [String: Any]
         }
@@ -72,11 +87,18 @@ import Darwin
         let inode = try fm.attributesOfItem(atPath: install.binary.path)[.systemFileNumber] as! NSNumber
         _ = try install.install()
         expect(try fm.attributesOfItem(atPath: install.binary.path)[.systemFileNumber] as! NSNumber == inode)
+        commands.removeAll()
         try payload(2, "two")
+        expectedReloadBytes = "two"
         _ = try install.install()
+        expectedReloadBytes = nil
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
         expect(try String(contentsOf: install.root.appendingPathComponent("tilr-server.previous"), encoding: .utf8) == "one")
         expect(!commands.contains { $0.contains("bootout") || $0.contains("kickstart") })
+        expect(commands.filter { $0.first == "launchctl" && $0[1] != "print" } == [["launchctl", "kill", "SIGUSR1", install.service]])
+        commands.removeAll()
+        _ = try install.install()
+        expect(!commands.contains { $0.contains("kill") })
         try payload(1, "one")
         let retained = try install.install()
         expect(retained.build == 2)
@@ -315,6 +337,50 @@ import Darwin
         expect(try install.install().build == 6)
         expect(launchdCalls() == ["bootstrap"])
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "six" && install.isInstalled)
+        // Failure to request reload keeps the installed release, its receipt and manual recovery.
+        // Both a nonzero launchctl result and failure to launch it reach the explicit update error.
+        for build in [7, 8] {
+            let previousBytes = try Data(contentsOf: install.binary)
+            let previousReceipt = try Data(contentsOf: install.receipt)
+            try payload(build, "release-\(build)")
+            expectedReloadBytes = "release-\(build)"
+            reloadStatus = build == 7 ? 1 : 0
+            reloadThrows = build == 8
+            commands.removeAll()
+            do {
+                _ = try install.install()
+                fatalError("Expected reload request failure")
+            } catch {
+                expect(error.localizedDescription.contains("update was installed"))
+                expect(error.localizedDescription.contains("server was not reloaded"))
+                expect(error.localizedDescription.contains(build == 7 ? "no such process" : "launchctl could not run"))
+            }
+            expect(launchdCalls() == ["kill"])
+            expect(try String(contentsOf: install.binary, encoding: .utf8) == "release-\(build)")
+            expect(try Data(contentsOf: install.receipt) == Data(contentsOf: source.appendingPathComponent("app-managed.json")))
+            expect(try Data(contentsOf: install.root.appendingPathComponent("tilr-server.previous")) == previousBytes)
+            expect(try Data(contentsOf: install.root.appendingPathComponent("app-managed.previous.json")) == previousReceipt)
+        }
+        expectedReloadBytes = nil
+        reloadStatus = 0
+        reloadThrows = false
+        // A stopped or unloaded job starts the new binary directly, without a reload signal.
+        for build in [9, 10] {
+            try payload(build, "release-\(build)")
+            loaded = build == 9
+            jobState = "state = waiting"
+            commands.removeAll()
+            expect(try install.install().build == build)
+            expect(launchdCalls() == (build == 9 ? ["kickstart"] : ["bootstrap"]))
+        }
+        // Binary and origins changes share one request after both files have been installed.
+        try payload(11, "eleven")
+        expectedReloadBytes = "eleven"
+        commands.removeAll()
+        _ = try originsChanged.install()
+        expect(launchdCalls() == ["kill"])
+        expect(try String(contentsOf: install.root.appendingPathComponent("origins.toml"), encoding: .utf8).contains("tilr://notes"))
+        expectedReloadBytes = nil
         print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped and unassociated job migration, app association, changed definition applied without panes / pending with panes, kickstart of a held-back job, pending read from launchd (match clears a stale marker, mismatch pending, marker fallback), restart, removal (ours / foreign / not installed) and reinstall: passed")
         if let payload = CommandLine.arguments.dropFirst().first {
             var real = ServerInstallation(source: URL(fileURLWithPath: payload),
