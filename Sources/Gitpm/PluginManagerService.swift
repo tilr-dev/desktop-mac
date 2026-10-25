@@ -1,7 +1,7 @@
 import Foundation
 
 // The plugin manager (Rust, ../git/gitpm) for the app. UniFFI's generated API
-// (Generated/Gitpm.swift: PluginManager, InstalledPlugin, UninstallPlan, …)
+// (Generated/Gitpm.swift: PackageManager, InstalledPackage, UninstallPlan, …)
 // blocks on Git and the network; this file runs it on a queue of its own and hands back
 // async results. Records come through as generated (public); errors become
 // `PluginManagerFailure`. No UI here.
@@ -43,11 +43,11 @@ public struct PluginManagerFailure: Error, LocalizedError, CustomStringConvertib
         case .LocalChanges(let id, let message, let items): return .init(kind: "local_changes", message: message, id: id, lostWork: items)
         case .Locked(let message): return .init(kind: "locked", message: message)
         case .InvalidId(let message): return .init(kind: "invalid_id", message: message)
-        case .InvalidManifest(let message): return .init(kind: "invalid_manifest", message: message)
+        case .InvalidManifest(let id, let message): return .init(kind: "invalid_manifest", message: message, id: id)
         case .InvalidVersion(let message): return .init(kind: "invalid_version", message: message)
         case .InvalidArgument(let message): return .init(kind: "invalid_argument", message: message)
-        case .VersionConflict(let message): return .init(kind: "version_conflict", message: message)
-        case .NoPreviousVersion(let id, let message): return .init(kind: "no_previous_version", message: message, id: id)
+        case .VersionConflict(let id, let message): return .init(kind: "version_conflict", message: message, id: id)
+        case .NoPreviousVersion(let id, _, let message): return .init(kind: "no_previous_version", message: message, id: id)
         case .NoReleases(let message): return .init(kind: "no_releases", message: message)
         case .RepositoryNotFound(let id, let message): return .init(kind: "repository_not_found", message: message, id: id)
         case .Workspace(let message): return .init(kind: "workspace", message: message)
@@ -57,10 +57,11 @@ public struct PluginManagerFailure: Error, LocalizedError, CustomStringConvertib
         case .Auth(let message): return .init(kind: "auth", message: message)
         case .Unsupported(let message): return .init(kind: "unsupported", message: message)
         case .DependencyConflict(let message): return .init(kind: "dependency_conflict", message: message)
-        case .HasDependents(let id, let message, let dependents):
-            return .init(kind: "has_dependents", message: message, id: id, plugins: dependents)
+        case .HasDependents(let id, let message, let dependents, let items):
+            return .init(kind: "has_dependents", message: message, id: id, lostWork: items, plugins: dependents)
         case .IncompatibleReplacement(let id, let message, let consumers):
             return .init(kind: "incompatible_replacement", message: message, id: id, plugins: consumers)
+        case .NotDeployed(let message, _): return .init(kind: "not_deployed", message: message)
         case .InvalidData(let message): return .init(kind: "invalid_data", message: message)
         case .Io(let message): return .init(kind: "io", message: message)
         case .Other(let kind, let message): return .init(kind: kind, message: message)
@@ -87,7 +88,7 @@ public final class PluginManagerService: @unchecked Sendable {
     private let queue: DispatchQueue
     // Only touched on `queue`.
     private var settings: Settings
-    private var manager: PluginManager?
+    private var manager: PackageManager?
 
     public init(settings: Settings, label: String = "dev.tilr.plugin-manager") {
         self.settings = settings
@@ -128,56 +129,50 @@ public final class PluginManagerService: @unchecked Sendable {
     }
 
     public func root() async throws -> String { try await run { $0.root() } }
-    public func list() async throws -> [InstalledPlugin] { try await run { try $0.list() } }
+    public func list() async throws -> [InstalledPackage] { try await run { try $0.list() } }
     /// Installed versions against the configured catalog (read-only).
-    public func check() async throws -> [CheckRow] { try await run { try $0.check() } }
+    public func check() async throws -> [CheckRow] { try await run(git: true) { try Gitpm.check(root: $0.root(), catalog: self.settings.catalog, customSsh: false).rows } }
     public func browseCatalog() async throws -> CatalogOverview { try await run { try $0.browseCatalog() } }
     /// A release from the configured catalog; the latest when `version` is nil.
     public func catalogRelease(id: String, version: String? = nil) async throws -> CatalogRelease {
         try await run { try $0.catalogRelease(id: id, version: version) }
     }
-    /// From a Git source (URL or local path): the latest release tag, `reference`, or the
+    /// From a Git source (URL or local path): the latest release tag, an explicit ref, or the
     /// branch head with `.dev`.
-    public func install(source: String, reference: String? = nil, channel: Channel = .stable) async throws -> InstallResult {
-        try await run(git: true) { try $0.install(source: source, reference: reference, channel: channel, package: nil) }
+    public func install(source: String, target: InstallTarget = .release) async throws -> InstallResult {
+        try await run(git: true) { try $0.install(source: source, target: target, package: nil) }
     }
     /// An exact catalog release (latest when `version` is nil), hashes verified.
     public func installFromCatalog(id: String, version: String? = nil) async throws -> InstallResult {
         try await run(git: true) { try $0.installFromCatalog(id: id, version: version) }
     }
-    public func update(id: String, reference: String? = nil, channel: Channel = .stable) async throws -> RevisionChange {
-        try await run(git: true) { try $0.update(id: id, reference: reference, channel: channel) }
+    public func update(id: String, target: Target = .release) async throws -> RevisionChange {
+        try await run(git: true) { try $0.update(id: id, target: target) }
     }
     public func rollback(id: String) async throws -> RevisionChange { try await run(git: true) { try $0.rollback(id: id) } }
-    public func enable(id: String) async throws { try await run { try $0.enable(id: id) } }
+    public func enable(id: String) async throws { try await run { _ = try $0.enable(id: id) } }
     /// `has_dependents` while other installed plugins need it, unless `force`.
-    public func disable(id: String, force: Bool = false) async throws { try await run { try $0.disable(id: id, force: force) } }
+    public func disable(id: String, force: Bool = false) async throws { try await run { _ = try $0.disable(id: id, force: force) } }
     /// Unregisters; the repository and its files stay on disk (`restore` brings it back).
     /// `has_dependents` while other installed plugins need it, unless `force`.
-    public func forget(id: String, force: Bool = false) async throws { try await run { try $0.forget(id: id, force: force) } }
+    public func forget(id: String, force: Bool = false) async throws { try await run { _ = try $0.forget(id: id, force: force) } }
     public func restore(id: String) async throws -> InstallResult { try await run(git: true) { try $0.restore(id: id) } }
     /// What `uninstall` would delete, the local work it would lose and the installed plugins
     /// that depend on it (read-only; reads the clone with git).
     public func uninstallPlan(id: String) async throws -> UninstallPlan { try await run(git: true) { try $0.uninstallPlan(id: id) } }
-    /// `confirm: false` refuses with `local_changes` when anything would be lost; dependents
+    /// Pass exactly the lost-work items confirmed from `uninstallPlan`; new work is refused. Dependents
     /// refuse with `has_dependents` unless `force`.
-    public func uninstall(id: String, confirm: Bool, force: Bool = false) async throws {
-        try await run(git: true) { try $0.uninstall(id: id, confirm: confirm, force: force) }
+    public func uninstall(id: String, confirmed: [LostWork] = [], force: Bool = false) async throws {
+        try await run(git: true) { _ = try $0.uninstall(id: id, confirmed: confirmed, force: force) }
     }
     /// What making `replacement` the provider of `original` for every consumer would change.
     public func replacePlan(original: String, replacement: String) async throws -> ReplacementPlan {
         try await run { try $0.replacePlan(original: original, replacement: replacement) }
     }
-    /// Global replacement. `incompatible_replacement` (consumers in `plugins`) unless `confirm`.
-    public func replace(original: String, replacement: String, confirm: Bool) async throws -> ReplacementPlan {
-        try await run { try $0.replace(original: original, replacement: replacement, confirm: confirm) }
-    }
-    public func switchBackPlan(original: String) async throws -> ReplacementPlan {
-        try await run { try $0.switchBackPlan(original: original) }
-    }
-    /// Every consumer uses the installed original again (same confirmation rule as replace).
-    public func switchBack(original: String, confirm: Bool) async throws -> ReplacementPlan {
-        try await run { try $0.switchBack(original: original, confirm: confirm) }
+    /// Global replacement; incompatible consumers are refused without confirmation.
+    /// To restore the original provider, pass `original` as both arguments.
+    public func replace(original: String, replacement: String) async throws -> ReplacementPlan {
+        try await run { try $0.replace(original: original, replacement: replacement) }
     }
     /// Forks an installed plugin into `namespace` at `destination` (outside the workspace).
     public func fork(id: String, destination: String, namespace: String) async throws -> ForkResult {
@@ -198,8 +193,8 @@ public final class PluginManagerService: @unchecked Sendable {
         try await detached { try Gitpm.catalogRelease(location: location, id: id, version: version) }
     }
     /// The installed plugins of a workspace without opening (locking or creating) it.
-    public func readInstalled(root: String) async throws -> [InstalledPlugin] {
-        try await detached { try Gitpm.readInstalled(root: root) }
+    public func readInstalled(root: String) async throws -> [InstalledPackage] {
+        try await detached { try Gitpm.readState(root: root).resolved }
     }
     /// One line for a lost-work item, for a confirmation.
     public static func describe(_ item: LostWork) -> String { describeLostWork(item: item) }
@@ -242,16 +237,16 @@ public final class PluginManagerService: @unchecked Sendable {
     // MARK: Plumbing
 
     /// Runs `body` with the open manager on the queue, opening it first when needed.
-    private func run<T>(git: Bool = false, _ body: @escaping (PluginManager) throws -> T) async throws -> T {
+    private func run<T>(git: Bool = false, _ body: @escaping (PackageManager) throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { done in
             queue.async {
                 do {
                     if git { try Self.requireGit() }
-                    let manager: PluginManager
+                    let manager: PackageManager
                     if let open = self.manager {
                         manager = open
                     } else {
-                        manager = try PluginManager.open(root: self.settings.root,
+                        manager = try PackageManager.open(root: self.settings.root,
                                                          options: ManagerOptions(catalog: self.settings.catalog))
                         self.manager = manager
                     }
