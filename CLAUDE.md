@@ -33,8 +33,15 @@ thread (async, errors as `PluginManagerFailure` kind + message), `PluginManagerH
 `plugin_manager.workspace` (default `<config folder>/plugins`) and `plugin_manager.catalog`
 (`https://pkg.tilr.dev`), both on reload. No UI or page bridge yet; `tilr ctl` raw command
 `{"cmd":"plugin-manager"}` reads the state, `--probe` exercises it on a temporary workspace.
+CI generates bindings from the full commit SHA in `gitpm.pin`; its first field is a
+revision label (a tag or `dev`). Local and release builds use `../git/gitpm` or
+`GITPM_DIR`, so that checkout must expose the same API as the pin. The service uses
+`PackageManager`/`InstalledPackage`; `replace(original:replacement:)` has no confirmation
+parameter and refuses incompatible consumers. Restore the original with
+`replace(original: id, replacement: id)`. The probe covers invalid replacement,
+replacement and restoration of a consumer's provider, and incompatible refusal using local repositories.
 The library runs the system `git` for now (git must exist on the machine): install, update,
-rollback, restore, fork and auth check first ask `PluginManagerService.gitProblem()` and fail
+rollback, restore, fork, version check and auth check first ask `PluginManagerService.gitProblem()` and fail
 with kind `git` and a message saying to install the Command Line Tools, instead of running the
 `/usr/bin/git` stub (which would pop up the CLT installer); the probe skips its git step then.
 
