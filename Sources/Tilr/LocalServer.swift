@@ -189,16 +189,8 @@ final class LocalServerHost: NSObject {
 
     /// Until the server answers an authenticated connection with `version` (any, when nil).
     private static func waitReady(_ install: ServerInstallation, version: String?, _ settings: Config.LocalServer) throws -> [String: String] {
-        install.progress?("Waiting for the local server on port \(install.port)…")
-        let deadline = Date().addingTimeInterval(settings.startupTimeout)
-        repeat {
-            if let check = try? install.command(install.binary, ["ps", "--url", install.endpoint, "--server-version"]),
-               check.status == 0, !check.text.isEmpty, version == nil || check.text == version {
-                return try install.credentials()
-            }
-            Thread.sleep(forTimeInterval: settings.retryInterval)
-        } while Date() < deadline
-        throw ServerInstallation.Failure("The local server did not become ready. See \(install.root.appendingPathComponent("server.log").path). Existing processes were not stopped.")
+        try install.waitReady(version: version, startupTimeout: settings.startupTimeout,
+                              retryInterval: settings.retryInterval)
     }
 
     private func description(_ manifest: ServerInstallation.Manifest) -> String {
