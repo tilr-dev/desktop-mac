@@ -31,11 +31,11 @@ import Darwin
             let data = Data(bytes.utf8)
             try data.write(to: source.appendingPathComponent("tilrd"))
             let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-            let manifest = ServerInstallation.Manifest(version: "1.0", build: build, arch: "arm64", serverVersion: version, sha256: sha, protocolVersion: 2, minAppBuild: 1, maxAppBuild: nil)
+            let manifest = ServerInstallation.Manifest(version: "1.0", build: build, arch: "arm64", serverVersion: version, sha256: sha, protocolVersion: 1, minAppBuild: 1, maxAppBuild: nil)
             try JSONEncoder().encode(manifest).write(to: source.appendingPathComponent("app-managed.json"))
         }
         let install = ServerInstallation(source: source, root: temp.appendingPathComponent("installed"),
-            agents: temp.appendingPathComponent("agents"), label: "dev.tilr.test", port: 0, timeout: 5, origins: ["tilr://test"], appBuild: 20, protocolVersion: 2, architecture: "arm64",
+            agents: temp.appendingPathComponent("agents"), label: "dev.tilr.test", port: 0, timeout: 5, origins: ["tilr://test"], appBuild: 20, protocolVersion: 1, architecture: "arm64",
             runner: { executable, args in
                 commands.append([executable.lastPathComponent] + args)
                 if executable.lastPathComponent == "codesign" { return .init(status: signed ? 0 : 1, text: "") }
@@ -117,10 +117,12 @@ import Darwin
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
         let validReceipt = try Data(contentsOf: install.receipt)
         var incompatible = try JSONSerialization.jsonObject(with: validReceipt) as! [String: Any]
-        incompatible["protocolVersion"] = 99
-        try JSONSerialization.data(withJSONObject: incompatible).write(to: install.receipt)
-        rejects { _ = try install.install() }
-        expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
+        for protocolVersion in [0, 2, 99] {
+            incompatible["protocolVersion"] = protocolVersion
+            try JSONSerialization.data(withJSONObject: incompatible).write(to: install.receipt)
+            rejects { _ = try install.install() }
+            expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
+        }
         try validReceipt.write(to: install.receipt)
         try payload(2, "altered same build")
         rejects { _ = try install.install() }
@@ -131,7 +133,7 @@ import Darwin
         _ = try install.install()
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "three")
         let originsChanged = ServerInstallation(source: source, root: install.root, agents: install.agents,
-            label: install.label, port: 0, timeout: 5, origins: ["tilr://notes"], appBuild: 20, protocolVersion: 2, architecture: "arm64", runner: install.runner, portCheck: {})
+            label: install.label, port: 0, timeout: 5, origins: ["tilr://notes"], appBuild: 20, protocolVersion: 1, architecture: "arm64", runner: install.runner, portCheck: {})
         _ = try originsChanged.install()
         expect(commands.contains { $0 == ["launchctl", "kill", "SIGUSR1", install.service] })
         expect(try String(contentsOf: install.root.appendingPathComponent("origins.toml"), encoding: .utf8).contains("tilr://notes"))
@@ -455,7 +457,7 @@ import Darwin
         if let payload = CommandLine.arguments.dropFirst().first {
             var real = ServerInstallation(source: URL(fileURLWithPath: payload),
                 root: temp.appendingPathComponent("real"), agents: temp.appendingPathComponent("real-agents"),
-                label: "dev.tilr.test-real", port: 0, timeout: 15, origins: ["tilr://test"], appBuild: 20, protocolVersion: 2, architecture: "arm64")
+                label: "dev.tilr.test-real", port: 0, timeout: 15, origins: ["tilr://test"], appBuild: 20, protocolVersion: 1, architecture: "arm64")
             let processes = real
             real.runner = { executable, args in
                 if executable.lastPathComponent == "launchctl" {
