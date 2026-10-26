@@ -71,6 +71,13 @@ jobs:
       - name: Build Intel (x86_64)
         run: swift build -c release --arch x86_64 --scratch-path .build/ci-x86_64
 
+      - name: Server protocol integration tests
+        run: |
+          swiftc Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o "$RUNNER_TEMP/test-server-updates"
+          "$RUNNER_TEMP/test-server-updates"
+          swiftc Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
+          "$RUNNER_TEMP/test-server-installation"
+
       - name: Release script tests
         working-directory: scripts
         run: |
