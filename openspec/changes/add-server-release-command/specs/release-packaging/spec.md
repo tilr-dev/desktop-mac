@@ -8,6 +8,16 @@ The desktop repository SHALL provide a tagged-source server release command with
 - **THEN** it builds the detached tagged sources even when the source clone HEAD differs
 - **AND** it runs release_all.py --check --publish with Homebrew Node 22 or newer before building both architectures
 
+#### Scenario: Select sources for a lower-level build
+- **WHEN** the operator runs release_server.py with --source PATH
+- **THEN** it builds the checkout at PATH and reads the protocol version from that checkout
+- **AND** it uses that checkout's current sources without selecting a tag automatically
+
+#### Scenario: Default sources for a lower-level build
+- **WHEN** the operator runs release_server.py without --source
+- **THEN** it builds the current sources in ../tilrd relative to the desktop repository
+- **AND** it does not select a tag automatically
+
 #### Scenario: Inspect before publishing
 - **WHEN** the signed artifacts are ready
 - **THEN** the command displays release.json and the built server version

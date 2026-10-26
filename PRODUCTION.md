@@ -219,9 +219,18 @@ credentials from `release.local.json`, and the Rust targets:
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 python3 scripts/release_server.py --version 0.1.0 --build 1
+# Rebuild from a checkout you have prepared at the intended tag:
+python3 scripts/release_server.py --version 0.1.0 --build 2 --source /path/to/tagged-tilrd
 # Test both completed artifacts, then publish without rebuilding:
 python3 scripts/release_server.py --version 0.1.0 --build 1 --publish-only
 ```
+
+`--source PATH` selects the tilrd source checkout for a lower-level build, including
+the protocol version read at build time. It defaults to `../tilrd` relative to
+the desktop repository. This command builds that checkout's current sources; it
+does not select a tag automatically. Prepare the intended tag yourself before
+rebuilding, or use the complete tagged-source workflow above. `--publish-only`
+uses completed artifacts without reading or rebuilding the source checkout.
 
 `--arch arm64` or `--arch x86_64` selects one architecture; the default is both.
 `--channel beta` selects the server beta feed independently of the app channel.
