@@ -148,6 +148,13 @@ for arch in ("arm64", "x86_64"):
             self.execute()
         self.assertFalse(self.events.exists())
 
+    def test_revision_expression_cannot_replace_exact_tag(self):
+        self.git("tag", "newer")
+        self.args.tag = "newer~1"
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.execute()
+        self.assertFalse(self.events.exists())
+
     def test_invalid_protocol_stops_before_preflight(self):
         proto = self.clone / "crates/tilr-proto/src/lib.rs"
         proto.write_text("pub const PROTOCOL_VERSION: u32 = 0;")

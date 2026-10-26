@@ -27,8 +27,9 @@ def git(clone, *args):
 
 @contextmanager
 def tagged_source(clone, tag):
-    # Fully qualified refs prevent a branch or a raw revision from replacing a tag.
-    commit = git(clone, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
+    # Resolve an exact ref before peeling: rev-parse alone accepts tag~1 expressions.
+    tag_object = git(clone, "show-ref", "--verify", "--hash", f"refs/tags/{tag}")
+    commit = git(clone, "rev-parse", "--verify", f"{tag_object}^{{commit}}")
     with tempfile.TemporaryDirectory(prefix="tilrd-release-") as temp:
         source = Path(temp) / "source"
         run(["git", "-C", clone, "worktree", "add", "--detach", source, commit])

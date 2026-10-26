@@ -1,12 +1,12 @@
 ## ADDED Requirements
 
 ### Requirement: One-command independent server release
-The desktop repository SHALL provide a command accepting a server version, build, minimum app build, and tilrd tag. It SHALL prepare a detached worktree of that tag, read and validate its PROTOCOL_VERSION, and build using those sources. It SHALL preflight release access with Homebrew Node version 22 or newer, then build, sign, and notarize both macOS architectures using the existing release tools. It SHALL display release metadata and the built server version before requesting explicit publication confirmation. After confirmation it SHALL publish, verify both architecture feeds for the requested channel, and print the JSON pin for server-release.json. Failures SHALL stop subsequent steps.
+The desktop repository SHALL provide a tagged-source server release command with credential-free preview. It SHALL validate the tagged protocol, preflight access, and build both signed and notarized macOS architectures. It SHALL show artifacts and require explicit confirmation before publishing, verify both channel feeds, and print the app pin. Failures SHALL stop later steps.
 
 #### Scenario: Release tagged sources
-- **WHEN** the command receives valid release arguments and an existing tag
+- **WHEN** the command receives --version, --build, --min-app-build, and an exact existing --tag
 - **THEN** it builds the detached tagged sources even when the source clone HEAD differs
-- **AND** it preflights access before building both architectures
+- **AND** it runs release_all.py --check --publish with Homebrew Node 22 or newer before building both architectures
 
 #### Scenario: Inspect before publishing
 - **WHEN** the signed artifacts are ready
