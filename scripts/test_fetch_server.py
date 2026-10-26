@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import io
 import json
@@ -106,6 +107,15 @@ class UpstreamServerTests(unittest.TestCase):
         self.assertTrue(all('anchor apple generic' in r and '100.6.1.13' in r for r in requirements))
         self.assertFalse(any('--sign' in c or c[0] in ('cargo', 'xcrun', 'strip') for c in self.commands))
         self.assertEqual(self.main(), 0)  # Reuse validates, never overwrites.
+
+    def test_staging_on_another_filesystem_preserves_bytes_and_executable_mode(self):
+        # rename(2) cannot move the verified file from system temp onto another volume.
+        with patch.object(Path, 'rename', side_effect=OSError(errno.EXDEV, 'Cross-device link')):
+            self.assertEqual(self.main(), 0)
+        for arch in fetch_server.TARGETS:
+            binary = self.root / f'build/server-releases/0.2.0-4-{arch}/tilrd'
+            self.assertEqual(binary.read_bytes(), self.binaries[arch])
+            self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
 
     def test_missing_asset_has_no_build_fallback_or_completed_output(self):
         del self.remote[fetch_server.release_url('0.2.0', 'x86_64')]

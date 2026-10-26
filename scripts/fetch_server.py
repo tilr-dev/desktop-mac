@@ -4,6 +4,7 @@ import json
 from pathlib import Path, PurePosixPath
 import platform
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -84,7 +85,7 @@ def prepare(temp, arch, version, build, protocol, min_app_build, max_app_build):
 
 def install(destination, binary, manifest, provenance, public_key):
     destination.mkdir(parents=True, exist_ok=False)
-    binary.rename(destination / "tilrd")
+    shutil.copy2(binary, destination / "tilrd")
     (destination / "app-managed.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (destination / "sizes.json").write_text(json.dumps(dict(architecture=manifest["arch"], binary_bytes=(destination / "tilrd").stat().st_size), indent=2) + "\n")
     receipt = dict(preview=False, manifest=manifest, public_key=public_key, upstream=provenance)
