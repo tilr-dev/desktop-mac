@@ -41,4 +41,3 @@ Tilr SHALL authenticate signed server feed metadata and downloaded bytes before 
 #### Scenario: Supervisor accepts reload
 - **WHEN** the app requests reload and authenticated `tilrd ps --server-version` reports the expected new version
 - **THEN** the update completes without stopping the supervisor or its terminals
-
