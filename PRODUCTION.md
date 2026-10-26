@@ -111,6 +111,10 @@ without the release Mac. Run it by hand from `main`: Actions → Release → Run
 The build must exceed every build published on that channel: the runner has no local history,
 so no number is chosen automatically, and publication refuses a build not newer than the feed.
 
+The pinned server is tilrd **0.2.0, build 3, protocol 1**. For its first CI release, set
+`server_min_app_build=17` (Actions input, or `-f server_min_app_build=17` with `gh workflow run`).
+This sets the server feed's minimum app build; the app must also support protocol 1.
+
 1. `server`: the server pinned in `server-release.json`. Already published: `fetch_server.py`
    downloads it from its feed and checks the checksum and the Developer ID signature; it is not
    rebuilt (a published number keeps its bytes). Not yet published: tilrd from the tag
