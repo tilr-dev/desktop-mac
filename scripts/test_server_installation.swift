@@ -17,14 +17,14 @@ import Darwin
         var panes: Int? = 1
         // Whether launchd starts the job on bootstrap; false leaves it loaded with no process.
         var startsOnBootstrap = true
-        var formats = "supervisor-state 1\npane-state 1"
-        let installedFormats = formats
         var version = "1.0-build1-test"
         var signed = true
         var versionIdentity = "tilrd"
         var expectedReloadBytes: String?
         var reloadStatus: Int32 = 0
         var reloadThrows = false
+        var runningVersion = "1.0-build1-test"
+        var acceptsReload = true
         func expect(_ value: Bool, line: UInt = #line) { precondition(value, "line \(line)") }
         func payload(_ build: Int, _ bytes: String) throws {
             version = "1.0-build\(build)-test"
@@ -49,6 +49,7 @@ import Darwin
                             expect(fm.fileExists(atPath: root.appendingPathComponent("pending-server.json").path))
                         }
                         if reloadThrows { throw ServerInstallation.Failure("launchctl could not run") }
+                        if reloadStatus == 0 && acceptsReload { runningVersion = version }
                         return .init(status: reloadStatus, text: reloadStatus == 0 ? "" : "no such process")
                     }
                     if args[0] == "print" { return .init(status: loaded ? 0 : 1, text: loaded ? jobState : "") }
@@ -62,9 +63,12 @@ import Darwin
                     return .init(status: 0, text: "\(versionIdentity) \(meta.serverVersion) (macos-aarch64)")
                 }
                 if args == ["state-formats"] {
-                    return .init(status: 0, text: executable.deletingLastPathComponent().path == source.path ? formats : installedFormats)
+                    fatalError("The app must delegate reload-state compatibility to tilrd")
                 }
                 if args == ["token"] { return .init(status: 0, text: "test-token") }
+                if args == ["ps", "--url", "ws://127.0.0.1:0", "--server-version"] {
+                    return .init(status: 0, text: runningVersion)
+                }
                 if args.first == "ps" {
                     guard let panes else { return .init(status: 1, text: "did not answer") }
                     let rows = (0..<panes).map { "pane-\($0)  100  80x24  0  ~  (shell)" }
@@ -99,6 +103,7 @@ import Darwin
         expectedReloadBytes = "two"
         _ = try install.install()
         expectedReloadBytes = nil
+        expect(!commands.contains { $0.contains("state-formats") })
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
         expect(try String(contentsOf: install.root.appendingPathComponent("tilrd.previous"), encoding: .utf8) == "one")
         expect(!commands.contains { $0.contains("bootout") || $0.contains("kickstart") })
@@ -123,11 +128,6 @@ import Darwin
         signed = false
         rejects { _ = try install.install() }
         signed = true
-        formats = "supervisor-state 2\npane-state 1"
-        rejects { _ = try install.install() }
-        expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
-        formats = installedFormats
-        try Data(contentsOf: source.appendingPathComponent("app-managed.json")).write(to: install.receipt)
         _ = try install.install()
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "three")
         let originsChanged = ServerInstallation(source: source, root: install.root, agents: install.agents,
@@ -408,7 +408,50 @@ import Darwin
         expect(launchdCalls() == ["kill"])
         expect(try String(contentsOf: install.root.appendingPathComponent("origins.toml"), encoding: .utf8).contains("tilr://notes"))
         expectedReloadBytes = nil
-        print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped and unassociated job migration, app association, changed definition applied without panes / pending with panes, kickstart of a held-back job, pending read from launchd (match clears a stale marker, mismatch pending, marker fallback), restart, removal (ours / foreign / not installed) and reinstall: passed")
+        // The daemon owns format compatibility: successful signal delivery can still leave
+        // the old supervisor serving its terminals. Readiness must observe the live version.
+        try payload(12, "twelve")
+        acceptsReload = false
+        let oldVersion = runningVersion
+        commands.removeAll()
+        let refused = try install.install()
+        expect(refused.build == 12)
+        expect(try String(contentsOf: install.binary, encoding: .utf8) == "twelve")
+        var clock = Date(timeIntervalSince1970: 0)
+        var waits = 0
+        func waitForReadiness(_ expected: String) throws -> [String: String] {
+            try install.waitReady(version: expected, startupTimeout: 2, retryInterval: 1,
+                                  now: { clock }, wait: { interval in
+                                      waits += 1
+                                      clock = clock.addingTimeInterval(interval)
+                                  })
+        }
+        do {
+            _ = try waitForReadiness(refused.serverVersion)
+            fatalError("An old supervisor must not complete the update")
+        } catch {
+            expect(error.localizedDescription.contains("Reload did not complete"))
+            expect(error.localizedDescription.contains("running version \(oldVersion)"))
+            expect(error.localizedDescription.contains("expected \(refused.serverVersion)"))
+            expect(error.localizedDescription.contains("Existing processes were not stopped"))
+        }
+        expect(waits == 2 && loaded && jobState == runningState && panes == 1)
+        expect(launchdCalls() == ["kill"])
+        expect(commands.filter { $0 == ["tilrd", "ps", "--url", install.endpoint, "--server-version"] }.count == 2)
+        expect(!commands.contains { $0.contains("state-formats") })
+        // The next update is accepted: readiness returns credentials only for the new version.
+        try payload(13, "thirteen")
+        acceptsReload = true
+        commands.removeAll()
+        let accepted = try install.install()
+        waits = 0
+        expect(try waitForReadiness(accepted.serverVersion)["token"] == "test-token")
+        expect(waits == 0 && runningVersion == accepted.serverVersion)
+        expect(loaded && jobState == runningState && panes == 1)
+        expect(launchdCalls() == ["kill"])
+        expect(commands.contains { $0 == ["tilrd", "ps", "--url", install.endpoint, "--server-version"] })
+        expect(!commands.contains { $0.contains("state-formats") })
+        print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, daemon-owned format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped and unassociated job migration, app association, changed definition applied without panes / pending with panes, kickstart of a held-back job, pending read from launchd (match clears a stale marker, mismatch pending, marker fallback), restart, removal (ours / foreign / not installed) and reinstall: passed")
         if let payload = CommandLine.arguments.dropFirst().first {
             var real = ServerInstallation(source: URL(fileURLWithPath: payload),
                 root: temp.appendingPathComponent("real"), agents: temp.appendingPathComponent("real-agents"),

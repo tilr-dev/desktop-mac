@@ -100,6 +100,30 @@ struct ServerInstallation {
         return Output(status: process.terminationStatus, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Authenticate the running supervisor and wait for the installed release, without stopping it.
+    func waitReady(version: String?, startupTimeout: TimeInterval, retryInterval: TimeInterval,
+                   now: () -> Date = Date.init,
+                   wait: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)) throws -> [String: String] {
+        progress?("Waiting for the local server on port \(port)…")
+        let deadline = now().addingTimeInterval(startupTimeout)
+        var runningVersion: String?
+        repeat {
+            if let check = try? command(binary, ["ps", "--url", endpoint, "--server-version"]),
+               check.status == 0, !check.text.isEmpty {
+                runningVersion = check.text
+                if version == nil || check.text == version { return try credentials() }
+            }
+            wait(retryInterval)
+        } while now() < deadline
+        let mismatch: String
+        if let version, let runningVersion {
+            mismatch = " Reload did not complete: running version \(runningVersion), expected \(version)."
+        } else {
+            mismatch = ""
+        }
+        throw Failure("The local server did not become ready.\(mismatch) See \(root.appendingPathComponent("server.log").path). Existing processes were not stopped.")
+    }
+
     func launchctl(_ args: [String]) throws -> Output {
         try command(URL(fileURLWithPath: "/bin/launchctl"), args)
     }
@@ -209,13 +233,6 @@ struct ServerInstallation {
         let configData = Data(("# Managed by Tilr.app; regenerated at launch.\nallow_origins = " + encodedOrigins + "\n").utf8)
         let configChanged = (try? Data(contentsOf: configFile)) != configData
         if needsCopy {
-            if loaded && jobState.text.contains("state = running"), existing != nil && fm.fileExists(atPath: binary.path) {
-                let old = try command(binary, ["state-formats"])
-                let new = try command(payload, ["state-formats"])
-                guard old.status == 0, new.status == 0, !old.text.isEmpty, old.text == new.text else {
-                    throw Failure("This server update needs a session migration. Existing terminals were left running.")
-                }
-            }
             let staged = root.appendingPathComponent("tilrd.new.\(UUID().uuidString)")
             defer { try? fm.removeItem(at: staged) }
             try fm.copyItem(at: payload, to: staged)
