@@ -17,6 +17,10 @@ The release workflow SHALL separate credential setup, building, local verificati
 - **THEN** it selects the last successful pair from build/latest-app-release.json, prints version/build/channel and publishes without changing or rebuilding files; absent history requires explicit version/build
 - **AND** a failed subsequent build does not change the pointer; explicit release_all.py --publish remains an opt-in combined shortcut
 
+#### Scenario: CI release
+- **WHEN** the Release workflow runs
+- **THEN** its build jobs produce the server and both DMGs, and its publish job publishes those same files after approval without rebuilding them
+
 ### Requirement: Persistent release numbering
 The release coordinator SHALL reserve monotonically increasing local builds under a lock without resetting on marketing-version changes.
 
@@ -33,6 +37,10 @@ The release coordinator SHALL reserve monotonically increasing local builds unde
 - **THEN** it is ignored as a release version; numeric release history or an explicit --version supplies the version
 - **AND** without either, selection fails with `No release version yet; pass --version` without reserving a build
 - **AND** --status and the automatic build preamble display the missing version without reserving or failing, so an explicit --version can initialize the first release
+
+#### Scenario: CI release numbers
+- **WHEN** the Release workflow runs on a runner without local history
+- **THEN** it takes the explicit version and build, and publication refuses a build not newer than the published feed
 
 ### Requirement: Architecture-specific signed artifacts
 Public app releases SHALL contain two DMGs, arm64 and x86_64, sharing marketing version/build, with no universal packaging option.

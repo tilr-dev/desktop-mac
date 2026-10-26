@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 
 from bundle_server import ROOT, TARGETS, TILRD, build_server, digest
-from publish import ACCOUNT, BUCKET, CDN, fetch, run
+from publish import ACCOUNT, BUCKET, CDN, fetch, run, sparkle_key, sparkle_public_key
 from release import sign
 from release_all import settings
 
@@ -61,7 +61,7 @@ def verify_envelope(data, directory):
         raise ValueError("Invalid server feed signature length")
     file = directory / "verify-payload.json"
     file.write_bytes(payload)
-    run(TOOLS / "sign_update", "--account", "tilr-rexuni", "--verify", file, signature)
+    run(TOOLS / "sign_update", *sparkle_key(), "--verify", file, signature)
     return json.loads(payload)
 
 
@@ -69,7 +69,7 @@ def signed_feed(feed, directory):
     payload = canonical(feed)
     file = directory / "payload.json"
     file.write_bytes(payload)
-    signature = subprocess.check_output([str(TOOLS / "sign_update"), "--account", "tilr-rexuni", "-p", str(file)], text=True).strip()
+    signature = subprocess.check_output([str(TOOLS / "sign_update"), *sparkle_key(), "-p", str(file)], text=True).strip()
     if file.read_bytes() != payload:
         raise ValueError("Signing unexpectedly modified the feed payload")
     envelope = canonical(dict(payload=base64.b64encode(payload).decode(), signature=signature))
@@ -184,7 +184,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         outputs = [(arch, ROOT / "build/server-releases" / f"{args.version}-{args.build}-{arch}{'-preview' if args.preview else ''}") for arch in arches]
         if args.publish_only:
-            key = subprocess.check_output([str(TOOLS / "generate_keys"), "--account", "tilr-rexuni", "-p"], text=True).strip()
+            key = sparkle_public_key(TOOLS)
             if key != config["TILR_UPDATE_PUBLIC_KEY"]:
                 raise ValueError("Configured server signing key differs from the release key")
             # Validate all local artifacts before exposing any architecture.

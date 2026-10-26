@@ -103,6 +103,43 @@ Sparkle, серверному бинарнику и проверке подпи�
 процесса и повторите сборку через описанный выше `--resume`, сохранив завершённую
 архитектуру и переместив незавершённый каталог в архив.
 
+## Release from CI
+
+The `Release` workflow (`.github/workflows/release.yml`) does the same on GitHub-hosted macOS,
+without the release Mac. Run it by hand from `main`: Actions → Release → Run workflow, or
+`gh workflow run release.yml --ref main -f version=0.3.0 -f build=21 -f channel=stable`.
+The build must exceed every build published on that channel: the runner has no local history,
+so no number is chosen automatically, and publication refuses a build not newer than the feed.
+
+1. `server`: the server pinned in `server-release.json`. Already published: `fetch_server.py`
+   downloads it from its feed and checks the checksum and the Developer ID signature; it is not
+   rebuilt (a published number keeps its bytes). Not yet published: tilrd from the tag
+   `v<version>` is compiled without keys, then `release_server.py` signs and notarizes it
+   (`server_min_app_build` is the oldest supported app build).
+2. `app`: both architectures are compiled without keys, then `release_all.py` signs, notarizes
+   and packages the DMGs. No Sparkle key or Cloudflare token here.
+3. `publish`: waits for approval in the `release` environment, then `release_server.py
+   --publish-only` and `release_all.py --publish-only` publish the same artifacts. No delta
+   patches: the runner has no DMG history, so the full DMG is published.
+
+`scripts/ci-apple-keychain.sh` imports the Apple keys into a temporary keychain (notarytool
+profile `tilr-ci` from an App Store Connect API key) and removes it at the end of the job.
+In `publish` the Sparkle key is a file, `TILR_SPARKLE_KEY_FILE`, instead of a Keychain item,
+so there is no access prompt; its public half is checked against `TILR_UPDATE_PUBLIC_KEY`
+(`scripts/sparkle_public_key.swift`). No deploy key is needed: tilrd and gitpm are public.
+
+Secrets (Settings → Environments), provisioned by Dan:
+
+| Environment | Secret | What it is |
+|---|---|---|
+| `apple-signing` (branch `main` only) | `APPLE_CERTIFICATE_P12_BASE64` | Developer ID Application `.p12` with its key, base64 |
+| | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password |
+| | `APPLE_SIGN_IDENTITY` | `Developer ID Application: Rexuni LLC (V57FF3MX26)` |
+| | `APPLE_API_KEY_P8_BASE64` | App Store Connect API key (`.p8`, role Developer), base64 |
+| | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` | that key's Key ID and Issuer ID |
+| `release` (required reviewer Dan, `main` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
+| | `CLOUDFLARE_API_TOKEN` | token with write access to the R2 bucket `tilr-cdn` |
+
 ## Compact packaging and delta updates (implemented)
 
 New application releases contain only their target architecture, including all
