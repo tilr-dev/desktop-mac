@@ -234,9 +234,15 @@ separate architecture DMGs; universal server artifacts are not used.
 The app records its supported server protocol, bundled server identity, server
 feed base URL and public verification key in its signed Info.plist. Downloads
 are selected by server build within the supported protocol, architecture and app
-build range; hashes/signatures and reload-state compatibility are verified before
-replacement. A server whose state cannot migrate live is left running; after a
-user stops that service, installation can proceed without a live-state migration.
+build range; hashes/signatures are verified before replacement. The app installs
+the replacement binary and requests reload; tilrd checks reload-state compatibility
+before handing over. The app confirms the update through `ps --server-version`.
+If reload is refused and the running version stays unchanged, the app reports
+"The local server did not become ready. Reload did not complete: running version
+X, expected Y" with the server log path and confirmation that existing processes
+were not stopped. The supervisor and terminals keep running, and the replacement
+binary remains installed. To use that binary after a refused reload, stop the
+service, then start it again; this ends the existing terminal sessions.
 The next application build can still bundle an older compatible server; it will
 not undo an independent server update.
 
