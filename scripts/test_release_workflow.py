@@ -31,13 +31,13 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.text = WORKFLOW.read_text()
         self.jobs = jobs(self.text)
 
-    def test_three_jobs_run_only_by_hand(self):
-        self.assertEqual(list(self.jobs), ["server", "app", "publish"])
+    def test_two_jobs_run_only_by_hand(self):
+        self.assertEqual(list(self.jobs), ["app", "publish"])
         triggers = self.text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, flags=re.M), ["workflow_dispatch"])
 
     def test_signing_jobs_hold_no_publication_keys(self):
-        for name in ("server", "app"):
+        for name in ("app",):
             for secret in PUBLISHING:
                 self.assertNotIn(secret, self.jobs[name], f"{secret} in {name}")
             self.assertIn("environment: apple-signing", self.jobs[name])
@@ -45,13 +45,13 @@ class ReleaseWorkflowContract(unittest.TestCase):
     def test_publication_waits_for_approval_and_holds_no_apple_keys(self):
         publish = self.jobs["publish"]
         self.assertIn("environment: release", publish)
-        self.assertIn("needs: [server, app]", publish)
+        self.assertIn("needs: app", publish)
         for secret in APPLE:
             self.assertNotIn(secret, publish)
         self.assertNotIn("ci-apple-keychain.sh import", publish)
 
     def test_keys_arrive_after_compilation_and_always_leave(self):
-        for name, compile_step in (("server", "Compile the server"), ("app", "name: Compile")):
+        for name, compile_step in (("app", "name: Compile"),):
             job = self.jobs[name]
             imported = index(job, "ci-apple-keychain.sh import")
             self.assertLess(index(job, compile_step), imported)
@@ -61,11 +61,15 @@ class ReleaseWorkflowContract(unittest.TestCase):
         publish = self.jobs["publish"]
         self.assertIn("if: always()", steps(publish)[index(publish, 'rm -f "$RUNNER_TEMP/sparkle.key"')])
 
-    def test_a_published_server_is_downloaded_not_rebuilt(self):
-        server = self.jobs["server"]
-        self.assertLess(index(server, "scripts/fetch_server.py"), index(server, "Compile the server"))
-        for marker in ("Compile the server", "ci-apple-keychain.sh import", "scripts/release_server.py"):
-            self.assertIn("if: steps.fetch.outputs.build == 'true'", steps(server)[index(server, marker)])
+    def test_server_is_imported_before_apple_keys_arrive(self):
+        app = self.jobs["app"]
+        self.assertLess(index(app, "scripts/fetch_server.py"), index(app, "ci-apple-keychain.sh import"))
+        self.assertIn('--min-app-build "$MIN_APP_BUILD"', app)
+        self.assertIn('MIN_APP_BUILD: ${{ inputs.server_min_app_build }}', app)
+        self.assertIn('tar -cf server.tar -C build server-releases', app)
+        for forbidden in ("tilrd-src", "Compile the server", "scripts/release_server.py", "notarytool"):
+            self.assertNotIn(forbidden, app)
+        self.assertIn('name: server', app)
 
     def test_publication_reuses_the_tested_artifacts(self):
         publish = self.jobs["publish"]

@@ -113,19 +113,23 @@ class AutomaticReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already used or reserved"):
             release_all.automatic_release(self.root, build=20)
 
-    def test_missing_pinned_server_builds_only_missing_arch(self):
-        (self.root / "server-release.json").write_text(json.dumps(dict(version="0.1.0", build=1)))
+    def test_missing_pinned_server_acquires_only_missing_arch(self):
+        (self.root / "server-release.json").write_text(json.dumps(dict(version="0.1.0", build=1, protocolVersion=2)))
         existing = self.root / "build/server-releases/0.1.0-1-arm64"
         existing.mkdir(parents=True)
         (existing / "release.json").write_text("{}")
         calls = []
-        with patch.dict(release_all.os.environ, {}, clear=True):
+        with patch.dict(release_all.os.environ, {}, clear=True), \
+             patch("fetch_server.validate_completed") as validate:
             release_all.ensure_server(self.root, runner=lambda cmd: calls.append(cmd))
+        validate.assert_called_once_with(existing, "0.1.0", 1, "arm64", 2)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][-2:], ["--arch", "x86_64"])
-        (existing / "release.json").unlink()
-        with patch.dict(release_all.os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "Incomplete"):
-            release_all.ensure_server(self.root, runner=lambda cmd: self.fail("Must not build"))
+        self.assertIn("--protocol-version", calls[0])
+        with patch.dict(release_all.os.environ, {}, clear=True), \
+             patch("fetch_server.validate_completed", side_effect=ValueError("Invalid imported artifact")), \
+             self.assertRaisesRegex(ValueError, "Invalid imported artifact"):
+            release_all.ensure_server(self.root, runner=lambda cmd: self.fail("Must not acquire"))
 
     def test_latest_upload_uses_completed_pair_without_building(self):
         saved = self.root / "build/latest-app-release.json"
