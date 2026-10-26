@@ -89,7 +89,7 @@ python3 scripts/release_server.py --version 0.1.1 --build 2 --publish-only
 При `Developer ID identity is unavailable` используйте обычный Terminal релизного
 Mac с существующим сертификатом и приватным ключом. Не создавайте новый ключ из-за
 ограничений агента. `release.command` и `upload.command` добавляют Homebrew в PATH.
-Разовая настройка — `setup-release.command`, доступ к CDN — ключи R2 для AWS CLI (раздел 1).
+One-time setup: `setup-release.command`; CDN access: R2 keys for the AWS CLI (section 1).
 Процесс сборки не останавливает development-сервер. Если он занимает порт 7890,
 остановите именно его в терминале запуска (Ctrl+C) перед запуском новой версии.
 

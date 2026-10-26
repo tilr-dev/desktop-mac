@@ -225,8 +225,6 @@ class AutomaticReleaseTests(unittest.TestCase):
             asked.append(command)
             if command[0] == "security":
                 return '  1) ABC "Developer ID Application: Test"\n'
-            if command[0] == "node":
-                return "v22.0.0\n"
             return key + "\n"
         with patch.object(release_all, "ROOT", self.root), \
              patch.object(release_all.shutil, "which", return_value="/usr/bin/tool"), \

@@ -248,7 +248,7 @@ must not self-update an executable inside the signed .app.
 - https://sparkle-project.org/documentation/publishing/
 - https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
 - https://support.apple.com/en-us/102654
-- https://developers.cloudflare.com/r2/get-started/cli/
+- https://developers.cloudflare.com/r2/examples/aws/aws-cli/
 
 ## Configuration and app folders
 

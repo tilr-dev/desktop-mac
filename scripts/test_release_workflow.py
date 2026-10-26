@@ -5,7 +5,7 @@ import unittest
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/release.yml"
 APPLE = ("APPLE_CERTIFICATE_P12_BASE64", "APPLE_CERTIFICATE_PASSWORD", "APPLE_API_KEY_P8_BASE64")
-PUBLISHING = ("SPARKLE_PRIVATE_KEY", "AWS_SECRET_ACCESS_KEY")
+PUBLISHING = ("SPARKLE_PRIVATE_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
 
 def jobs(text):

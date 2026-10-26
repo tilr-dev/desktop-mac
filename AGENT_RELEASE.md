@@ -66,16 +66,16 @@ From the repository root, first verify the actual execution context:
 python3 scripts/release_all.py --check --publish
 ```
 
-This checks tool availability, Node version, the configured identity, notarization
+This checks tool availability, the configured identity, notarization
 profile, Sparkle key, an actual temporary code-signing operation, disk-image creation,
 and access to the R2 bucket. It creates no release and publishes nothing. It uses
 existing credentials only; it does not create keys or start login flows.
 
-On the current Apple Silicon development Mac, `/usr/local/bin/node` can select old
-Node 18 while `/opt/homebrew/bin/node` is newer. Set PATH for the process if needed:
+The AWS CLI comes from Homebrew on the release Mac; with the R2 keys in their own
+profile:
 
 ```sh
-PATH="/opt/homebrew/bin:$PATH" python3 scripts/release_all.py --check --publish
+AWS_PROFILE=tilr-r2 PATH="/opt/homebrew/bin:$PATH" python3 scripts/release_all.py --check --publish
 ```
 
 When the user explicitly requests combined build and publication, use the following
