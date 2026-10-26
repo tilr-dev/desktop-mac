@@ -107,9 +107,14 @@ Sparkle, серверному бинарнику и проверке подпи�
 
 The `Release` workflow (`.github/workflows/release.yml`) does the same on GitHub-hosted macOS,
 without the release Mac. Run it by hand from `main`: Actions → Release → Run workflow, or
-`gh workflow run release.yml --ref main -f version=0.3.0 -f build=21 -f channel=stable`.
-The build must exceed every build published on that channel: the runner has no local history,
-so no number is chosen automatically, and publication refuses a build not newer than the feed.
+`gh workflow run release.yml --ref main -f version=0.3.0 -f channel=stable`.
+Leave `build` empty to select the highest build in both architecture appcasts of that
+channel plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
+`https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml`). One number is logged and used for
+both architectures and publication. To override it, add `-f build=21`; an explicit
+build must exceed every published build on that channel. Missing feeds count as empty;
+other HTTP/network errors and malformed feeds stop the run. Local release numbering
+and reservations are unchanged.
 
 The pinned server is tilrd **0.2.0, build 3, protocol 1**. For its first CI release, set
 `server_min_app_build=17` (Actions input, or `-f server_min_app_build=17` with `gh workflow run`).
@@ -124,7 +129,14 @@ This sets the server feed's minimum app build; the app must also support protoco
    and packages the DMGs. No Sparkle key or Cloudflare token here.
 3. `publish`: waits for approval in the `release` environment, then `release_server.py
    --publish-only` and `release_all.py --publish-only` publish the same artifacts. No delta
-   patches: the runner has no DMG history, so the full DMG is published.
+   patches: the runner has no DMG history, so the full DMG is published. After the CDN
+   upload succeeds, it creates tag `v<version>` on the workflow commit (`github.sha`)
+   and GitHub Release `Tilr <version> (<build>)`, attaching both unchanged DMGs from
+   the `app` artifact and using `notes` for the release body as well as Sparkle.
+   Only this job has `contents: write`; no commit is made to `main`. An existing tag
+   causes a clear failure without updating/deleting it or changing a GitHub Release.
+   If GitHub publication fails after CDN upload or tag creation, those completed
+   steps remain published; inspect the failure before releasing again.
 
 `scripts/ci-apple-keychain.sh` imports the Apple keys into a temporary keychain (notarytool
 profile `tilr-ci` from an App Store Connect API key) and removes it at the end of the job.
