@@ -14,7 +14,7 @@ import re
 import subprocess
 import tempfile
 
-from bundle_server import ROOT, TARGETS, build_server, digest
+from bundle_server import ROOT, TARGETS, TILRD, build_server, digest
 from publish import ACCOUNT, BUCKET, CDN, fetch, run
 from release import sign
 from release_all import settings
@@ -79,11 +79,11 @@ def signed_feed(feed, directory):
     return envelope
 
 
-def build_release(directory, arch, version, build, config, preview, min_app_build, max_app_build):
+def build_release(directory, arch, version, build, config, preview, min_app_build, max_app_build, source=TILRD):
     directory.mkdir(parents=True, exist_ok=False)
     manifest = build_server(directory, arch, version, build,
                             lambda binary: sign(binary, "-" if preview else config["TILR_SIGN_IDENTITY"]),
-                            min_app_build, max_app_build)
+                            min_app_build, max_app_build, core=source)
     run("codesign", "--verify", "--strict", directory / "tilrd")
     if not preview:
         archive = directory / "notarization.zip"
@@ -169,6 +169,7 @@ def main():
     parser.add_argument("--max-app-build", type=int)
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--publish-only", action="store_true")
+    parser.add_argument("--source", type=Path, default=TILRD, help="Explicit tilrd source checkout")
     args = parser.parse_args()
     if not re.fullmatch(r"\d+(?:\.\d+){0,2}", args.version) or args.build < 1:
         parser.error("Use a numeric version and positive server build")
@@ -196,7 +197,7 @@ def main():
             if missing:
                 raise ValueError("Run on the build machine: rustup target add " + " ".join(missing))
             for arch, path in outputs:
-                build_release(path, arch, args.version, args.build, config, args.preview, args.min_app_build, args.max_app_build)
+                build_release(path, arch, args.version, args.build, config, args.preview, args.min_app_build, args.max_app_build, args.source.resolve())
                 success(f"Server artifact ready: {path}")
             if args.preview:
                 print("Local preview only; it cannot be published. Build again without --preview for a public release.")

@@ -189,6 +189,30 @@ No JavaScript `tilr` CLI, Node, npm or Git is shipped.
 
 ### Build and publish a server independently
 
+For the complete tagged-source workflow, run on the signing Mac:
+
+```sh
+python3 scripts/release_server_all.py --version 0.1.0 --build 2 --min-app-build 1 --tag v0.1.0
+# Inspect the plan without keys, signing, notarization or publication:
+python3 scripts/release_server_all.py --version 0.1.0 --build 2 --min-app-build 1 --tag v0.1.0 --preview
+```
+
+The command uses a temporary detached worktree of the local tag in
+`~/projects/tilr/git/tilrd`; override the clone with `--tilrd-repo PATH`.
+It validates the tagged protocol, prepends Homebrew to PATH (Node >=22), runs
+`release_all.py --check --publish`, then builds both architectures from that
+worktree. It shows both `release.json` receipts and runs the native `tilrd --version`.
+Inspect/test both artifacts, then type exactly `publish` to publish. Refusal or
+EOF leaves artifacts available without publication. After publication, both signed
+CDN feeds are checked and the JSON pin for `server-release.json` is printed;
+copy it into that file separately. `--channel beta` selects the beta feeds.
+The worktree is removed on exit; the original clone checkout is preserved.
+No credentials are created and no login is initiated. If a step fails, later
+steps stop. After declining publication, use the lower-level `--publish-only`
+command below with the same version/build and channel to publish inspected artifacts.
+
+The lower-level commands remain available:
+
 The server build machine needs Rust, Zig 0.15.2, protoc, Apple signing/notarization
 credentials from `release.local.json`, and the Rust targets:
 
