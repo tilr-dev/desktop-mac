@@ -159,7 +159,7 @@ the shipped app. An existing SwiftPM `Tilr.dSYM` is also copied there. Keep thes
 files for diagnostics: an unstripped executable alone does not supply source-level
 debug information when the compiler did not generate it. Sparkle exports are not
 stripped. Server artifacts are never stripped or re-signed when bundled into an app.
-The first compact server is pinned as **0.1.0 build 2**, independently of app numbers.
+The current server pin is **0.2.0 build 3, protocol 1**, independently of app numbers.
 
 Each app release writes `sizes.json` with logical file bytes (excluding duplicate
 symlink targets), DMG bytes and all Mach-O architectures. Server releases write their
@@ -233,9 +233,9 @@ No JavaScript `tilr` CLI, Node, npm or Git is shipped.
 For the complete tagged-source workflow, run on the signing Mac:
 
 ```sh
-python3 scripts/release_server_all.py --version 0.1.0 --build 2 --min-app-build 1 --tag v0.1.0
+python3 scripts/release_server_all.py --version 0.2.0 --build 3 --min-app-build 17 --tag v0.2.0
 # Inspect the plan without keys, signing, notarization or publication:
-python3 scripts/release_server_all.py --version 0.1.0 --build 2 --min-app-build 1 --tag v0.1.0 --preview
+python3 scripts/release_server_all.py --version 0.2.0 --build 3 --min-app-build 17 --tag v0.2.0 --preview
 ```
 
 The command uses a temporary detached worktree of the local tag in
