@@ -277,7 +277,8 @@ its explicit site/apps paths, or launch with `--config "$HOME/.config/tilr"`.
 
 Run `./release.command` without input. It reuses signing settings already saved in
 `release.local.json`. Setup is one-time. The highest marketing version from Info.plist
-and local history is retained; the highest build number is incremented. Reservations
+(ignored while it is the dev placeholder `0.0.0-dev`) and local history is retained, and
+`--version` is required when there is none; the highest build number is incremented. Reservations
 in `build/release-auto.json` prevent failed attempts from reusing numbers. Both
 architectures share one number. No previous artifacts are reused; nothing is published.
 Selection happens under the release lock. Keep local history/state when moving to

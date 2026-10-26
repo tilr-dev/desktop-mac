@@ -168,6 +168,16 @@ class AutomaticReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_all.automatic_release(self.root)
 
+    def test_dev_placeholder_template_is_ignored(self):
+        (self.root / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": "0.0.0-dev", "CFBundleVersion": "1"}))
+        with self.assertRaisesRegex(ValueError, "pass --version"):
+            release_all.automatic_release(self.root)
+        self.assertFalse((self.root / "build/release-auto.json").exists())
+        self.assertEqual(release_all.automatic_release(self.root, version="0.3.0", reserve=False), ("0.3.0", 2))
+        (self.root / "build/releases/0.2.0-16-arm64").mkdir(parents=True)
+        self.assertEqual(release_all.automatic_release(self.root), ("0.2.0", 17))
+
     def test_invalid_override_does_not_reserve(self):
         with self.assertRaises(ValueError):
             release_all.automatic_release(self.root, "invalid")

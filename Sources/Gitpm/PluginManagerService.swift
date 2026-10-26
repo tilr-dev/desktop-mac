@@ -174,6 +174,10 @@ public final class PluginManagerService: @unchecked Sendable {
     public func replace(original: String, replacement: String) async throws -> ReplacementPlan {
         try await run { try $0.replace(original: original, replacement: replacement) }
     }
+    /// Read-only plan for reconciling active plugins in dist/.
+    public func syncDistPlan() async throws -> DistSync { try await run { try $0.syncDistPlan() } }
+    /// Reconciles legacy distribution contents with the current active set.
+    public func syncDist() async throws -> DistSync { try await run { try $0.syncDist() } }
     /// Forks an installed plugin into `namespace` at `destination` (outside the workspace).
     public func fork(id: String, destination: String, namespace: String) async throws -> ForkResult {
         try await run(git: true) { try $0.fork(id: id, destination: destination, namespace: namespace) }

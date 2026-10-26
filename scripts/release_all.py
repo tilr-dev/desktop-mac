@@ -139,7 +139,9 @@ def execute(version, build, channel, config, publish=False, resume=False, notes=
 def automatic_release(root=ROOT, version=None, build=None, reserve=True):
     """Reserve a fresh build under the coordinator lock, including failed attempts."""
     info = plistlib.loads((root / "Info.plist").read_bytes())
-    versions = [str(info["CFBundleShortVersionString"])]
+    # The committed template carries a dev placeholder (0.0.0-dev); only a numeric one counts.
+    template = str(info["CFBundleShortVersionString"])
+    versions = [template] if re.fullmatch(r"\d+(?:\.\d+){0,2}", template) else []
     builds = [int(info["CFBundleVersion"])]
     releases = root / "build/releases"
     if releases.exists():
@@ -158,6 +160,8 @@ def automatic_release(root=ROOT, version=None, build=None, reserve=True):
             raise ValueError(f"Invalid release version: {value}")
         return tuple((list(map(int, value.split("."))) + [0, 0])[:3])
     # Keep the marketing version; only the build increments on each run.
+    if not version and not versions:
+        raise ValueError("No release version yet; pass --version")
     chosen = version or max(versions, key=lambda value: (version_key(value), len(value)))
     version_key(chosen)
     next_build = max(builds) + 1

@@ -43,6 +43,26 @@ extension AppDelegate {
         return result
     }
 
+    /// One launch-time migration. A separate service keeps the captured launch settings
+    /// stable across config reloads and releases its mutation lock after synchronization.
+    /// Empty/missing workspaces are read without creating them. Probes call this only on fixtures.
+    @discardableResult
+    static func syncPluginDist(_ settings: PluginManagerService.Settings) async -> Bool {
+        let pm = PluginManagerService(settings: settings, label: "dev.tilr.plugin-manager.dist-sync")
+        var succeeded = true
+        do {
+            guard !(try await pm.readInstalled(root: settings.root)).isEmpty else { return true }
+            let sync = try await pm.syncDist()
+            print("plugin manager: dist synced: \(sync.deployed.count) deployed \(sync.deployed), \(sync.removed.count) removed \(sync.removed),",
+                  "\(sync.unmanaged.count) unmanaged \(sync.unmanaged), \(sync.skipped.count) skipped \(sync.skipped.map { "\($0.id): \($0.reason)" })")
+        } catch {
+            succeeded = false
+            print("plugin manager: dist sync failed:", PluginManagerFailure.from(error))
+        }
+        await pm.close()
+        return succeeded
+    }
+
     // MARK: Probe
 
     /// `--probe`, plugin manager: on a temporary workspace, never the configured one. Opens it
@@ -62,6 +82,9 @@ extension AppDelegate {
         let files = FileManager.default
         let base = files.temporaryDirectory.appendingPathComponent("tilr-gitpm-probe-\(UUID().uuidString)")
         defer { try? files.removeItem(at: base) }
+        let absent = base.appendingPathComponent("absent").path
+        check(await Self.syncPluginDist(.init(root: absent, catalog: nil)), "absent workspace migration")
+        check(!files.fileExists(atPath: absent), "migration created an absent workspace")
         let first = base.appendingPathComponent("workspace").path
         let second = base.appendingPathComponent("other").path
         let pm = PluginManagerService(settings: .init(root: first, catalog: nil), label: "dev.tilr.plugin-manager.probe")
@@ -150,6 +173,39 @@ extension AppDelegate {
             let plan = try await pm.replace(original: "probe/base", replacement: "probe/replacement")
             guard plan.provider == "probe/replacement", plan.consumers == ["probe/consumer"],
                   provider(try await pm.list()) == "probe/replacement" else { throw ProbeReplacementFailure.state }
+            // Recreate the distribution layout left by gitpm <=0.4: replaced original
+            // still deployed, active replacement missing, and an unrelated unmanaged folder.
+            let files = FileManager.default
+            let root = try await pm.root()
+            let dist = URL(fileURLWithPath: root).appendingPathComponent("dist")
+            let stale = dist.appendingPathComponent("probe/base")
+            let active = dist.appendingPathComponent("probe/replacement")
+            let stray = dist.appendingPathComponent("stray")
+            try files.createDirectory(at: stale, withIntermediateDirectories: true)
+            try "legacy".write(to: stale.appendingPathComponent("index.js"), atomically: true, encoding: .utf8)
+            try files.removeItem(at: active)
+            try files.createDirectory(at: stray, withIntermediateDirectories: true)
+            try "unmanaged".write(to: stray.appendingPathComponent("keep.txt"), atomically: true, encoding: .utf8)
+            let drift = try await pm.syncDistPlan()
+            guard drift.deployed.contains("probe/replacement"), drift.removed.contains("probe/base"),
+                  files.fileExists(atPath: stale.path), !files.fileExists(atPath: active.path) else {
+                throw ProbeReplacementFailure.state
+            }
+            let settings = await pm.status().settings
+            // A held lock makes migration fail nonfatally, preserving the fixture for retry at a later launch.
+            guard await Self.syncPluginDist(settings) == false else { throw ProbeReplacementFailure.state }
+            await pm.close()
+            guard await Self.syncPluginDist(settings),
+                  !files.fileExists(atPath: stale.path),
+                  files.fileExists(atPath: active.appendingPathComponent("index.js").path),
+                  try String(contentsOf: stray.appendingPathComponent("keep.txt"), encoding: .utf8) == "unmanaged" else {
+                throw ProbeReplacementFailure.state
+            }
+            // Both success and failure release their service. Reopening and a second sync are safe.
+            guard await Self.syncPluginDist(settings) else { throw ProbeReplacementFailure.state }
+            let clean = try await pm.syncDistPlan()
+            guard clean.deployed.isEmpty, clean.removed.isEmpty else { throw ProbeReplacementFailure.state }
+            print("plugin manager: legacy dist migration, read-only plan, nonfatal lock failure, repeat sync: ok")
             _ = try await pm.replace(original: "probe/base", replacement: "probe/base")
             guard provider(try await pm.list()) == "probe/base" else { throw ProbeReplacementFailure.state }
             do {
