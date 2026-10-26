@@ -28,6 +28,12 @@ The release coordinator SHALL reserve monotonically increasing local builds unde
 - **AND** rerunning after failure chooses a new number; explicit --resume reuses only matching completed verified artifacts, and incomplete output must be preserved/moved aside before retry
 - **AND** build history must be retained and CDN numbers checked when changing machines; local numbering does not assert installed or public versions
 
+#### Scenario: No release version in the template
+- **WHEN** the source Info.plist contains `0.0.0-dev`
+- **THEN** it is ignored as a release version; numeric release history or an explicit --version supplies the version
+- **AND** without either, selection fails with `No release version yet; pass --version` without reserving a build
+- **AND** --status and the automatic build preamble display the missing version without reserving or failing, so an explicit --version can initialize the first release
+
 ### Requirement: Architecture-specific signed artifacts
 Public app releases SHALL contain two DMGs, arm64 and x86_64, sharing marketing version/build, with no universal packaging option.
 

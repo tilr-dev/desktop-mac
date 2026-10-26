@@ -17,6 +17,11 @@ Tilr development SHALL use Swift Package/AppKit without an Xcode project and exe
 - **AND** scripts/build-gitpm.sh builds the static UniFFI XCFramework/generated bindings when library sources are newer, using cargo and rustup targets; run/release invoke it and generated artifacts remain gitignored
 - **AND** new tunables are documented with purpose/units in Config.defaultText and parsed into Config, applying on reload unless explicitly marked at launch
 
+#### Scenario: Stamp a development bundle
+- **WHEN** run.sh builds the application
+- **THEN** the built Info.plist version is `<latest reachable v-tag without v>-dev.<short commit>[.dirty]`, with base `0.0.0` when no tag exists
+- **AND** the dirty suffix reflects tracked changes, the source Info.plist remains the `0.0.0-dev` placeholder, and real release versions are assigned by release tooling
+
 ### Requirement: Native plugin verification coverage
 The native plugin workflow SHALL exercise real signed modules through SDK/package tests and the actual application loader, with GUI checks separated from headless checks.
 

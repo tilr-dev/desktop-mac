@@ -72,6 +72,11 @@ echo "web sources: $(cd ../web 2>/dev/null && pwd)/src   (npm run dev:site there
 echo "site folder: $site"
 echo "config:      $cfg"
 
+# A dev build's version: <last v* tag>-dev.<commit>[.dirty], e.g. 0.2.0-dev.b32a4d3.dirty, a
+# prerelease of that tag. Only the release scripts stamp real versions and builds.
+version=$(sh scripts/dev-version.sh)
+echo "version:     $version (build $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist))"
+
 # The plugin manager's static library and Swift API (Vendor/, Sources/Gitpm/Generated/,
 # gitignored): rebuilt from ../git/gitpm when its sources changed, else a no-op.
 scripts/build-gitpm.sh
@@ -83,6 +88,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 rm -f "$app/Contents/MacOS/Tilr"
 cp .build/release/Tilr "$app/Contents/MacOS/"
 cp Info.plist "$app/Contents/"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
 # Dock's "Assign To" is keyed by bundle id, not --config. Isolate test windows
 # from the user's All Desktops / desktop assignment as well as their data.
 if [ -n "$testing" ]; then
