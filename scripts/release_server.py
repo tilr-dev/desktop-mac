@@ -31,12 +31,12 @@ def feed_url(arch, channel):
 
 
 def release_url(manifest):
-    return f"{CDN}/server/macos/{manifest['arch']}/releases/{manifest['version']}-{manifest['build']}/tilr-server"
+    return f"{CDN}/server/macos/{manifest['arch']}/releases/{manifest['version']}-{manifest['build']}/tilrd"
 
 
 def next_feed(previous, manifest, size, channel):
     arch = manifest["arch"]
-    header = dict(schema=1, component="tilr-server", arch=arch, channel=channel)
+    header = dict(schema=1, component="tilrd", arch=arch, channel=channel)
     if previous is not None and any(previous.get(k) != v for k, v in header.items()):
         raise ValueError("Existing feed is for another server track")
     releases = list(previous["releases"]) if previous else []
@@ -84,10 +84,10 @@ def build_release(directory, arch, version, build, config, preview, min_app_buil
     manifest = build_server(directory, arch, version, build,
                             lambda binary: sign(binary, "-" if preview else config["TILR_SIGN_IDENTITY"]),
                             min_app_build, max_app_build)
-    run("codesign", "--verify", "--strict", directory / "tilr-server")
+    run("codesign", "--verify", "--strict", directory / "tilrd")
     if not preview:
         archive = directory / "notarization.zip"
-        run("ditto", "-c", "-k", directory / "tilr-server", archive)
+        run("ditto", "-c", "-k", directory / "tilrd", archive)
         response = subprocess.check_output(["xcrun", "notarytool", "submit", str(archive), "--keychain-profile",
                                             config["TILR_NOTARY_PROFILE"], "--wait", "--output-format", "json"], text=True)
         notarization = json.loads(response)
@@ -96,8 +96,8 @@ def build_release(directory, arch, version, build, config, preview, min_app_buil
             raise ValueError("Apple did not accept the server notarization; nothing can be published")
         archive.unlink()
     (directory / "sizes.json").write_text(json.dumps(dict(
-        architecture=arch, binary_bytes=(directory / "tilr-server").stat().st_size,
-        unstripped_bytes=(directory / "symbols/tilr-server.unstripped").stat().st_size), indent=2) + "\n")
+        architecture=arch, binary_bytes=(directory / "tilrd").stat().st_size,
+        unstripped_bytes=(directory / "symbols/tilrd.unstripped").stat().st_size), indent=2) + "\n")
     receipt = dict(preview=preview, manifest=manifest, public_key=config.get("TILR_UPDATE_PUBLIC_KEY", ""))
     (directory / "release.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return manifest
@@ -110,14 +110,14 @@ def validated(directory, version, build, arch, key):
         raise ValueError("Only the completed signed server release can be published")
     if any(manifest.get(k) != v for k, v in dict(version=version, build=build, arch=arch).items()):
         raise ValueError("Server release differs from the requested version/build/architecture")
-    if digest(directory / "tilr-server") != manifest["sha256"]:
+    if digest(directory / "tilrd") != manifest["sha256"]:
         raise ValueError("Server changed after release completion")
-    run("codesign", "--verify", "--strict", directory / "tilr-server")
+    run("codesign", "--verify", "--strict", directory / "tilrd")
     return manifest
 
 
 def publish_release(directory, manifest, channel):
-    binary = directory / "tilr-server"
+    binary = directory / "tilrd"
     with tempfile.TemporaryDirectory(prefix="publish-", dir=directory) as temp:
         temp = Path(temp)
         url = feed_url(manifest["arch"], channel)
