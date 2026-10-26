@@ -40,11 +40,11 @@ class ServerReleaseCommandTests(unittest.TestCase):
                                        channel="beta", preview=False)
         scripts = self.root / "scripts"
         scripts.mkdir()
-        # Child-process release-tool doubles invoke executable Apple/Wrangler stubs.
+        # Child-process release-tool doubles invoke executable Apple/AWS CLI stubs.
         tools = self.root / "tools"
         tools.mkdir()
         stub = '#!' + sys.executable + '\nimport os,sys\nwith open(os.environ["EVENTS"], "a") as f: f.write(sys.argv[0].split("/")[-1]+"\\n")\n'
-        for name in ("codesign", "xcrun", "wrangler"):
+        for name in ("codesign", "xcrun", "aws"):
             path = tools / name
             path.write_text(stub)
             path.chmod(0o755)
@@ -63,7 +63,7 @@ step = "publish" if "--publish-only" in args else "build"
 with open(os.environ["EVENTS"], "a") as f: f.write(step+"\\n")
 if os.environ.get("FAIL_STEP") == step: sys.exit(1)
 if step == "publish":
-    subprocess.run(["wrangler"], check=True)
+    subprocess.run(["aws"], check=True)
     sys.exit(0)
 commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=source, text=True).strip()
 for arch in ("arm64", "x86_64"):
@@ -109,7 +109,7 @@ for arch in ("arm64", "x86_64"):
 
     def test_tagged_release_orders_tools_confirmation_feeds_and_pin(self):
         output = self.execute()
-        self.assertEqual(self.events.read_text().splitlines(), ["preflight", "build", "codesign", "xcrun", "codesign", "xcrun", "publish", "wrangler", "feed-arm64", "feed-x86_64"])
+        self.assertEqual(self.events.read_text().splitlines(), ["preflight", "build", "codesign", "xcrun", "codesign", "xcrun", "publish", "aws", "feed-arm64", "feed-x86_64"])
         self.assertIn('server-release.json: {"version": "0.1.0", "build": 7, "protocolVersion": 1}', output)
         self.assertIn('"serverVersion": "0.1.0-build7-', output)
 
@@ -122,7 +122,7 @@ for arch in ("arm64", "x86_64"):
                 self.assertNotIn("publish", self.events.read_text())
                 self.assertTrue((self.root / "build/server-releases/0.1.0-7-arm64/release.json").exists())
 
-    def test_preview_without_credentials_or_node(self):
+    def test_preview_without_credentials(self):
         self.args.preview = True
         with patch.dict(os.environ, {}, clear=True):
             output = self.execute()
@@ -165,12 +165,8 @@ for arch in ("arm64", "x86_64"):
             self.execute()
         self.assertFalse(self.events.exists())
 
-    def test_node_must_be_at_least_22(self):
-        with patch.object(release.subprocess, "check_output", return_value="v18.0.0"):
-            with self.assertRaisesRegex(ValueError, "Node >=22"):
-                release.release_environment()
-        with patch.object(release.subprocess, "check_output", return_value="v22.1.0"):
-            self.assertTrue(release.release_environment()["PATH"].startswith("/opt/homebrew/bin:"))
+    def test_homebrew_tools_come_first(self):
+        self.assertTrue(release.release_environment()["PATH"].startswith("/opt/homebrew/bin:"))
 
     def test_real_builder_receives_detached_source_and_apple_stubs(self):
         tools = self.root / "tools"

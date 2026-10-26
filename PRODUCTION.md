@@ -89,7 +89,7 @@ python3 scripts/release_server.py --version 0.1.1 --build 2 --publish-only
 При `Developer ID identity is unavailable` используйте обычный Terminal релизного
 Mac с существующим сертификатом и приватным ключом. Не создавайте новый ключ из-за
 ограничений агента. `release.command` и `upload.command` добавляют Homebrew в PATH.
-Разовая настройка — `setup-release.command`, доступ к Cloudflare — `wrangler login`.
+Разовая настройка — `setup-release.command`, доступ к CDN — ключи R2 для AWS CLI (раздел 1).
 Процесс сборки не останавливает development-сервер. Если он занимает порт 7890,
 остановите именно его в терминале запуска (Ctrl+C) перед запуском новой версии.
 
@@ -138,7 +138,7 @@ Secrets (Settings → Environments), provisioned by Dan:
 | | `APPLE_API_KEY_P8_BASE64` | App Store Connect API key (`.p8`, role Developer), base64 |
 | | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` | that key's Key ID and Issuer ID |
 | `release` (required reviewer Dan, `main` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
-| | `CLOUDFLARE_API_TOKEN` | token with write access to the R2 bucket `tilr-cdn` |
+| | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | R2 API token (S3) with object read and write on the bucket `tilr-cdn` |
 
 ## Compact packaging and delta updates (implemented)
 
@@ -236,7 +236,7 @@ python3 scripts/release_server_all.py --version 0.1.0 --build 2 --min-app-build 
 
 The command uses a temporary detached worktree of the local tag in
 `~/projects/tilr/git/tilrd`; override the clone with `--tilrd-repo PATH`.
-It validates the tagged protocol, prepends Homebrew to PATH (Node >=22), runs
+It validates the tagged protocol, prepends Homebrew to PATH (AWS CLI), runs
 `release_all.py --check --publish`, then builds both architectures from that
 worktree. It shows both `release.json` receipts and runs the native `tilrd --version`.
 Inspect/test both artifacts, then type exactly `publish` to publish. Refusal or
@@ -444,22 +444,24 @@ be created at account.apple.com → Sign-In and Security → App-Specific Passwo
 The Rexuni Team ID is the code in the certificate's name. Do not create/revoke the
 existing certificate because an agent sandbox cannot see it.
 
-Publication access is configured separately. With Node >=22 and Wrangler installed:
+Publication access is configured separately: the AWS CLI (`brew install awscli`) with an
+R2 API token for the bucket (Cloudflare → R2 → Manage API tokens, Object Read & Write on
+`tilr-cdn`; the same kind of keys as tilrd's CDN upload). Keep them in their own profile so
+the default AWS credentials stay untouched:
 
 ```sh
-wrangler login
+aws configure --profile tilr-r2      # Access Key ID and Secret of the R2 token, region auto
+export AWS_PROFILE=tilr-r2
 python3 scripts/release_all.py --check --publish-only
 ```
 
-That check uses the existing Sparkle key and Cloudflare account's `tilr-cdn` bucket.
+That check uses the existing Sparkle key and `aws s3api head-bucket` on `tilr-cdn` through
+the R2 endpoint.
 It needs no Apple signing private key or notarization login, and does not compile or
 create disk images. Publishing still needs macOS signature/stapling verification,
 Sparkle tools and disk-image mounting when generating the appcast. An automated
-publisher may use an authorized Cloudflare token from its secret store instead of
-interactive login.
-
-For this development Mac, if `node --version` selects old Node 18, use
-`export PATH="/opt/homebrew/bin:$PATH"` in this Terminal; the Homebrew Node is newer.
+publisher takes the R2 keys as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from its
+secret store.
 For agent execution, provision these same accesses for the actual agent process or
 an explicitly configured macOS release runner. Scripts cannot grant OS/tool
 permissions. See [AGENT_RELEASE.md](AGENT_RELEASE.md).

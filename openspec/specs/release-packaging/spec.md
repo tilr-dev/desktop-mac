@@ -97,7 +97,7 @@ The desktop repository SHALL provide a tagged-source server release command with
 #### Scenario: Release tagged sources
 - **WHEN** the command receives --version, --build, --min-app-build, and an exact existing --tag
 - **THEN** it builds the detached tagged sources even when the source clone HEAD differs
-- **AND** it runs release_all.py --check --publish with Homebrew Node 22 or newer before building both architectures
+- **AND** it runs release_all.py --check --publish with Homebrew first in PATH before building both architectures
 
 #### Scenario: Select sources for a lower-level build
 - **WHEN** the operator runs release_server.py with --source PATH
@@ -126,5 +126,5 @@ The desktop repository SHALL provide a tagged-source server release command with
 - **AND** it does not require credentials, build, sign, notarize, or publish
 
 #### Scenario: Invalid input or failed step
-- **WHEN** the tag, protocol, Node version, preflight, build, or feed verification is invalid or fails
+- **WHEN** the tag, protocol, preflight, build, or feed verification is invalid or fails
 - **THEN** the command exits unsuccessfully without proceeding to later release steps

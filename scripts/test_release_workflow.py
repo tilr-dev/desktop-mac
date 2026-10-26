@@ -5,7 +5,7 @@ import unittest
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/release.yml"
 APPLE = ("APPLE_CERTIFICATE_P12_BASE64", "APPLE_CERTIFICATE_PASSWORD", "APPLE_API_KEY_P8_BASE64")
-PUBLISHING = ("SPARKLE_PRIVATE_KEY", "CLOUDFLARE_API_TOKEN")
+PUBLISHING = ("SPARKLE_PRIVATE_KEY", "AWS_SECRET_ACCESS_KEY")
 
 
 def jobs(text):
@@ -73,6 +73,7 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertIn("--publish-only", steps(publish)[index(publish, "scripts/release_all.py")])
         self.assertNotIn("swift build", publish)
         self.assertNotIn("cargo", publish)
+        self.assertNotIn("wrangler", self.text)
 
     def test_no_caches_and_pinned_actions(self):
         self.assertNotIn("actions/cache", self.text)

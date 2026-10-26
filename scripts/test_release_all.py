@@ -242,6 +242,19 @@ class AutomaticReleaseTests(unittest.TestCase):
     def test_publishing_preflight_checks_the_sparkle_key(self):
         self.assertTrue(self.preflight_asks_sparkle("public", publish=True))
 
+    def test_publishing_preflight_checks_the_r2_bucket(self):
+        tools = self.root / ".build/artifacts/sparkle/Sparkle/bin"
+        tools.mkdir(parents=True)
+        (tools / "generate_keys").touch()
+        config = {"TILR_UPDATE_PUBLIC_KEY": "public"}
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.shutil, "which", return_value="/usr/bin/tool"), \
+             patch.object(release_all.subprocess, "check_output", return_value="public\n"), \
+             patch.object(release_all, "run") as run, redirect_stdout(io.StringIO()):
+            release_all.preflight(config, True, build=False)
+        self.assertEqual(run.call_args.args[0][:4], ["aws", "s3api", "head-bucket", "--bucket"])
+        self.assertIn("https://8e0530af975a33f2f739127f75084531.r2.cloudflarestorage.com", run.call_args.args[0])
+
     def test_publishing_preflight_rejects_another_sparkle_key(self):
         with self.assertRaisesRegex(ValueError, "Sparkle key"):
             self.preflight_asks_sparkle("other", publish=True)

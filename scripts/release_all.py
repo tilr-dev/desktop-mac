@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from publish import CDN, sparkle_public_key, validate_manifest
+from publish import BUCKET, CDN, ENDPOINT, sparkle_public_key, validate_manifest
 from release import ROOT, sign
 
 ARCHES = ("arm64", "x86_64")
@@ -48,14 +48,10 @@ def preflight(config, publish, build=True):
     if build:
         required += ["swift", "ditto", "lipo", "strip"]
     if publish:
-        required += ["wrangler", "curl", "node"]
+        required += ["aws", "curl"]
     missing = [name for name in required if not shutil.which(name)]
     if missing:
         raise ValueError("Missing tools: " + ", ".join(missing))
-    if publish:
-        node_version = subprocess.check_output(["node", "--version"], text=True).strip()
-        if int(node_version.lstrip("v").split(".")[0]) < 22:
-            raise ValueError(f"Release runner requires Node >=22 for Wrangler; PATH selects {node_version}. On this Mac prepend /opt/homebrew/bin to PATH.")
     if build:
         identities = subprocess.check_output(["security", "find-identity", "-v", "-p", "codesigning"], text=True)
         if f'"{config["TILR_SIGN_IDENTITY"]}"' not in identities:
@@ -86,10 +82,8 @@ def preflight(config, publish, build=True):
             sign(target / "signing-probe", config["TILR_SIGN_IDENTITY"])
             run(["hdiutil", "create", "-size", "8m", "-fs", "HFS+", "-volname", "Tilr release check", target / "probe.dmg"])
     if publish:
-        # Checks access to the actual bucket, not just whether a user is logged in.
-        env = os.environ.copy()
-        env["CLOUDFLARE_ACCOUNT_ID"] = "8e0530af975a33f2f739127f75084531"
-        run(["wrangler", "r2", "bucket", "info", "tilr-cdn"], env=env)
+        # Checks access to the actual bucket with the R2 credentials, not just that some are set.
+        run(["aws", "s3api", "head-bucket", "--bucket", BUCKET, "--endpoint-url", ENDPOINT, "--region", "auto"])
     success("Release runner preflight passed.")
 
 

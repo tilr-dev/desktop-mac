@@ -146,14 +146,12 @@ class IndependentServerReleaseTests(unittest.TestCase):
                     return False
                 target.write_bytes(objects[url])
                 return True
-            def run(*args, **kwargs):
-                if args[0] == "wrangler":
-                    url = release_server.CDN + "/" + args[4].split("/", 1)[1]
-                    data = Path(args[args.index("--file") + 1]).read_bytes()
-                    uploads.append(url)
-                    objects[url] = b"corrupt" if corrupt and url.endswith("tilrd") else data
+            def put(path, key, content_type, cache):
+                url = release_server.CDN + "/" + key
+                uploads.append(url)
+                objects[url] = b"corrupt" if corrupt and url.endswith("tilrd") else Path(path).read_bytes()
             with patch.object(release_server, "fetch", side_effect=fetch), \
-                 patch.object(release_server, "run", side_effect=run), \
+                 patch.object(release_server, "put_object", side_effect=put), \
                  patch.object(release_server, "signed_feed", side_effect=lambda feed, _: release_server.canonical(feed)), \
                  patch.object(release_server, "verify_envelope", side_effect=lambda data, _: json.loads(data)):
                 if corrupt:

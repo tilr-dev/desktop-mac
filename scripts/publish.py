@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CDN = "https://cdn.tilr.dev"
 BUCKET = "tilr-cdn"
 ACCOUNT = "8e0530af975a33f2f739127f75084531"
+ENDPOINT = f"https://{ACCOUNT}.r2.cloudflarestorage.com"
 SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 NS = {"sparkle": SPARKLE}
 
@@ -149,10 +150,9 @@ def validate_candidate(data, meta, dmg, require_no_skip=False):
 
 
 def put(path, key, content_type, cache):
-    env = os.environ.copy()
-    env["CLOUDFLARE_ACCOUNT_ID"] = ACCOUNT
-    run("wrangler", "r2", "object", "put", f"{BUCKET}/{key}", "--file", path,
-        "--content-type", content_type, "--cache-control", cache, "--remote", env=env)
+    # S3 object access with bucket-scoped R2 credentials (AWS_* variables or AWS_PROFILE), as in tilrd.
+    run("aws", "s3", "cp", path, f"s3://{BUCKET}/{key}", "--endpoint-url", ENDPOINT, "--region", "auto",
+        "--content-type", content_type, "--cache-control", cache)
 
 
 def stage_delta_history(meta, previous, stage, tools, limit, releases=None):

@@ -230,6 +230,14 @@ class PublishTests(unittest.TestCase):
             publish.main()
         self.assertFalse((self.root / "published.json").exists())
 
+    def test_upload_is_an_s3_copy_to_the_r2_bucket(self):
+        with patch.object(publish, "run") as run:
+            publish.put(Path("/tmp/Tilr.dmg"), "mac/arm64/Tilr.dmg", "application/x-apple-diskimage", "immutable")
+        self.assertEqual(run.call_args.args, (
+            "aws", "s3", "cp", Path("/tmp/Tilr.dmg"), "s3://tilr-cdn/mac/arm64/Tilr.dmg",
+            "--endpoint-url", "https://8e0530af975a33f2f739127f75084531.r2.cloudflarestorage.com",
+            "--region", "auto", "--content-type", "application/x-apple-diskimage", "--cache-control", "immutable"))
+
 
 if __name__ == "__main__":
     unittest.main()

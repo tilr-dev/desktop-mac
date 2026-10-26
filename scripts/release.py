@@ -105,8 +105,8 @@ def main():
         from publish import CDN
         if feed not in (f"{CDN}/mac/{args.arch}/appcast.xml", f"{CDN}/mac/beta/{args.arch}/appcast.xml"):
             parser.error("Saved feed must match --arch and the Tilr stable/beta CDN location")
-        if not shutil.which("wrangler"):
-            parser.error("Publishing requires Wrangler; install it with npm install -g wrangler")
+        if not shutil.which("aws"):
+            parser.error("Publishing requires the AWS CLI with R2 credentials; install it with brew install awscli")
     if not args.preview and (not identity.startswith("Developer ID Application:") or not profile or not feed or not key):
         parser.error("Public release requires TILR_SIGN_IDENTITY (Developer ID Application), TILR_NOTARY_PROFILE, TILR_UPDATE_FEED, TILR_UPDATE_PUBLIC_KEY. See RELEASE.md.")
     if feed or key:
