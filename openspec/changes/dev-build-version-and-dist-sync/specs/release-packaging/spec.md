@@ -15,3 +15,4 @@ The release coordinator SHALL reserve monotonically increasing local builds unde
 - **WHEN** the source Info.plist contains `0.0.0-dev`
 - **THEN** it is ignored as a release version; numeric release history or an explicit --version supplies the version
 - **AND** without either, selection fails with `No release version yet; pass --version` without reserving a build
+- **AND** --status and the automatic build preamble display the missing version without reserving or failing, so an explicit --version can initialize the first release

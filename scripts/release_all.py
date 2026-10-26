@@ -136,8 +136,8 @@ def execute(version, build, channel, config, publish=False, resume=False, notes=
     return outputs
 
 
-def automatic_release(root=ROOT, version=None, build=None, reserve=True):
-    """Reserve a fresh build under the coordinator lock, including failed attempts."""
+def release_history(root):
+    """Read numeric release candidates and used/reserved builds without reserving."""
     info = plistlib.loads((root / "Info.plist").read_bytes())
     # The committed template carries a dev placeholder (0.0.0-dev); only a numeric one counts.
     template = str(info["CFBundleShortVersionString"])
@@ -155,6 +155,12 @@ def automatic_release(root=ROOT, version=None, build=None, reserve=True):
         saved = json.loads(state.read_text())
         versions.append(saved["version"])
         builds.append(int(saved["build"]))
+    return versions, builds
+
+
+def automatic_release(root=ROOT, version=None, build=None, reserve=True):
+    """Reserve a fresh build under the coordinator lock, including failed attempts."""
+    versions, builds = release_history(root)
     def version_key(value):
         if not re.fullmatch(r"\d+(?:\.\d+){0,2}", value):
             raise ValueError(f"Invalid release version: {value}")
@@ -170,6 +176,7 @@ def automatic_release(root=ROOT, version=None, build=None, reserve=True):
     build = build if build is not None else next_build
     if not reserve:
         return chosen, build
+    state = root / "build/release-auto.json"
     state.parent.mkdir(parents=True, exist_ok=True)
     temporary = state.with_suffix(".tmp")
     temporary.write_text(json.dumps(dict(version=chosen, build=build), indent=2) + "\n")
@@ -180,10 +187,14 @@ def automatic_release(root=ROOT, version=None, build=None, reserve=True):
 
 def show_status(root=ROOT):
     info = plistlib.loads((root / "Info.plist").read_bytes())
-    version, build = automatic_release(root, reserve=False)
+    versions, builds = release_history(root)
+    version, build = automatic_release(root, reserve=False) if versions else (None, max(builds) + 1)
     print(f"Source Info.plist: {info['CFBundleShortVersionString']}, build {info['CFBundleVersion']}")
-    print(f"Current release version: {version}; highest local/reserved build: {build - 1}")
-    print(f"Next automatic build: {version}, build {build}")
+    print(f"Current release version: {version or 'none'}; highest local/reserved build: {build - 1}")
+    if version:
+        print(f"Next automatic build: {version}, build {build}")
+    else:
+        print("No release version yet; pass --version")
     latest = root / "build/latest-app-release.json"
     if latest.exists():
         saved = json.loads(latest.read_text())
@@ -230,7 +241,7 @@ def main():
     parser.add_argument("--check", action="store_true", help="Check runner access without building a release")
     args = parser.parse_args()
     if args.status:
-        show_status()
+        show_status(ROOT)
         return
     if args.latest:
         if not args.publish_only or args.version or args.build is not None or args.auto:
@@ -252,12 +263,12 @@ def main():
     with (ROOT / "build/release-all.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.auto:
-            show_status()
+            show_status(ROOT)
         preflight(config, publishing, build=not args.publish_only)
         if args.check:
             return
         if args.auto:
-            args.version, args.build = automatic_release(version=args.version, build=args.build)
+            args.version, args.build = automatic_release(ROOT, version=args.version, build=args.build)
             print(f"Building Tilr {args.version}, build {args.build}, channel {args.channel}.", flush=True)
             ensure_server()
         print(f"Selected app: {args.version}, build {args.build}, channel {args.channel}.", flush=True)

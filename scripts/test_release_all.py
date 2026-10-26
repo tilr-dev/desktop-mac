@@ -1,3 +1,5 @@
+import io
+from contextlib import redirect_stdout
 import plistlib
 import json
 import tempfile
@@ -177,6 +179,34 @@ class AutomaticReleaseTests(unittest.TestCase):
         self.assertEqual(release_all.automatic_release(self.root, version="0.3.0", reserve=False), ("0.3.0", 2))
         (self.root / "build/releases/0.2.0-16-arm64").mkdir(parents=True)
         self.assertEqual(release_all.automatic_release(self.root), ("0.2.0", 17))
+
+    def test_status_with_no_release_version_does_not_reserve(self):
+        (self.root / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": "0.0.0-dev", "CFBundleVersion": "1"}))
+        (self.root / "server-release.json").write_text(json.dumps({
+            "version": "0.1.0", "build": 1, "protocolVersion": 1}))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            release_all.show_status(self.root)
+        self.assertIn("No release version yet; pass --version", output.getvalue())
+        self.assertIn("highest local/reserved build: 1", output.getvalue())
+        self.assertFalse((self.root / "build").exists())
+
+    def test_first_auto_release_accepts_explicit_version(self):
+        (self.root / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": "0.0.0-dev", "CFBundleVersion": "1"}))
+        (self.root / "server-release.json").write_text(json.dumps({
+            "version": "0.1.0", "build": 1, "protocolVersion": 1}))
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.sys, "argv", ["release_all.py", "--auto", "--version", "0.3.0"]), \
+             patch.object(release_all, "settings", return_value={}), \
+             patch.object(release_all, "preflight"), \
+             patch.object(release_all, "ensure_server"), \
+             patch.object(release_all, "execute", return_value=[]) as execute, redirect_stdout(io.StringIO()):
+            release_all.main()
+        self.assertEqual(execute.call_args.args[:3], ("0.3.0", 2, "stable"))
+        self.assertEqual(json.loads((self.root / "build/release-auto.json").read_text()),
+                         {"version": "0.3.0", "build": 2})
 
     def test_invalid_override_does_not_reserve(self):
         with self.assertRaises(ValueError):
