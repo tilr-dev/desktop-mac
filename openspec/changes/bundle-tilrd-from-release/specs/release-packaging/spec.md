@@ -19,7 +19,7 @@ The release workflow SHALL separate credential setup, building, local verificati
 ### Requirement: Independently built server artifacts
 release_server.py SHALL acquire signed and notarized macOS servers from the pinned tilrd GitHub Release independently from application releases, writing completion receipts only after verification.
 
-#### Scenario: Acquire a server
+#### Scenario: Build a server
 - **WHEN** the pinned version is requested
 - **THEN** both architectures are acquired by default, --arch selects one, --channel beta selects the independent beta feed and --min-app-build/--max-app-build constrain compatibility
 - **AND** the archive is tilr-v<version>-<target>.tar.gz from tilr-dev/tilrd and its published SHA-256 is verified before extracting executable bytes
@@ -34,9 +34,19 @@ release_server.py SHALL acquire signed and notarized macOS servers from the pinn
 ### Requirement: One-command independent server release
 The desktop repository SHALL provide a command to acquire an upstream server release and optionally publish its independent app-managed feed. It SHALL retain the upstream signatures and show artifacts before requiring explicit publication confirmation. Failures SHALL stop later steps.
 
-#### Scenario: Acquire an upstream release
+#### Scenario: Release tagged sources
 - **WHEN** the command receives a release version and feed compatibility metadata
 - **THEN** it acquires and verifies both signed macOS architectures from that exact upstream GitHub Release without selecting or building source checkouts
+
+#### Scenario: Select sources for a lower-level build
+- **WHEN** the operator supplies the former --source PATH option to release_server.py
+- **THEN** argument validation rejects it without building, signing or publishing anything
+- **AND** --version selects the upstream GitHub Release instead
+
+#### Scenario: Default sources for a lower-level build
+- **WHEN** the operator runs release_server.py without a source option
+- **THEN** it acquires the exact --version from the upstream GitHub Release using the supplied --protocol-version
+- **AND** no local source checkout is read or built
 
 #### Scenario: Inspect before publishing
 - **WHEN** the verified artifacts are ready
