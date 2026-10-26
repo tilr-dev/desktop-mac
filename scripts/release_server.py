@@ -8,14 +8,13 @@ from release_console import ArgumentParser, success, failure
 import base64
 import fcntl
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 
 from bundle_server import ROOT, TARGETS, TILRD, build_server, digest
-from publish import ACCOUNT, BUCKET, CDN, fetch, run, sparkle_key, sparkle_public_key
+from publish import CDN, fetch, put as put_object, run, sparkle_key, sparkle_public_key
 from release import sign
 from release_all import settings
 
@@ -127,14 +126,11 @@ def publish_release(directory, manifest, channel):
         envelope = signed_feed(feed, temp)
         artifact_url = release_url(manifest)
         remote = temp / "remote-server"
-        env = dict(os.environ, CLOUDFLARE_ACCOUNT_ID=ACCOUNT)
         def put(url, path, cache):
             key = url.removeprefix(CDN + "/")
             if key == url:
                 raise ValueError("Refusing a publication outside the configured CDN")
-            run("wrangler", "r2", "object", "put", f"{BUCKET}/{key}", "--file", path,
-                "--content-type", "application/json" if path.suffix == ".json" else "application/octet-stream",
-                "--cache-control", cache, "--remote", env=env)
+            put_object(path, key, "application/json" if path.suffix == ".json" else "application/octet-stream", cache)
         # Never overwrite an immutable artifact with a different release, across either channel.
         if fetch(artifact_url, remote):
             if digest(remote) != manifest["sha256"]:

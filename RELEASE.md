@@ -37,8 +37,8 @@ Run `./setup-release.command` once in a normal Terminal to configure the certifi
 Sparkle key and notarization profile. It neither builds nor publishes. Then use
 `./release.command` for an automatic build of BOTH architectures, without publication.
 It saves only non-secret settings in ignored `release.local.json`, so later releases
-need just the non-interactive `release_all.py` command. Requires Python 3.11+, Xcode, Node >=22 and Wrangler
-(`npm install -g wrangler`, then `wrangler login` if not already authenticated).
+need just the non-interactive `release_all.py` command. Requires Python 3.11+, Xcode and the AWS CLI
+(`brew install awscli`, with the R2 keys in a profile: PRODUCTION.md, section 1).
 These are publisher tools; recipients do not need them.
 
 Use the paid **Rexuni LLC** Apple Developer team. In Xcode → Settings → Apple
@@ -248,7 +248,7 @@ must not self-update an executable inside the signed .app.
 - https://sparkle-project.org/documentation/publishing/
 - https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
 - https://support.apple.com/en-us/102654
-- https://developers.cloudflare.com/r2/get-started/cli/
+- https://developers.cloudflare.com/r2/examples/aws/aws-cli/
 
 ## Configuration and app folders
 

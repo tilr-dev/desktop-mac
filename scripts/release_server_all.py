@@ -49,10 +49,8 @@ def protocol_version(source):
 
 def release_environment():
     env = dict(os.environ)
+    # Homebrew first: the AWS CLI and current Apple tooling on the release Mac.
     env["PATH"] = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin", env.get("PATH", "")])
-    node = subprocess.check_output(["node", "--version"], env=env, text=True).strip()
-    if not re.fullmatch(r"v\d+\.\d+\.\d+", node) or int(node[1:].split(".")[0]) < 22:
-        raise ValueError(f"Homebrew Node >=22 required; selected {node}")
     return env
 
 

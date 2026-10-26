@@ -26,7 +26,7 @@ live website deployment are changed by these scripts.
 Use `PRODUCTION.md` and `setup-release.command` for the interactive bootstrap. This is a
 one-time human task, not the command an automated agent should run on every release.
 
-- macOS 14+, Xcode/Swift, Python 3.11+, Node >=22 and Wrangler.
+- macOS 14+, Xcode/Swift, Python 3.11+ and the AWS CLI.
 - Rexuni LLC Developer ID Application certificate **and its private key**, in a
   Keychain accessible to the release process. The certificate was created in Xcode
   on 2026-10-11; do not create/revoke another merely because a sandbox cannot see it.
@@ -34,10 +34,10 @@ one-time human task, not the command an automated agent should run on every rele
   tilr-rexuni`. Apple ID/app-specific password or the supported Apple API key flow.
 - Sparkle key generated once with `generate_keys --account tilr-rexuni`; keep the
   private key in Keychain. All architectures use the same public key.
-- Cloudflare authorization for the existing account
-  `8e0530af975a33f2f739127f75084531`, R2 bucket `tilr-cdn`. Local setup can use
-  `wrangler login`. A dedicated runner can use a scoped deployment token provided
-  by its secret store, rather than interactive login.
+- R2 API token (S3 keys) for the existing account
+  `8e0530af975a33f2f739127f75084531`, bucket `tilr-cdn`, given to the AWS CLI: locally
+  a profile (`AWS_PROFILE`), on a dedicated runner `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` from its secret store.
 - `release.local.json` contains the full identity, Keychain profile name and public
   Sparkle key. Copy the shape from `release.local.example.json` if configuring
   manually. No passwords or private keys belong in this file or Git. Environment
@@ -66,16 +66,16 @@ From the repository root, first verify the actual execution context:
 python3 scripts/release_all.py --check --publish
 ```
 
-This checks tool availability, Node version, the configured identity, notarization
+This checks tool availability, the configured identity, notarization
 profile, Sparkle key, an actual temporary code-signing operation, disk-image creation,
 and access to the R2 bucket. It creates no release and publishes nothing. It uses
 existing credentials only; it does not create keys or start login flows.
 
-On the current Apple Silicon development Mac, `/usr/local/bin/node` can select old
-Node 18 while `/opt/homebrew/bin/node` is newer. Set PATH for the process if needed:
+The AWS CLI comes from Homebrew on the release Mac; with the R2 keys in their own
+profile:
 
 ```sh
-PATH="/opt/homebrew/bin:$PATH" python3 scripts/release_all.py --check --publish
+AWS_PROFILE=tilr-r2 PATH="/opt/homebrew/bin:$PATH" python3 scripts/release_all.py --check --publish
 ```
 
 When the user explicitly requests combined build and publication, use the following

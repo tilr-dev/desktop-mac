@@ -43,4 +43,4 @@ TILR_SIGN_IDENTITY=$(python3 -c 'import json; print(json.load(open("release.loca
 export TILR_SIGN_IDENTITY
 python3 scripts/release_all.py --check
 echo "Signing setup complete. No release created or uploaded."
-echo "For publishing, configure Wrangler login separately and run: python3 scripts/release_all.py --check --publish-only"
+echo "For publishing, configure the R2 keys for the AWS CLI separately (PRODUCTION.md) and run: python3 scripts/release_all.py --check --publish-only"
