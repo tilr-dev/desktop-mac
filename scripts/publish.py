@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CDN = "https://cdn.tilr.dev"
 BUCKET = "tilr-cdn"
 ACCOUNT = "8e0530af975a33f2f739127f75084531"
+ENDPOINT = f"https://{ACCOUNT}.r2.cloudflarestorage.com"
 SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 NS = {"sparkle": SPARKLE}
 
@@ -28,6 +29,20 @@ NS = {"sparkle": SPARKLE}
 def run(*args, **kwargs):
     print("+", " ".join(map(str, args)), flush=True)
     return subprocess.run(list(map(str, args)), check=True, **kwargs)
+
+
+def sparkle_key():
+    """Sparkle tool arguments: the Keychain account, or TILR_SPARKLE_KEY_FILE on an unattended runner."""
+    path = os.environ.get("TILR_SPARKLE_KEY_FILE")
+    return ["--ed-key-file", path] if path else ["--account", "tilr-rexuni"]
+
+
+def sparkle_public_key(tools):
+    path = os.environ.get("TILR_SPARKLE_KEY_FILE")
+    if path:
+        # generate_keys reads only the Keychain; CryptoKit derives the key file's public half.
+        return subprocess.check_output(["swift", str(ROOT / "scripts/sparkle_public_key.swift"), path], text=True).strip()
+    return subprocess.check_output([str(tools / "generate_keys"), "--account", "tilr-rexuni", "-p"], text=True).strip()
 
 
 def digest(path):
@@ -135,10 +150,9 @@ def validate_candidate(data, meta, dmg, require_no_skip=False):
 
 
 def put(path, key, content_type, cache):
-    env = os.environ.copy()
-    env["CLOUDFLARE_ACCOUNT_ID"] = ACCOUNT
-    run("wrangler", "r2", "object", "put", f"{BUCKET}/{key}", "--file", path,
-        "--content-type", content_type, "--cache-control", cache, "--remote", env=env)
+    # S3 object access with bucket-scoped R2 credentials (AWS_* variables or AWS_PROFILE), as in tilrd.
+    run("aws", "s3", "cp", path, f"s3://{BUCKET}/{key}", "--endpoint-url", ENDPOINT, "--region", "auto",
+        "--content-type", content_type, "--cache-control", cache)
 
 
 def stage_delta_history(meta, previous, stage, tools, limit, releases=None):
@@ -169,7 +183,7 @@ def stage_delta_history(meta, previous, stage, tools, limit, releases=None):
             if digest(archive) != old['sha256']:
                 raise ValueError('Historical DMG checksum mismatch')
             signature = validate_candidate(previous, old, archive)
-            run(tools / 'sign_update', '--account', 'tilr-rexuni', '--verify', archive, signature)
+            run(tools / 'sign_update', *sparkle_key(), '--verify', archive, signature)
             shutil.copy2(archive, stage / name)
             accepted.append(build)
             break
@@ -206,7 +220,7 @@ def validate_deltas(data, meta, stage, tools, allowed):
         path = stage / entry['name']
         if entry['source'] not in allowed or path.is_symlink() or path.stat().st_size != entry['size']:
             raise ValueError('Delta differs from the verified release history or declared size')
-        run(tools / 'sign_update', '--account', 'tilr-rexuni', '--verify', path, entry['signature'])
+        run(tools / 'sign_update', *sparkle_key(), '--verify', path, entry['signature'])
     return entries
 
 
@@ -215,7 +229,7 @@ def verify_remote_deltas(data, meta, stage, tools):
         remote = stage / f'verify-delta-{index}'
         if not fetch(entry['url'], remote) or remote.stat().st_size != entry['size']:
             raise ValueError('Published delta is missing or has a different size')
-        run(tools / 'sign_update', '--account', 'tilr-rexuni', '--verify', remote, entry['signature'])
+        run(tools / 'sign_update', *sparkle_key(), '--verify', remote, entry['signature'])
 
 
 def upload_deltas(meta, data, stage):
@@ -297,7 +311,7 @@ def main():
             run("codesign", "--verify", "--deep", "--strict", path)
             run("xcrun", "stapler", "validate", path)
         run("spctl", "--assess", "--type", "execute", directory / "Tilr.app")
-        key = subprocess.check_output([str(args.sparkle_bin / "generate_keys"), "--account", "tilr-rexuni", "-p"], text=True).strip()
+        key = sparkle_public_key(args.sparkle_bin)
         if key != meta["public_key"]:
             raise ValueError("Sparkle Keychain key differs from the key embedded in this release")
         with tempfile.TemporaryDirectory(prefix="publish-", dir=ROOT / "build") as temp:
@@ -310,7 +324,7 @@ def main():
                 if any(build_of(item) > meta["build"] for item in feed_items(feed.read_bytes())):
                     raise ValueError("A newer build is already published")
                 signature = validate_candidate(feed.read_bytes(), meta, dmg)
-                run(args.sparkle_bin / "sign_update", "--account", "tilr-rexuni", "--verify", dmg, signature)
+                run(args.sparkle_bin / "sign_update", *sparkle_key(), "--verify", dmg, signature)
                 url = meta["feed"].rsplit("/", 1)[0] + "/" + dmg.name
                 remote = stage / "already-published.dmg"
                 if not fetch(url, remote) or digest(remote) != meta["sha256"]:
@@ -327,13 +341,13 @@ def main():
             shutil.copy2(dmg, stage / dmg.name)
             if args.notes:
                 (stage / dmg.with_suffix(".html").name).write_text("<pre>" + html.escape(args.notes.read_text()) + "</pre>")
-            run(args.sparkle_bin / "generate_appcast", "--account", "tilr-rexuni",
+            run(args.sparkle_bin / "generate_appcast", *sparkle_key(),
                 "--maximum-deltas", str(maximum_deltas), "--maximum-versions", "0", "--embed-release-notes",
                 "--versions", str(meta["build"]),
                 "--critical-update-version", "",
                 "--download-url-prefix", meta["feed"].rsplit("/", 1)[0] + "/", stage)
             signature = validate_candidate(feed.read_bytes(), meta, dmg, require_no_skip=True)
-            run(args.sparkle_bin / "sign_update", "--account", "tilr-rexuni", "--verify", dmg, signature)
+            run(args.sparkle_bin / "sign_update", *sparkle_key(), "--verify", dmg, signature)
             deltas = validate_deltas(feed.read_bytes(), meta, stage, args.sparkle_bin, history)
             saved_deltas = directory / "deltas"
             saved_deltas.mkdir(exist_ok=True)

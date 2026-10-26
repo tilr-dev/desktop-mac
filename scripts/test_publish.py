@@ -38,20 +38,20 @@ class PublishTests(unittest.TestCase):
                                TilrServerFeedBaseURL="https://cdn.tilr.dev/server/macos"), file)
         helpers = self.root / "Tilr.app/Contents/Helpers"
         helpers.mkdir()
-        (helpers / "tilr-server").write_bytes(b"server")
+        (helpers / "tilrd").write_bytes(b"server")
         resources = self.root / "Tilr.app/Contents/Resources/server"
         resources.mkdir(parents=True)
         (resources / "app-managed.json").write_text(json.dumps(dict(
             version="0.1.1", build=2, arch="arm64", serverVersion="0.1.1-build2-test",
-            sha256=publish.digest(helpers / "tilr-server"), protocolVersion=2, minAppBuild=1, maxAppBuild=None)))
+            sha256=publish.digest(helpers / "tilrd"), protocolVersion=2, minAppBuild=1, maxAppBuild=None)))
         self.manifest()
 
     def test_server_missing_tampered_or_wrong_build_blocks_publication(self):
         helpers = self.root / "Tilr.app/Contents/Helpers"
-        (helpers / "tilr-server").write_bytes(b"different")
+        (helpers / "tilrd").write_bytes(b"different")
         with self.assertRaisesRegex(ValueError, "server checksum"):
             publish.validate_manifest(self.root)
-        (helpers / "tilr-server").write_bytes(b"server")
+        (helpers / "tilrd").write_bytes(b"server")
         path = self.root / "Tilr.app/Contents/Resources/server/app-managed.json"
         meta = json.loads(path.read_text())
         meta["build"] = 1
@@ -229,6 +229,14 @@ class PublishTests(unittest.TestCase):
              self.assertRaises(ValueError):
             publish.main()
         self.assertFalse((self.root / "published.json").exists())
+
+    def test_upload_is_an_s3_copy_to_the_r2_bucket(self):
+        with patch.object(publish, "run") as run:
+            publish.put(Path("/tmp/Tilr.dmg"), "mac/arm64/Tilr.dmg", "application/x-apple-diskimage", "immutable")
+        self.assertEqual(run.call_args.args, (
+            "aws", "s3", "cp", Path("/tmp/Tilr.dmg"), "s3://tilr-cdn/mac/arm64/Tilr.dmg",
+            "--endpoint-url", "https://8e0530af975a33f2f739127f75084531.r2.cloudflarestorage.com",
+            "--region", "auto", "--content-type", "application/x-apple-diskimage", "--cache-control", "immutable"))
 
 
 if __name__ == "__main__":

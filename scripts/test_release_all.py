@@ -1,3 +1,5 @@
+import io
+from contextlib import redirect_stdout
 import plistlib
 import json
 import tempfile
@@ -168,10 +170,92 @@ class AutomaticReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_all.automatic_release(self.root)
 
+    def test_dev_placeholder_template_is_ignored(self):
+        (self.root / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": "0.0.0-dev", "CFBundleVersion": "1"}))
+        with self.assertRaisesRegex(ValueError, "pass --version"):
+            release_all.automatic_release(self.root)
+        self.assertFalse((self.root / "build/release-auto.json").exists())
+        self.assertEqual(release_all.automatic_release(self.root, version="0.3.0", reserve=False), ("0.3.0", 2))
+        (self.root / "build/releases/0.2.0-16-arm64").mkdir(parents=True)
+        self.assertEqual(release_all.automatic_release(self.root), ("0.2.0", 17))
+
+    def test_status_with_no_release_version_does_not_reserve(self):
+        (self.root / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": "0.0.0-dev", "CFBundleVersion": "1"}))
+        (self.root / "server-release.json").write_text(json.dumps({
+            "version": "0.1.0", "build": 1, "protocolVersion": 1}))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            release_all.show_status(self.root)
+        self.assertIn("No release version yet; pass --version", output.getvalue())
+        self.assertIn("highest local/reserved build: 1", output.getvalue())
+        self.assertFalse((self.root / "build").exists())
+
+    def test_first_auto_release_accepts_explicit_version(self):
+        (self.root / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": "0.0.0-dev", "CFBundleVersion": "1"}))
+        (self.root / "server-release.json").write_text(json.dumps({
+            "version": "0.1.0", "build": 1, "protocolVersion": 1}))
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.sys, "argv", ["release_all.py", "--auto", "--version", "0.3.0"]), \
+             patch.object(release_all, "settings", return_value={}), \
+             patch.object(release_all, "preflight"), \
+             patch.object(release_all, "ensure_server"), \
+             patch.object(release_all, "execute", return_value=[]) as execute, redirect_stdout(io.StringIO()):
+            release_all.main()
+        self.assertEqual(execute.call_args.args[:3], ("0.3.0", 2, "stable"))
+        self.assertEqual(json.loads((self.root / "build/release-auto.json").read_text()),
+                         {"version": "0.3.0", "build": 2})
+
     def test_invalid_override_does_not_reserve(self):
         with self.assertRaises(ValueError):
             release_all.automatic_release(self.root, "invalid")
         self.assertFalse((self.root / "build/release-auto.json").exists())
+
+    def preflight_asks_sparkle(self, key, publish):
+        tools = self.root / ".build/artifacts/sparkle/Sparkle/bin"
+        tools.mkdir(parents=True)
+        (tools / "generate_keys").touch()
+        (self.root / "build").mkdir()
+        config = {"TILR_SIGN_IDENTITY": "Developer ID Application: Test", "TILR_NOTARY_PROFILE": "profile",
+                  "TILR_UPDATE_PUBLIC_KEY": "public"}
+        asked = []
+        def check_output(command, **kwargs):
+            asked.append(command)
+            if command[0] == "security":
+                return '  1) ABC "Developer ID Application: Test"\n'
+            return key + "\n"
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.shutil, "which", return_value="/usr/bin/tool"), \
+             patch.object(release_all.subprocess, "check_output", side_effect=check_output), \
+             patch.object(release_all, "run"), patch.object(release_all, "sign"), \
+             redirect_stdout(io.StringIO()):
+            release_all.preflight(config, publish, build=True)
+        return any(str(command[0]).endswith("generate_keys") for command in asked)
+
+    def test_build_only_preflight_needs_no_sparkle_private_key(self):
+        self.assertFalse(self.preflight_asks_sparkle("", publish=False))
+
+    def test_publishing_preflight_checks_the_sparkle_key(self):
+        self.assertTrue(self.preflight_asks_sparkle("public", publish=True))
+
+    def test_publishing_preflight_checks_the_r2_bucket(self):
+        tools = self.root / ".build/artifacts/sparkle/Sparkle/bin"
+        tools.mkdir(parents=True)
+        (tools / "generate_keys").touch()
+        config = {"TILR_UPDATE_PUBLIC_KEY": "public"}
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.shutil, "which", return_value="/usr/bin/tool"), \
+             patch.object(release_all.subprocess, "check_output", return_value="public\n"), \
+             patch.object(release_all, "run") as run, redirect_stdout(io.StringIO()):
+            release_all.preflight(config, True, build=False)
+        self.assertEqual(run.call_args.args[0][:4], ["aws", "s3api", "head-bucket", "--bucket"])
+        self.assertIn("https://8e0530af975a33f2f739127f75084531.r2.cloudflarestorage.com", run.call_args.args[0])
+
+    def test_publishing_preflight_rejects_another_sparkle_key(self):
+        with self.assertRaisesRegex(ValueError, "Sparkle key"):
+            self.preflight_asks_sparkle("other", publish=True)
 
 
 if __name__ == "__main__":

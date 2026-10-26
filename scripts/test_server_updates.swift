@@ -14,8 +14,8 @@ import CryptoKit
                 sha256: hash, protocolVersion: proto, minAppBuild: min, maxAppBuild: max)
             return .init(manifest: m, url: URL(string: "https://cdn.example/server-\(build)")!, size: Int64(bytes.count))
         }
-        func envelope(_ releases: [ServerUpdates.Release], channel: String = "stable") throws -> Data {
-            let feed = ServerUpdates.Feed(schema: 1, component: "tilr-server", arch: "arm64", channel: channel, releases: releases)
+        func envelope(_ releases: [ServerUpdates.Release], channel: String = "stable", component: String = "tilrd") throws -> Data {
+            let feed = ServerUpdates.Feed(schema: 1, component: component, arch: "arm64", channel: channel, releases: releases)
             let payload = try JSONEncoder().encode(feed)
             return try JSONEncoder().encode(ServerUpdates.Envelope(payload: payload, signature: key.signature(for: payload)))
         }
@@ -29,6 +29,9 @@ import CryptoKit
         // App and server build numbers have no ordering relationship.
         expect(release(500).manifest.supports(appBuild: 10, protocolVersion: 2, arch: "arm64"))
         expect(!release(500, proto: 3).manifest.supports(appBuild: 10, protocolVersion: 2, arch: "arm64"))
+        for component in ["tilr-server", "other"] {
+            reject { _ = try updater.decode(envelope([release(2)], component: component)) }
+        }
         reject { _ = try updater.decode(envelope([release(2)], channel: "beta")) }
         reject { _ = try updater.decode(envelope([release(2), release(2)])) }
         var signed = try JSONDecoder().decode(ServerUpdates.Envelope.self, from: wire)

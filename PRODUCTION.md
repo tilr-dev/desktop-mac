@@ -89,7 +89,7 @@ python3 scripts/release_server.py --version 0.1.1 --build 2 --publish-only
 При `Developer ID identity is unavailable` используйте обычный Terminal релизного
 Mac с существующим сертификатом и приватным ключом. Не создавайте новый ключ из-за
 ограничений агента. `release.command` и `upload.command` добавляют Homebrew в PATH.
-Разовая настройка — `setup-release.command`, доступ к Cloudflare — `wrangler login`.
+One-time setup: `setup-release.command`; CDN access: R2 keys for the AWS CLI (section 1).
 Процесс сборки не останавливает development-сервер. Если он занимает порт 7890,
 остановите именно его в терминале запуска (Ctrl+C) перед запуском новой версии.
 
@@ -102,6 +102,43 @@ Sparkle, серверному бинарнику и проверке подпи�
 Если все попытки исчерпаны, проверьте доступ к `timestamp.apple.com` из релизного
 процесса и повторите сборку через описанный выше `--resume`, сохранив завершённую
 архитектуру и переместив незавершённый каталог в архив.
+
+## Release from CI
+
+The `Release` workflow (`.github/workflows/release.yml`) does the same on GitHub-hosted macOS,
+without the release Mac. Run it by hand from `main`: Actions → Release → Run workflow, or
+`gh workflow run release.yml --ref main -f version=0.3.0 -f build=21 -f channel=stable`.
+The build must exceed every build published on that channel: the runner has no local history,
+so no number is chosen automatically, and publication refuses a build not newer than the feed.
+
+1. `server`: the server pinned in `server-release.json`. Already published: `fetch_server.py`
+   downloads it from its feed and checks the checksum and the Developer ID signature; it is not
+   rebuilt (a published number keeps its bytes). Not yet published: tilrd from the tag
+   `v<version>` is compiled without keys, then `release_server.py` signs and notarizes it
+   (`server_min_app_build` is the oldest supported app build).
+2. `app`: both architectures are compiled without keys, then `release_all.py` signs, notarizes
+   and packages the DMGs. No Sparkle key or Cloudflare token here.
+3. `publish`: waits for approval in the `release` environment, then `release_server.py
+   --publish-only` and `release_all.py --publish-only` publish the same artifacts. No delta
+   patches: the runner has no DMG history, so the full DMG is published.
+
+`scripts/ci-apple-keychain.sh` imports the Apple keys into a temporary keychain (notarytool
+profile `tilr-ci` from an App Store Connect API key) and removes it at the end of the job.
+In `publish` the Sparkle key is a file, `TILR_SPARKLE_KEY_FILE`, instead of a Keychain item,
+so there is no access prompt; its public half is checked against `TILR_UPDATE_PUBLIC_KEY`
+(`scripts/sparkle_public_key.swift`). No deploy key is needed: tilrd and gitpm are public.
+
+Secrets (Settings → Environments), provisioned by Dan:
+
+| Environment | Secret | What it is |
+|---|---|---|
+| `apple-signing` (branch `main` only) | `APPLE_CERTIFICATE_P12_BASE64` | Developer ID Application `.p12` with its key, base64 |
+| | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password |
+| | `APPLE_SIGN_IDENTITY` | `Developer ID Application: Rexuni LLC (V57FF3MX26)` |
+| | `APPLE_API_KEY_P8_BASE64` | App Store Connect API key (`.p8`, role Developer), base64 |
+| | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` | that key's Key ID and Issuer ID |
+| `release` (required reviewer Dan, `main` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
+| | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | R2 API token (S3) with object read and write on the bucket `tilr-cdn` |
 
 ## Compact packaging and delta updates (implemented)
 
@@ -189,15 +226,48 @@ No JavaScript `tilr` CLI, Node, npm or Git is shipped.
 
 ### Build and publish a server independently
 
+For the complete tagged-source workflow, run on the signing Mac:
+
+```sh
+python3 scripts/release_server_all.py --version 0.1.0 --build 2 --min-app-build 1 --tag v0.1.0
+# Inspect the plan without keys, signing, notarization or publication:
+python3 scripts/release_server_all.py --version 0.1.0 --build 2 --min-app-build 1 --tag v0.1.0 --preview
+```
+
+The command uses a temporary detached worktree of the local tag in
+`~/projects/tilr/git/tilrd`; override the clone with `--tilrd-repo PATH`.
+It validates the tagged protocol, prepends Homebrew to PATH (AWS CLI), runs
+`release_all.py --check --publish`, then builds both architectures from that
+worktree. It shows both `release.json` receipts and runs the native `tilrd --version`.
+Inspect/test both artifacts, then type exactly `publish` to publish. Refusal or
+EOF leaves artifacts available without publication. After publication, both signed
+CDN feeds are checked and the JSON pin for `server-release.json` is printed;
+copy it into that file separately. `--channel beta` selects the beta feeds.
+The worktree is removed on exit; the original clone checkout is preserved.
+No credentials are created and no login is initiated. If a step fails, later
+steps stop. After declining publication, use the lower-level `--publish-only`
+command below with the same version/build and channel to publish inspected artifacts.
+
+The lower-level commands remain available:
+
 The server build machine needs Rust, Zig 0.15.2, protoc, Apple signing/notarization
 credentials from `release.local.json`, and the Rust targets:
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 python3 scripts/release_server.py --version 0.1.0 --build 1
+# Rebuild from a checkout you have prepared at the intended tag:
+python3 scripts/release_server.py --version 0.1.0 --build 2 --source /path/to/tagged-tilrd
 # Test both completed artifacts, then publish without rebuilding:
 python3 scripts/release_server.py --version 0.1.0 --build 1 --publish-only
 ```
+
+`--source PATH` selects the tilrd source checkout for a lower-level build, including
+the protocol version read at build time. It defaults to `../tilrd` relative to
+the desktop repository. This command builds that checkout's current sources; it
+does not select a tag automatically. Prepare the intended tag yourself before
+rebuilding, or use the complete tagged-source workflow above. `--publish-only`
+uses completed artifacts without reading or rebuilding the source checkout.
 
 `--arch arm64` or `--arch x86_64` selects one architecture; the default is both.
 `--channel beta` selects the server beta feed independently of the app channel.
@@ -234,9 +304,15 @@ separate architecture DMGs; universal server artifacts are not used.
 The app records its supported server protocol, bundled server identity, server
 feed base URL and public verification key in its signed Info.plist. Downloads
 are selected by server build within the supported protocol, architecture and app
-build range; hashes/signatures and reload-state compatibility are verified before
-replacement. A server whose state cannot migrate live is left running; after a
-user stops that service, installation can proceed without a live-state migration.
+build range; hashes/signatures are verified before replacement. The app installs
+the replacement binary and requests reload; tilrd checks reload-state compatibility
+before handing over. The app confirms the update through `ps --server-version`.
+If reload is refused and the running version stays unchanged, the app reports
+"The local server did not become ready. Reload did not complete: running version
+X, expected Y" with the server log path and confirmation that existing processes
+were not stopped. The supervisor and terminals keep running, and the replacement
+binary remains installed. To use that binary after a refused reload, stop the
+service, then start it again; this ends the existing terminal sessions.
 The next application build can still bundle an older compatible server; it will
 not undo an independent server update.
 
@@ -246,7 +322,7 @@ The default instance installs into
 `~/Library/Application Support/dev.tilr.mac/server/` and creates
 `~/Library/LaunchAgents/dev.tilr.server.plist`. It listens on loopback port 7890,
 with private managed state/token and runtime files. The job runs the signed
-`tilr-server` directly (no shell wrapper); panes get the user's login environment
+`tilrd` directly (no shell wrapper); panes get the user's login environment
 because the server starts their shell as a login shell (server 0.1.0 build 3+).
 The plist's `AssociatedBundleIdentifiers` (the app's bundle id, `dev.tilr.mac`) makes Login
 Items and the "Background Items Added" notice show the job as Tilr rather than the signing team
@@ -255,7 +331,7 @@ a zsh one below.
 A plist of ours with another definition (a job written by an earlier Tilr through
 `/bin/zsh -lc 'exec …'` or without the association, a changed port or environment) is
 rewritten and applied. "Ours" = Label `dev.tilr.server` and `ProgramArguments` running the
-installed `tilr-server`, directly or through `/bin/zsh -lc`; any other plist under that name,
+installed `tilrd`, directly or through `/bin/zsh -lc`; any other plist under that name,
 or a loaded job of that name without the file, is refused with a message naming the file.
 launchd keeps a loaded definition until bootout, so applying it means a restart:
 - the job is stopped, or the server reports no live panes → `bootout` + `bootstrap` at once,
@@ -268,7 +344,7 @@ launchd keeps a loaded definition until bootout, so applying it means a restart:
   (minus `OSLogRateLimit` and `XPC_*`, which launchd adds) against the plist; a login that
   loaded the new file counts as applied and clears the marker. The marker decides only when
   that output cannot be parsed.
-"Live panes" comes from `tilr-server ps --url ws://127.0.0.1:<port>` (the protocol's
+"Live panes" comes from `tilrd ps --url ws://127.0.0.1:<port>` (the protocol's
 ListPanes over the server's WebSocket, with the stored token): a header plus one line per pane.
 After every `bootstrap`, a job that `launchctl print` shows loaded without a `pid` is
 `kickstart`ed. Standalone installations are
@@ -298,7 +374,7 @@ non-200 on the binary download is "Server update download failed (HTTP <status>)
 `local_server.enabled: false` in `config.yml` (at launch, or on save: the config is watched), or
 Remove Local Server… in `Tilr > Local Server…` (confirmation: open panes will close), removes
 what the app installed when the plist is ours (see above): `launchctl bootout
-gui/<uid>/dev.tilr.server`, the plist, and in `server/` the binary, `tilr-server.previous`,
+gui/<uid>/dev.tilr.server`, the plist, and in `server/` the binary, `tilrd.previous`,
 `app-managed*.json`, `origins.toml`, `runtime/` and a pending-restart marker. `server/state/`
 (sessions, token, logs) and `server.log` stay. A foreign plist is left alone with a notice.
 Only release builds (with a bundled server) remove, as only they install. The dialog then
@@ -323,7 +399,7 @@ The separate Linux/standalone server updater is unchanged.
 Installation replaces the binary atomically at a fixed path and waits for an
 authenticated response with the expected running version. It never stops a
 running supervisor to upgrade. The server's reload preserves sessions; the old
-binary and its receipt remain as `tilr-server.previous` and
+binary and its receipt remain as `tilrd.previous` and
 `app-managed.previous.json` for manual recovery, not automatic live rollback. A
 transaction journal reconciles interruptions before/after binary replacement on
 the next launch, even when that app bundles an older server. Closing the app leaves terminals running until logout.
@@ -336,10 +412,10 @@ introduced. Test/probe/custom-config instances never manage the production serve
 
 ```sh
 python3 -m unittest discover -s scripts -p 'test_*.py'
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilr-server-installation-tests
-/tmp/tilr-server-installation-tests
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o /tmp/tilr-server-update-tests
-/tmp/tilr-server-update-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
+/tmp/tilrd-installation-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o /tmp/tilrd-update-tests
+/tmp/tilrd-update-tests
 ```
 
 Before public handoff, test first install, a server-only upgrade with an open
@@ -368,22 +444,24 @@ be created at account.apple.com → Sign-In and Security → App-Specific Passwo
 The Rexuni Team ID is the code in the certificate's name. Do not create/revoke the
 existing certificate because an agent sandbox cannot see it.
 
-Publication access is configured separately. With Node >=22 and Wrangler installed:
+Publication access is configured separately: the AWS CLI (`brew install awscli`) with an
+R2 API token for the bucket (Cloudflare → R2 → Manage API tokens, Object Read & Write on
+`tilr-cdn`; the same kind of keys as tilrd's CDN upload). Keep them in their own profile so
+the default AWS credentials stay untouched:
 
 ```sh
-wrangler login
+aws configure --profile tilr-r2      # Access Key ID and Secret of the R2 token, region auto
+export AWS_PROFILE=tilr-r2
 python3 scripts/release_all.py --check --publish-only
 ```
 
-That check uses the existing Sparkle key and Cloudflare account's `tilr-cdn` bucket.
+That check uses the existing Sparkle key and `aws s3api head-bucket` on `tilr-cdn` through
+the R2 endpoint.
 It needs no Apple signing private key or notarization login, and does not compile or
 create disk images. Publishing still needs macOS signature/stapling verification,
 Sparkle tools and disk-image mounting when generating the appcast. An automated
-publisher may use an authorized Cloudflare token from its secret store instead of
-interactive login.
-
-For this development Mac, if `node --version` selects old Node 18, use
-`export PATH="/opt/homebrew/bin:$PATH"` in this Terminal; the Homebrew Node is newer.
+publisher takes the R2 keys as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from its
+secret store.
 For agent execution, provision these same accesses for the actual agent process or
 an explicitly configured macOS release runner. Scripts cannot grant OS/tool
 permissions. See [AGENT_RELEASE.md](AGENT_RELEASE.md).

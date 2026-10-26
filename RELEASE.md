@@ -37,8 +37,8 @@ Run `./setup-release.command` once in a normal Terminal to configure the certifi
 Sparkle key and notarization profile. It neither builds nor publishes. Then use
 `./release.command` for an automatic build of BOTH architectures, without publication.
 It saves only non-secret settings in ignored `release.local.json`, so later releases
-need just the non-interactive `release_all.py` command. Requires Python 3.11+, Xcode, Node >=22 and Wrangler
-(`npm install -g wrangler`, then `wrangler login` if not already authenticated).
+need just the non-interactive `release_all.py` command. Requires Python 3.11+, Xcode and the AWS CLI
+(`brew install awscli`, with the R2 keys in a profile: PRODUCTION.md, section 1).
 These are publisher tools; recipients do not need them.
 
 Use the paid **Rexuni LLC** Apple Developer team. In Xcode → Settings → Apple
@@ -237,7 +237,7 @@ restart the user's normal Tilr for release verification.
 ## Next stage
 
 Bundle a version-matched prebuilt web workspace and plugins; then add local
-tilr-server lifecycle management. Keep bundled code read-only, dev workspaces
+tilrd lifecycle management. Keep bundled code read-only, dev workspaces
 external, and coordinate server updates so terminal sessions survive. The server
 must not self-update an executable inside the signed .app.
 
@@ -248,7 +248,7 @@ must not self-update an executable inside the signed .app.
 - https://sparkle-project.org/documentation/publishing/
 - https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
 - https://support.apple.com/en-us/102654
-- https://developers.cloudflare.com/r2/get-started/cli/
+- https://developers.cloudflare.com/r2/examples/aws/aws-cli/
 
 ## Configuration and app folders
 
@@ -277,7 +277,9 @@ its explicit site/apps paths, or launch with `--config "$HOME/.config/tilr"`.
 
 Run `./release.command` without input. It reuses signing settings already saved in
 `release.local.json`. Setup is one-time. The highest marketing version from Info.plist
-and local history is retained; the highest build number is incremented. Reservations
+(ignored while it is the dev placeholder `0.0.0-dev`) and local history is retained, and
+`--version` is required when there is none; `--status` reports the missing version without
+reserving or failing, and an explicit version initializes the first release. The highest build number is incremented. Reservations
 in `build/release-auto.json` prevent failed attempts from reusing numbers. Both
 architectures share one number. No previous artifacts are reused; nothing is published.
 Selection happens under the release lock. Keep local history/state when moving to
