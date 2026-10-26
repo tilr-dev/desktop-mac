@@ -48,7 +48,7 @@ def verify(directory, launch=False):
             binary = app / "Contents/MacOS/Tilr"
             run("lipo", binary, "-verify_arch", meta["arch"])
             verify_server(app, meta["version"], meta["build"], meta["arch"])
-            server = app / "Contents/Helpers/tilr-server"
+            server = app / "Contents/Helpers/tilrd"
             run("lipo", server, "-verify_arch", meta["arch"])
             run("codesign", "--verify", "--strict", server)
             if digest(binary) != digest(directory / "Tilr.app/Contents/MacOS/Tilr"):

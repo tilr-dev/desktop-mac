@@ -38,20 +38,20 @@ class PublishTests(unittest.TestCase):
                                TilrServerFeedBaseURL="https://cdn.tilr.dev/server/macos"), file)
         helpers = self.root / "Tilr.app/Contents/Helpers"
         helpers.mkdir()
-        (helpers / "tilr-server").write_bytes(b"server")
+        (helpers / "tilrd").write_bytes(b"server")
         resources = self.root / "Tilr.app/Contents/Resources/server"
         resources.mkdir(parents=True)
         (resources / "app-managed.json").write_text(json.dumps(dict(
             version="0.1.1", build=2, arch="arm64", serverVersion="0.1.1-build2-test",
-            sha256=publish.digest(helpers / "tilr-server"), protocolVersion=2, minAppBuild=1, maxAppBuild=None)))
+            sha256=publish.digest(helpers / "tilrd"), protocolVersion=2, minAppBuild=1, maxAppBuild=None)))
         self.manifest()
 
     def test_server_missing_tampered_or_wrong_build_blocks_publication(self):
         helpers = self.root / "Tilr.app/Contents/Helpers"
-        (helpers / "tilr-server").write_bytes(b"different")
+        (helpers / "tilrd").write_bytes(b"different")
         with self.assertRaisesRegex(ValueError, "server checksum"):
             publish.validate_manifest(self.root)
-        (helpers / "tilr-server").write_bytes(b"server")
+        (helpers / "tilrd").write_bytes(b"server")
         path = self.root / "Tilr.app/Contents/Resources/server/app-managed.json"
         meta = json.loads(path.read_text())
         meta["build"] = 1

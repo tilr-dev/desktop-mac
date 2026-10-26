@@ -63,7 +63,7 @@ struct ServerUpdates {
             throw ServerInstallation.Failure("Server update feed signature is invalid")
         }
         let feed = try JSONDecoder().decode(Feed.self, from: signed.payload)
-        guard feed.schema == 1, feed.component == "tilr-server", feed.arch == arch, feed.channel == channel else {
+        guard feed.schema == 1, feed.component == "tilrd", feed.arch == arch, feed.channel == channel else {
             throw ServerInstallation.Failure("Server update feed is for a different component, architecture or channel")
         }
         var builds = Set<Int>()
@@ -108,7 +108,7 @@ struct ServerUpdates {
     func stage(_ release: Release) async throws -> URL {
         let dir = try temporaryDirectory()
         do {
-            let file = dir.appendingPathComponent("tilr-server")
+            let file = dir.appendingPathComponent("tilrd")
             try await fetch(release.url, to: file, limit: release.size)
             try verifyBinary(Data(contentsOf: file), release: release)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
@@ -128,7 +128,7 @@ struct ServerUpdates {
     }
 
     private func temporaryDirectory() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-server-update-\(UUID().uuidString)")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tilrd-update-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         return dir
     }

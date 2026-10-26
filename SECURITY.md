@@ -7,7 +7,7 @@ and steps to reproduce.
 
 The update channel matters most: a flaw that lets someone serve, replace or sign a Tilr
 update (the Sparkle feed at `cdn.tilr.dev`, its EdDSA signatures, or the bundled
-`tilr-server` feed) is in scope, as is anything that escapes the page sandbox into native
+`tilrd` feed) is in scope, as is anything that escapes the page sandbox into native
 code (the page bridge, native plugins, Tilr Control).
 
 Only the latest release receives fixes.

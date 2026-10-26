@@ -246,7 +246,7 @@ The default instance installs into
 `~/Library/Application Support/dev.tilr.mac/server/` and creates
 `~/Library/LaunchAgents/dev.tilr.server.plist`. It listens on loopback port 7890,
 with private managed state/token and runtime files. The job runs the signed
-`tilr-server` directly (no shell wrapper); panes get the user's login environment
+`tilrd` directly (no shell wrapper); panes get the user's login environment
 because the server starts their shell as a login shell (server 0.1.0 build 3+).
 The plist's `AssociatedBundleIdentifiers` (the app's bundle id, `dev.tilr.mac`) makes Login
 Items and the "Background Items Added" notice show the job as Tilr rather than the signing team
@@ -255,7 +255,7 @@ a zsh one below.
 A plist of ours with another definition (a job written by an earlier Tilr through
 `/bin/zsh -lc 'exec …'` or without the association, a changed port or environment) is
 rewritten and applied. "Ours" = Label `dev.tilr.server` and `ProgramArguments` running the
-installed `tilr-server`, directly or through `/bin/zsh -lc`; any other plist under that name,
+installed `tilrd`, directly or through `/bin/zsh -lc`; any other plist under that name,
 or a loaded job of that name without the file, is refused with a message naming the file.
 launchd keeps a loaded definition until bootout, so applying it means a restart:
 - the job is stopped, or the server reports no live panes → `bootout` + `bootstrap` at once,
@@ -268,7 +268,7 @@ launchd keeps a loaded definition until bootout, so applying it means a restart:
   (minus `OSLogRateLimit` and `XPC_*`, which launchd adds) against the plist; a login that
   loaded the new file counts as applied and clears the marker. The marker decides only when
   that output cannot be parsed.
-"Live panes" comes from `tilr-server ps --url ws://127.0.0.1:<port>` (the protocol's
+"Live panes" comes from `tilrd ps --url ws://127.0.0.1:<port>` (the protocol's
 ListPanes over the server's WebSocket, with the stored token): a header plus one line per pane.
 After every `bootstrap`, a job that `launchctl print` shows loaded without a `pid` is
 `kickstart`ed. Standalone installations are
@@ -298,7 +298,7 @@ non-200 on the binary download is "Server update download failed (HTTP <status>)
 `local_server.enabled: false` in `config.yml` (at launch, or on save: the config is watched), or
 Remove Local Server… in `Tilr > Local Server…` (confirmation: open panes will close), removes
 what the app installed when the plist is ours (see above): `launchctl bootout
-gui/<uid>/dev.tilr.server`, the plist, and in `server/` the binary, `tilr-server.previous`,
+gui/<uid>/dev.tilr.server`, the plist, and in `server/` the binary, `tilrd.previous`,
 `app-managed*.json`, `origins.toml`, `runtime/` and a pending-restart marker. `server/state/`
 (sessions, token, logs) and `server.log` stay. A foreign plist is left alone with a notice.
 Only release builds (with a bundled server) remove, as only they install. The dialog then
@@ -323,7 +323,7 @@ The separate Linux/standalone server updater is unchanged.
 Installation replaces the binary atomically at a fixed path and waits for an
 authenticated response with the expected running version. It never stops a
 running supervisor to upgrade. The server's reload preserves sessions; the old
-binary and its receipt remain as `tilr-server.previous` and
+binary and its receipt remain as `tilrd.previous` and
 `app-managed.previous.json` for manual recovery, not automatic live rollback. A
 transaction journal reconciles interruptions before/after binary replacement on
 the next launch, even when that app bundles an older server. Closing the app leaves terminals running until logout.
@@ -336,10 +336,10 @@ introduced. Test/probe/custom-config instances never manage the production serve
 
 ```sh
 python3 -m unittest discover -s scripts -p 'test_*.py'
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilr-server-installation-tests
-/tmp/tilr-server-installation-tests
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o /tmp/tilr-server-update-tests
-/tmp/tilr-server-update-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
+/tmp/tilrd-installation-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o /tmp/tilrd-update-tests
+/tmp/tilrd-update-tests
 ```
 
 Before public handoff, test first install, a server-only upgrade with an open

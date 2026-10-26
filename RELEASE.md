@@ -237,7 +237,7 @@ restart the user's normal Tilr for release verification.
 ## Next stage
 
 Bundle a version-matched prebuilt web workspace and plugins; then add local
-tilr-server lifecycle management. Keep bundled code read-only, dev workspaces
+tilrd lifecycle management. Keep bundled code read-only, dev workspaces
 external, and coordinate server updates so terminal sessions survive. The server
 must not self-update an executable inside the signed .app.
 

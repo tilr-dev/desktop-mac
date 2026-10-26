@@ -23,12 +23,12 @@ def build_server(destination, arch, version, build, sign, min_app_build=1, max_a
     env = dict(os.environ, TILR_BUILD_VERSION=f"{version}-build{build}", TILR_BUILD_COMMIT=commit,
                MACOSX_DEPLOYMENT_TARGET="14.0")
     target = TARGETS[arch]
-    subprocess.run(["cargo", "build", "--locked", "--release", "-p", "tilr-server", "--target", target,
+    subprocess.run(["cargo", "build", "--locked", "--release", "-p", "tilrd", "--target", target,
                     "--target-dir", str(core / "target")],
                    cwd=core, env=env, check=True)
     destination.mkdir(parents=True, exist_ok=True)
-    binary = destination / "tilr-server"
-    subprocess.run(["ditto", str(core / "target" / target / "release/tilr-server"), str(binary)], check=True)
+    binary = destination / "tilrd"
+    subprocess.run(["ditto", str(core / "target" / target / "release/tilrd"), str(binary)], check=True)
     subprocess.run(["lipo", str(binary), "-verify_arch", arch], check=True)
     strip_executable(binary, destination / "symbols")
     sign(binary)
@@ -45,7 +45,7 @@ def validate_payload(directory, arch, protocol, app_build, manifest_path=None):
         raise ValueError("Bundled server architecture or protocol does not match the application")
     if not meta["minAppBuild"] <= app_build or (meta.get("maxAppBuild") is not None and app_build > meta["maxAppBuild"]):
         raise ValueError("Bundled server does not support this app build")
-    if digest(directory / "tilr-server") != meta["sha256"]:
+    if digest(directory / "tilrd") != meta["sha256"]:
         raise ValueError("Bundled server checksum mismatch")
     return meta
 
@@ -70,9 +70,9 @@ def bundle_server(app, arch, app_build, preview=False, root=ROOT):
     helpers.mkdir(parents=True, exist_ok=True)
     resources = app / "Contents/Resources/server"
     resources.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["ditto", str(directory / "tilr-server"), str(helpers / "tilr-server")], check=True)
+    subprocess.run(["ditto", str(directory / "tilrd"), str(helpers / "tilrd")], check=True)
     subprocess.run(["ditto", str(directory / "app-managed.json"), str(resources / "app-managed.json")], check=True)
-    subprocess.run(["codesign", "--verify", "--strict", str(helpers / "tilr-server")], check=True)
+    subprocess.run(["codesign", "--verify", "--strict", str(helpers / "tilrd")], check=True)
     return meta
 
 
