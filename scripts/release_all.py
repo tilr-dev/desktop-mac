@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from publish import CDN, validate_manifest
+from publish import CDN, sparkle_public_key, validate_manifest
 from release import ROOT, sign
 
 ARCHES = ("arm64", "x86_64")
@@ -70,9 +70,11 @@ def preflight(config, publish, build=True):
         if not build:
             raise ValueError("Sparkle tools missing. Provision the release runner before publishing; publish-only does not resolve/build source dependencies.")
         run(["swift", "package", "resolve"], cwd=ROOT)
-    key = subprocess.check_output([str(tools / "generate_keys"), "--account", "tilr-rexuni", "-p"], text=True).strip()
-    if key != config["TILR_UPDATE_PUBLIC_KEY"]:
-        raise ValueError("Runner's Sparkle key is missing or differs from configured public key")
+    # Only publication signs feeds: a build-only runner embeds the public key and holds no Sparkle key.
+    if publish:
+        key = sparkle_public_key(tools)
+        if key != config["TILR_UPDATE_PUBLIC_KEY"]:
+            raise ValueError("Runner's Sparkle key is missing or differs from configured public key")
     # Exercise the exact facilities which can be absent in an agent sandbox.
     if build:
         with tempfile.TemporaryDirectory(prefix="release-check-", dir=ROOT / "build") as directory:

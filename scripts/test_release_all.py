@@ -213,6 +213,39 @@ class AutomaticReleaseTests(unittest.TestCase):
             release_all.automatic_release(self.root, "invalid")
         self.assertFalse((self.root / "build/release-auto.json").exists())
 
+    def preflight_asks_sparkle(self, key, publish):
+        tools = self.root / ".build/artifacts/sparkle/Sparkle/bin"
+        tools.mkdir(parents=True)
+        (tools / "generate_keys").touch()
+        (self.root / "build").mkdir()
+        config = {"TILR_SIGN_IDENTITY": "Developer ID Application: Test", "TILR_NOTARY_PROFILE": "profile",
+                  "TILR_UPDATE_PUBLIC_KEY": "public"}
+        asked = []
+        def check_output(command, **kwargs):
+            asked.append(command)
+            if command[0] == "security":
+                return '  1) ABC "Developer ID Application: Test"\n'
+            if command[0] == "node":
+                return "v22.0.0\n"
+            return key + "\n"
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.shutil, "which", return_value="/usr/bin/tool"), \
+             patch.object(release_all.subprocess, "check_output", side_effect=check_output), \
+             patch.object(release_all, "run"), patch.object(release_all, "sign"), \
+             redirect_stdout(io.StringIO()):
+            release_all.preflight(config, publish, build=True)
+        return any(str(command[0]).endswith("generate_keys") for command in asked)
+
+    def test_build_only_preflight_needs_no_sparkle_private_key(self):
+        self.assertFalse(self.preflight_asks_sparkle("", publish=False))
+
+    def test_publishing_preflight_checks_the_sparkle_key(self):
+        self.assertTrue(self.preflight_asks_sparkle("public", publish=True))
+
+    def test_publishing_preflight_rejects_another_sparkle_key(self):
+        with self.assertRaisesRegex(ValueError, "Sparkle key"):
+            self.preflight_asks_sparkle("other", publish=True)
+
 
 if __name__ == "__main__":
     unittest.main()

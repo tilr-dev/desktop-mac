@@ -103,6 +103,42 @@ Sparkle, серверному бинарнику и проверке подпи�
 процесса и повторите сборку через описанный выше `--resume`, сохранив завершённую
 архитектуру и переместив незавершённый каталог в архив.
 
+## Релиз из CI
+
+Workflow `Release` (`.github/workflows/release.yml`) делает то же самое на GitHub-hosted
+macOS без релизного Mac. Запуск вручную из `main`: Actions → Release → Run workflow,
+или `gh workflow run release.yml --ref main -f version=0.3.0 -f build=21 -f channel=stable`.
+Номер build — больше всех опубликованных в этом канале: на раннере нет локальной истории,
+поэтому номер не выбирается автоматически; публикация отказывает, если build не новее feed.
+
+1. `server` — сервер из `server-release.json`. Уже опубликован — `fetch_server.py` скачивает
+   его из feed, сверяет checksum и подпись Developer ID; заново не собирается (опубликованный
+   номер не меняет байты). Ещё нет — tilrd с тега `v<version>` компилируется без ключей,
+   затем `release_server.py` подписывает и нотаризует его (`server_min_app_build` — нижняя
+   граница поддерживаемых app build).
+2. `app` — обе архитектуры компилируются без ключей, затем `release_all.py` подписывает,
+   нотаризует и упаковывает DMG. Ключа Sparkle и токена Cloudflare здесь нет.
+3. `publish` — ждёт approve в environment `release`, затем `release_server.py --publish-only`
+   и `release_all.py --publish-only` публикуют те же артефакты. Delta-патчей нет: на раннере
+   нет истории DMG, публикуется полный DMG.
+
+Ключи Apple импортирует во временную связку `scripts/ci-apple-keychain.sh` (профиль
+notarytool `tilr-ci` по ключу App Store Connect API) и удаляет её в конце job. Ключ Sparkle
+в `publish` — файл `TILR_SPARKLE_KEY_FILE` вместо Keychain, без запроса доступа; открытая
+часть проверяется против `TILR_UPDATE_PUBLIC_KEY` (`scripts/sparkle_public_key.swift`).
+
+Секреты (Settings → Environments), заводит Dan:
+
+| Environment | Секрет | Что это |
+|---|---|---|
+| `apple-signing` (только ветка `main`) | `APPLE_CERTIFICATE_P12_BASE64` | `.p12` Developer ID Application с ключом, base64 |
+| | `APPLE_CERTIFICATE_PASSWORD` | пароль `.p12` |
+| | `APPLE_SIGN_IDENTITY` | `Developer ID Application: Rexuni LLC (V57FF3MX26)` |
+| | `APPLE_API_KEY_P8_BASE64` | ключ App Store Connect API (`.p8`, роль Developer), base64 |
+| | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` | Key ID и Issuer ID этого ключа |
+| `release` (обязательный reviewer — Dan, только `main`) | `SPARKLE_PRIVATE_KEY` | `generate_keys --account tilr-rexuni -x FILE`, содержимое файла |
+| | `CLOUDFLARE_API_TOKEN` | токен с записью в R2-бакет `tilr-cdn` |
+
 ## Compact packaging and delta updates (implemented)
 
 New application releases contain only their target architecture, including all

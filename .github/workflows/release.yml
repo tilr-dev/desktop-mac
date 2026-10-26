@@ -1,0 +1,328 @@
+# Releases Tilr from CI (PRODUCTION.md, Release from CI): run it by hand from main with the
+# version, build and channel. Three jobs, so each key is only where it is used:
+# - server: the tilrd pinned in server-release.json. Already published: downloaded and checked,
+#   never rebuilt (a published release number keeps its bytes). Not yet: compiled first, then
+#   signed and notarized with the Developer ID of the apple-signing environment.
+# - app: both architectures compiled, then signed, notarized and packaged into DMGs by
+#   release_all.py; no Sparkle key and no Cloudflare token.
+# - publish: waits for approval in the release environment, then publishes the tested server
+#   and app artifacts unchanged: signed feeds, Sparkle appcast and CDN uploads.
+# No caches: dependency build scripts run on clean runners. Release runs are serialized.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Marketing version (CFBundleShortVersionString), e.g. 0.3.0
+        required: true
+      build:
+        description: App build (CFBundleVersion); greater than every published build
+        required: true
+      channel:
+        description: Update channel
+        type: choice
+        options: [stable, beta]
+        default: stable
+      server_min_app_build:
+        description: Oldest app build the pinned server supports (only when the server is built now)
+        default: '1'
+      notes:
+        description: Release notes shown by Sparkle (plain text, optional)
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Public half of the release key: Sparkle and the server feed (release.local.json locally).
+  TILR_UPDATE_PUBLIC_KEY: pbumHO+mL+o+BzD0cBPPXxHyxkOJzyGtvUSfwr0IvMg=
+  TILR_NOTARY_PROFILE: tilr-ci
+
+jobs:
+  server:
+    # tilrd's own release runner and SDK: Zig builds libghostty-vt with this SDK.
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: apple-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Read the server pin
+        id: pin
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import json
+          pin = json.load(open("server-release.json"))
+          print(f"version={pin['version']}")
+          print(f"build={pin['build']}")
+          EOF
+
+      - name: Reuse the published server
+        id: fetch
+        run: |
+          set +e
+          python3 scripts/fetch_server.py --public-key "$TILR_UPDATE_PUBLIC_KEY"
+          status=$?
+          set -e
+          case $status in
+            0) echo "build=false" >> "$GITHUB_OUTPUT" ;;
+            3) echo "build=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.fetch.outputs.build == 'true'
+        with:
+          repository: tilr-dev/tilrd
+          ref: v${{ steps.pin.outputs.version }}
+          path: tilrd-src
+          persist-credentials: false
+
+      # As in tilrd's release workflow; remove together with its Zig SDK pin.
+      - name: Select macOS 15.4 SDK
+        if: steps.fetch.outputs.build == 'true'
+        run: |
+          echo 'DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer' >> "$GITHUB_ENV"
+          echo 'SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk' >> "$GITHUB_ENV"
+
+      - name: Install Rust, Zig and protoc
+        if: steps.fetch.outputs.build == 'true'
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
+          rustup default stable
+          tilrd-src/scripts/install-tools.sh "$RUNNER_TEMP/tools" zig protoc
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+
+      # The same cargo invocation as bundle_server.build_server, before any key is on the runner;
+      # the signing step below then only finds it up to date.
+      - name: Compile the server
+        if: steps.fetch.outputs.build == 'true'
+        env:
+          VERSION: ${{ steps.pin.outputs.version }}
+          BUILD: ${{ steps.pin.outputs.build }}
+        working-directory: tilrd-src
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            TILR_BUILD_VERSION="$VERSION-build$BUILD" TILR_BUILD_COMMIT="$(git rev-parse --short HEAD)" \
+              MACOSX_DEPLOYMENT_TARGET=14.0 \
+              cargo build --locked --release -p tilrd --target "$target" --target-dir "$PWD/target"
+          done
+
+      - name: Import the Developer ID and notarization key
+        if: steps.fetch.outputs.build == 'true'
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: scripts/ci-apple-keychain.sh import
+
+      - name: Sign and notarize the server
+        if: steps.fetch.outputs.build == 'true'
+        env:
+          TILR_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          VERSION: ${{ steps.pin.outputs.version }}
+          BUILD: ${{ steps.pin.outputs.build }}
+          MIN_APP_BUILD: ${{ inputs.server_min_app_build }}
+        run: |
+          python3 scripts/release_server.py --version "$VERSION" --build "$BUILD" \
+            --min-app-build "$MIN_APP_BUILD" --source tilrd-src
+
+      - name: Remove the keychain
+        if: always()
+        run: scripts/ci-apple-keychain.sh cleanup
+
+      - name: Pack the server
+        run: tar -cf server.tar -C build server-releases
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server
+          path: server.tar
+          if-no-files-found: error
+
+  app:
+    needs: server
+    runs-on: macos-26
+    timeout-minutes: 120
+    environment: apple-signing
+    env:
+      GITPM_DIR: ${{ github.workspace }}/.gitpm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the gitpm pin
+        id: gitpm
+        run: echo "sha=$(grep -v '^#' gitpm.pin | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tilr-dev/gitpm
+          ref: ${{ steps.gitpm.outputs.sha }}
+          path: .gitpm
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Toolchain
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          xcodebuild -version
+          swift --version
+
+      # Before any key is on the runner: the plugin manager, Swift packages and both app
+      # architectures with release.py's own swift invocation, so signing finds them up to date.
+      - name: Compile
+        run: |
+          scripts/build-gitpm.sh --arch arm64 --arch x86_64
+          swift package resolve
+          export CLANG_MODULE_CACHE_PATH="$PWD/.build/ModuleCache"
+          export SWIFTPM_MODULECACHE_OVERRIDE="$CLANG_MODULE_CACHE_PATH"
+          for arch in arm64 x86_64; do
+            swift build --package-path "$PWD" --scratch-path "$PWD/.build/release-$arch" -c release \
+              --build-system native --arch "$arch"
+          done
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: server
+
+      - name: Unpack the server
+        run: |
+          mkdir -p build
+          tar -xf server.tar -C build
+          rm server.tar
+
+      - name: Import the Developer ID and notarization key
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: scripts/ci-apple-keychain.sh import
+
+      - name: Sign, notarize and package both architectures
+        env:
+          TILR_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          CHANNEL: ${{ inputs.channel }}
+        run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL"
+
+      - name: Remove the keychain
+        if: always()
+        run: scripts/ci-apple-keychain.sh cleanup
+
+      # The publish job needs the completed releases and the Sparkle tools resolved here.
+      - name: Pack the app
+        env:
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+        run: |
+          tar -cf app.tar "build/releases/$VERSION-$BUILD-arm64" "build/releases/$VERSION-$BUILD-x86_64" \
+            .build/artifacts/sparkle/Sparkle/bin
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app
+          path: app.tar
+          if-no-files-found: error
+
+  publish:
+    needs: [server, app]
+    runs-on: macos-26
+    timeout-minutes: 30
+    # Required reviewer: nothing is published before Dan approves the tested artifacts.
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@4.38.0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: server
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app
+
+      - name: Unpack the releases
+        run: |
+          mkdir -p build
+          tar -xf server.tar -C build
+          tar -xf app.tar
+          rm server.tar app.tar
+
+      # A key file instead of a Keychain item: no access prompt on an unattended runner.
+      - name: Write the Sparkle key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          : "${SPARKLE_PRIVATE_KEY:?set the SPARKLE_PRIVATE_KEY secret of the release environment}"
+          umask 077
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle.key"
+          echo "TILR_SPARKLE_KEY_FILE=$RUNNER_TEMP/sparkle.key" >> "$GITHUB_ENV"
+
+      # A server that was downloaded is already in its feed: publication only verifies it.
+      - name: Publish the server
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          read -r version build < <(python3 -c 'import json; p = json.load(open("server-release.json")); print(p["version"], p["build"])')
+          python3 scripts/release_server.py --version "$version" --build "$build" --publish-only
+
+      - name: Publish the app
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          CHANNEL: ${{ inputs.channel }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          notes=()
+          if [ -n "$NOTES" ]; then
+            printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.txt"
+            notes=(--notes "$RUNNER_TEMP/notes.txt")
+          fi
+          python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL" \
+            --publish-only "${notes[@]}"
+          cat "build/releases/$VERSION-$BUILD-$CHANNEL-downloads.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the Sparkle key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sparkle.key"
