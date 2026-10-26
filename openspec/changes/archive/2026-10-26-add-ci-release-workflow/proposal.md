@@ -1,7 +1,7 @@
 # Release Tilr from CI
 
 ## Why
-Releases are built and published only from the release Mac (`release.command`, local Keychain, notarytool profile, Sparkle key, Wrangler login). Dan decided that Tilr is built, signed, notarized and published from CI on GitHub-hosted macOS, with Sparkle signing in an approved publish job (decision 2026-10-16; TILR-544).
+Releases are built and published only from the release Mac (`release.command`, local Keychain, notarytool profile, Sparkle key, Wrangler login). Dan decided that Tilr is built, signed, notarized and published from CI on GitHub-hosted macOS, with Sparkle signing in an approved publish job (decision 2026-10-16).
 
 ## What Changes
 - A manual `Release` workflow with three jobs: server (reuse the published pinned server or build, sign and notarize it), app (build, sign, notarize, package both DMGs), publish (after approval in the `release` environment, publish the tested artifacts unchanged).
