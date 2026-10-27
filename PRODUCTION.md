@@ -467,10 +467,10 @@ permissions. See [AGENT_RELEASE.md](AGENT_RELEASE.md).
 ## 2. Build both production DMGs, without publishing
 
 ```sh
-python3 scripts/release_all.py --version 0.1.0 --build 1 --channel stable
+python3 scripts/release_all.py --version 0.1.0 --build 1 --channel beta
 ```
 
-Or open `release.command` for an automatic build. It also never publishes. The command
+Or run `./release.command --channel beta` for an automatic build. It also never publishes. The command
 builds both architectures, signs them with Developer ID, notarizes/staples them,
 and creates each DMG. Apple receives the binaries for notarization; nothing is
 uploaded to the public Tilr CDN and existing update feeds remain unchanged.
@@ -570,7 +570,7 @@ On success, the two website download URLs are printed and saved in
 buttons can use these URLs. The scripts do not edit or deploy the website itself.
 
 Next release: increase build (for example `0.1.1`, build `2`) and repeat build → test
-→ publish-only. For a bad published release, fix/revert the source and use a HIGHER
+→ publish-only, keeping `--channel beta` for both build and publication. For a bad published release, fix/revert the source and use a HIGHER
 build number. Keep the same bundle ID, feed URLs and normal signing keys.
 
 ## Current setup status
