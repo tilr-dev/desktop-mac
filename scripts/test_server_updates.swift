@@ -26,6 +26,9 @@ import CryptoKit
         let feed = try updater.decode(wire)
         expect(try updater.candidate(in: feed, installed: initial)?.manifest.build == 4)
         expect(try updater.candidate(in: feed, installed: release(7).manifest) == nil)
+        // Ordinary installations without feed receipts must not be offered older releases.
+        let ordinary = ServerInstallation.Manifest(version: "9.0", build: 0, arch: "arm64", serverVersion: "9.0-new", sha256: hash, protocolVersion: 1, minAppBuild: 0, maxAppBuild: nil)
+        expect(try updater.candidate(in: feed, installed: ordinary) == nil)
         // App and server build numbers have no ordering relationship.
         expect(release(500).manifest.supports(appBuild: 10, protocolVersion: 1, arch: "arm64"))
         for protocolVersion in [0, 2, 3] {

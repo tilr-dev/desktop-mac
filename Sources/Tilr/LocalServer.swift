@@ -29,7 +29,7 @@ final class LocalServerHost: NSObject {
         #endif
     }
 
-    /// `local_server.enabled: false` removes what the app installed, at launch and on config reload.
+    /// `local_server.enabled: false` disables application integration without removing the shared daemon.
     func start(settings: Config.LocalServer, origins: [String], allowed: Bool) {
         guard allowed, !CommandLine.arguments.contains("--no-local-server") else { return }
         guard let bundle = Bundle.main.resourceURL?.deletingLastPathComponent(),
@@ -39,18 +39,19 @@ final class LocalServerHost: NSObject {
             return
         }
         guard settings.enabled else {
-            let install = makeInstallation(bundle: bundle, settings: settings, origins: origins, appBuild: 0, protocolVersion: 0)
-            if installation == nil { installation = install }
-            uninstall(install, userInitiated: false)
+            timer?.invalidate()
+            timer = nil
+            result = .success(nil)
+            status = "Local server integration is disabled."
             return
         }
-        guard settings.port > 0, settings.commandTimeout > 0, settings.startupTimeout > 0, settings.retryInterval > 0,
+        guard settings.port == 7890, settings.commandTimeout > 0, settings.startupTimeout > 0, settings.retryInterval > 0,
               settings.checkInterval > 0, settings.downloadTimeout > 0, settings.maxFeedBytes > 0, settings.maxDownloadBytes > 0,
               ["stable", "beta"].contains(settings.updateChannel),
               let appBuildText = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
               let appBuild = Int(appBuildText),
               let protocolVersion = Bundle.main.object(forInfoDictionaryKey: "TilrServerProtocolVersion") as? Int else {
-            finish(.failure(ServerInstallation.Failure("Invalid local_server configuration or missing release compatibility metadata.")))
+            finish(.failure(ServerInstallation.Failure("Invalid local_server configuration (port must be 7890) or missing release compatibility metadata.")))
             return
         }
         self.settings = settings
@@ -87,7 +88,7 @@ final class LocalServerHost: NSObject {
         }
     }
 
-    /// The config file changed: `enabled: false` removes the service now; `true` installs it when
+    /// The config file changed: `enabled: false` disables integration; `true` discovers the daemon when
     /// this run has not (it was off at launch, or removed since).
     func configChanged(settings: Config.LocalServer, origins: [String], allowed: Bool) {
         guard !starting, !busy else { return }
@@ -99,9 +100,9 @@ final class LocalServerHost: NSObject {
     private func makeInstallation(bundle: URL, settings: Config.LocalServer, origins: [String],
                                   appBuild: Int, protocolVersion: Int) -> ServerInstallation {
         var install = ServerInstallation(source: bundle.appendingPathComponent("Helpers"),
-            root: Config.defaultDir.appendingPathComponent("server"),
+            root: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin"),
             agents: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents"),
-            label: "dev.tilr.server", port: settings.port, timeout: settings.commandTimeout,
+            label: "sh.tilr.tilrd", port: 7890, timeout: settings.commandTimeout,
             origins: Array(Set(origins)), appBuild: appBuild, protocolVersion: protocolVersion, architecture: Self.architecture,
             sourceManifest: bundle.appendingPathComponent("Resources/server/app-managed.json"))
         install.progress = Self.report
@@ -251,6 +252,9 @@ final class LocalServerHost: NSObject {
                     origins: installation.origins, appBuild: installation.appBuild,
                     protocolVersion: installation.protocolVersion, architecture: installation.architecture)
                 staged.progress = installation.progress
+                staged.selection = installation.selection
+                staged.socketPath = installation.socketPath
+                staged.updateRequested = true
                 let (installed, credentials) = try await Self.prepare(staged, settings)
                 manifest = installed
                 available = nil
@@ -299,9 +303,7 @@ final class LocalServerHost: NSObject {
         Task { @MainActor in
             let (runningVersion, pending): (String?, Bool) = await withCheckedContinuation { reply in
                 DispatchQueue.global(qos: .utility).async {
-                    let response = try? installation.command(installation.binary,
-                        ["ps", "--url", installation.endpoint, "--server-version"])
-                    reply.resume(returning: (response?.status == 0 ? response?.text : nil, installation.restartPending()))
+                    reply.resume(returning: (try? installation.runningVersion(), installation.restartPending()))
                 }
             }
             checkingStatus = false
@@ -324,7 +326,9 @@ final class LocalServerHost: NSObject {
             buttons.append(("Refresh", { [weak self] in self?.showStatus() }))
             if let available, !busy { buttons.append(("Update Server…", { [weak self] in self?.offer(available) })) }
             if pending { buttons.append(("Restart Server…", { [weak self] in self?.confirmRestart() })) }
-            buttons.append(("Remove Local Server…", { [weak self] in self?.confirmRemove() }))
+            if installation?.installedByApp == true {
+                buttons.append(("Remove Local Server…", { [weak self] in self?.confirmRemove() }))
+            }
         }
         buttons.forEach { alert.addButton(withTitle: $0.0) }
         let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
@@ -344,7 +348,7 @@ final class LocalServerHost: NSObject {
         guard let installation else { return }
         let alert = NSAlert()
         alert.messageText = "Remove the local server?"
-        alert.informativeText = "Tilr stops the service, removes it from Login Items and deletes the installed server. Open terminal panes will close. Sessions, tokens and logs in \(installation.state.path) are kept.\n\nThe next launch installs it again unless local_server.enabled is false in config.yml."
+        alert.informativeText = "Tilr removes the ordinary service's startup definition and the executables it installed. The running server and its panes remain until it exits. Sessions, tokens and logs in \(installation.state.path) are kept.\n\nThe next launch installs it again unless local_server.enabled is false in config.yml."
         alert.addButton(withTitle: "Remove").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn { uninstall(installation, userInitiated: true) }

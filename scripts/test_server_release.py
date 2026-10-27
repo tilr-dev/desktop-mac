@@ -33,6 +33,9 @@ class IndependentServerReleaseTests(unittest.TestCase):
             shutil.copyfile("/usr/bin/true", binary)
             binary.chmod(0o755)
             subprocess.run(["codesign", "--force", "--sign", "-", str(binary)], check=True, capture_output=True)
+            shutil.copyfile(binary, artifact / "tilr")
+            (artifact / "tilr").chmod(0o755)
+            (artifact / "client.json").write_text(json.dumps(dict(version="0.1.0-test", sha256=bundle_server.digest(binary))))
             meta = self.manifest(1)
             meta["sha256"] = bundle_server.digest(binary)
             (artifact / "app-managed.json").write_text(json.dumps(meta))
@@ -66,6 +69,8 @@ class IndependentServerReleaseTests(unittest.TestCase):
             directory = root / "build/server-releases/0.1.0-1-arm64"
             directory.mkdir(parents=True)
             (directory / "tilrd").write_bytes(b"immutable signed executable")
+            (directory / "tilr").write_bytes(b"immutable signed client")
+            (directory / "client.json").write_text(json.dumps(dict(version="0.1.0-test", sha256=bundle_server.digest(directory / "tilr"))))
             meta = self.manifest(1)
             meta["sha256"] = bundle_server.digest(directory / "tilrd")
             (directory / "app-managed.json").write_text(json.dumps(meta))
@@ -81,9 +86,11 @@ class IndependentServerReleaseTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "App.app/Contents/Resources/server/app-managed.json").read_text()), meta)
             self.assertEqual(result["build"], 1)
             self.assertEqual(result["version"], "0.1.0")
-            self.assertEqual([c[0] for c in calls], ["ditto", "ditto", "codesign"])
+            self.assertEqual([c[0] for c in calls], ["ditto", "ditto", "ditto", "ditto", "codesign", "codesign"])
             self.assertNotIn("--sign", calls[-1])
             self.assertEqual((root / "App.app/Contents/Helpers/tilrd").read_bytes(), (directory / "tilrd").read_bytes())
+            self.assertEqual((root / "App.app/Contents/Helpers/tilr").read_bytes(), (directory / "tilr").read_bytes())
+            self.assertEqual((root / "App.app/Contents/Resources/server/client.json").read_bytes(), (directory / "client.json").read_bytes())
 
     def test_app_compatibility_and_tampering(self):
         with tempfile.TemporaryDirectory() as temp:

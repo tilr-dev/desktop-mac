@@ -45,9 +45,12 @@ def bundle_server(app, arch, app_build, preview=False, root=ROOT):
     helpers.mkdir(parents=True, exist_ok=True)
     resources = app / "Contents/Resources/server"
     resources.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["ditto", str(directory / "tilrd"), str(helpers / "tilrd")], check=True)
+    for executable in ("tilrd", "tilr"):
+        subprocess.run(["ditto", str(directory / executable), str(helpers / executable)], check=True)
     subprocess.run(["ditto", str(directory / "app-managed.json"), str(resources / "app-managed.json")], check=True)
-    subprocess.run(["codesign", "--verify", "--strict", str(helpers / "tilrd")], check=True)
+    subprocess.run(["ditto", str(directory / "client.json"), str(resources / "client.json")], check=True)
+    for executable in ("tilrd", "tilr"):
+        subprocess.run(["codesign", "--verify", "--strict", str(helpers / executable)], check=True)
     return meta
 
 
@@ -58,6 +61,12 @@ def verify_server(app, version, build, arch):
         raise ValueError("App does not configure the independent signed server feed")
     meta = validate_payload(app / "Contents/Helpers", arch, info["TilrServerProtocolVersion"], build,
                             app / "Contents/Resources/server/app-managed.json")
+    client = json.loads((app / "Contents/Resources/server/client.json").read_text())
+    if client.get("version") != meta["serverVersion"] or digest(app / "Contents/Helpers/tilr") != client.get("sha256"):
+        raise ValueError("Bundled client differs from the pinned upstream release")
+    from fetch_server import check_binary
+    if check_binary(app / "Contents/Helpers/tilr", arch, meta["version"], "tilr") != client["version"]:
+        raise ValueError("Bundled client version differs from its receipt")
     if meta["build"] != info["TilrBundledServerBuild"] or meta["version"] != info["TilrBundledServerVersion"]:
         raise ValueError("Bundled server differs from the app's pinned server release")
     return meta

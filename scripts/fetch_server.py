@@ -32,7 +32,7 @@ def check_signature(binary):
         raise ValueError("Server requires the expected Developer ID Application signature and timestamp")
 
 
-def check_binary(binary, arch, version):
+def check_binary(binary, arch, version, executable="tilrd"):
     actual = subprocess.check_output(["lipo", "-archs", str(binary)], text=True).strip()
     if actual != arch:
         raise ValueError(f"Server architecture differs from {arch}: {actual}")
@@ -49,7 +49,7 @@ def check_binary(binary, arch, version):
     native = "arm64" if platform.machine() in ("arm64", "aarch64") else "x86_64"
     if arch == native:
         output = subprocess.check_output([str(binary), "--version"], text=True).strip()
-        if output != f"tilrd {identity} (macos-{cpu})":
+        if output != f"{executable} {identity} (macos-{cpu})":
             raise ValueError("Server reports an unexpected upstream version")
     return identity
 
@@ -70,26 +70,36 @@ def prepare(temp, arch, version, build, protocol, min_app_build, max_app_build):
             path = PurePosixPath(member.name)
             if not path.parts or path.is_absolute() or ".." in path.parts or path.parts[0] != name or not (member.isfile() or member.isdir()):
                 raise ValueError("Unsafe upstream archive entry")
-        servers = [m for m in members if m.name == f"{name}/tilrd"]
-        if len(servers) != 1 or not servers[0].isfile():
-            raise ValueError("Archive must contain one regular tilrd executable")
-        binary = temp / f"tilrd-{arch}"
-        with tar.extractfile(servers[0]) as source:
-            binary.write_bytes(source.read())
-    binary.chmod(0o755)
-    identity = check_binary(binary, arch, version)
+        binaries = {}
+        for executable in ("tilrd", "tilr"):
+            entries = [m for m in members if m.name == f"{name}/{executable}"]
+            if len(entries) != 1 or not entries[0].isfile():
+                raise ValueError(f"Archive must contain one regular {executable} executable")
+            binary = temp / f"{executable}-{arch}"
+            with tar.extractfile(entries[0]) as source:
+                binary.write_bytes(source.read())
+            binary.chmod(0o755)
+            binaries[executable] = binary
+    identity = check_binary(binaries["tilrd"], arch, version)
+    client_identity = check_binary(binaries["tilr"], arch, version, "tilr")
+    if client_identity != identity:
+        raise ValueError("Client and server upstream versions differ")
+    binary = binaries["tilrd"]
     manifest = dict(version=version, build=build, arch=arch, serverVersion=identity, sha256=digest(binary),
                     protocolVersion=protocol, minAppBuild=min_app_build, maxAppBuild=max_app_build)
     provenance = dict(url=url, sha256=expected[1].lower())
-    return binary, manifest, provenance
+    return binaries, manifest, provenance
 
 
-def install(destination, binary, manifest, provenance, public_key):
+def install(destination, binaries, manifest, provenance, public_key):
     destination.mkdir(parents=True, exist_ok=False)
-    shutil.copy2(binary, destination / "tilrd")
+    for executable, binary in binaries.items():
+        shutil.copy2(binary, destination / executable)
+    client = dict(version=manifest["serverVersion"], sha256=digest(destination / "tilr"))
+    (destination / "client.json").write_text(json.dumps(client, indent=2) + "\n")
     (destination / "app-managed.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (destination / "sizes.json").write_text(json.dumps(dict(architecture=manifest["arch"], binary_bytes=(destination / "tilrd").stat().st_size), indent=2) + "\n")
-    receipt = dict(preview=False, manifest=manifest, public_key=public_key, upstream=provenance)
+    receipt = dict(preview=False, manifest=manifest, public_key=public_key, upstream=provenance, client=client)
     (destination / "release.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
@@ -116,6 +126,12 @@ def validate_completed(directory, version, build, arch, protocol, public_key=Non
         raise ValueError("Server changed after acquisition")
     if check_binary(directory / "tilrd", arch, version) != manifest["serverVersion"]:
         raise ValueError("Server version differs from the completed receipt")
+    client = json.loads((directory / "client.json").read_text())
+    if (receipt.get("client") != client or client.get("version") != manifest["serverVersion"]
+            or digest(directory / "tilr") != client.get("sha256")):
+        raise ValueError("Client changed after acquisition")
+    if check_binary(directory / "tilr", arch, version, "tilr") != client["version"]:
+        raise ValueError("Client version differs from the completed receipt")
     return manifest
 
 

@@ -44,9 +44,10 @@ def verify(directory, launch=False):
             binary = app / "Contents/MacOS/Tilr"
             run("lipo", binary, "-verify_arch", meta["arch"])
             verify_server(app, meta["version"], meta["build"], meta["arch"])
-            server = app / "Contents/Helpers/tilrd"
-            run("lipo", server, "-verify_arch", meta["arch"])
-            run("codesign", "--verify", "--strict", server)
+            for executable in ("tilrd", "tilr"):
+                helper = app / "Contents/Helpers" / executable
+                run("lipo", helper, "-verify_arch", meta["arch"])
+                run("codesign", "--verify", "--strict", helper)
             if digest(binary) != digest(directory / "Tilr.app/Contents/MacOS/Tilr"):
                 raise ValueError("DMG contains a different application executable")
             if launch:
