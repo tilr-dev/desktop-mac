@@ -20,14 +20,36 @@ class ReleaseAllTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.config = {"TILR_UPDATE_PUBLIC_KEY": "public"}
 
-    def test_direct_stable_publication_has_no_effects(self):
-        for options in (dict(publish=True), dict(publish_only=True), dict(publish=True, publish_only=True)):
-            with self.subTest(options=options), patch.object(release_all, "completed") as completed, \
-                 self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
-                release_all.execute("0.1.0", 1, "stable", self.config, root=self.root,
-                                    runner=lambda *a, **kw: self.fail("Must not run a build or publisher"), **options)
-            completed.assert_not_called()
-            self.assertEqual(list(self.root.iterdir()), [])
+    def test_direct_non_beta_publication_has_no_effects(self):
+        for channel in ("stable", "STABLE", "", None):
+            for options in (dict(publish=True), dict(publish_only=True), dict(publish=True, publish_only=True)):
+                with self.subTest(channel=channel, options=options), patch.object(release_all, "completed") as completed, \
+                     self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
+                    release_all.execute("0.1.0", 1, channel, self.config, root=self.root,
+                                        runner=lambda *a, **kw: self.fail("Must not run a build or publisher"), **options)
+                completed.assert_not_called()
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_unknown_saved_channel_cannot_route_publication_to_stable(self):
+        saved = self.root / "build/latest-app-release.json"
+        saved.parent.mkdir()
+        for channel in ("STABLE", "", None):
+            with self.subTest(channel=channel):
+                saved.write_text(json.dumps(dict(version="0.3.0", build=21, channel=channel)))
+                before = saved.read_bytes()
+                # These values all select stable in feed_for, so reject them before
+                # entering any credential or publication boundary.
+                self.assertEqual(release_all.feed_for("arm64", channel), release_all.feed_for("arm64", "stable"))
+                with patch.object(release_all, "ROOT", self.root), \
+                     patch.object(release_all.sys, "argv", ["release_all.py", "--latest", "--publish-only"]), \
+                     patch.object(release_all, "settings", side_effect=AssertionError("Reached credential preflight")) as settings, \
+                     patch.object(release_all, "execute") as execute, \
+                     self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
+                    release_all.main()
+                settings.assert_not_called()
+                execute.assert_not_called()
+                self.assertEqual(saved.read_bytes(), before)
+                self.assertEqual(list(saved.parent.iterdir()), [saved])
 
     def test_cli_refuses_explicit_and_saved_stable_before_preflight(self):
         for mode in ("--publish", "--publish-only"):

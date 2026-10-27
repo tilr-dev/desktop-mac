@@ -98,7 +98,7 @@ def completed(directory, version, build, arch, feed, key):
 
 
 def require_beta_publication(channel, publishing):
-    if publishing and channel == "stable":
+    if publishing and channel != "beta":
         raise ValueError("Stable publication requires promotion of a verified CI RC; direct stable publication is disabled")
 
 
