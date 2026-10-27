@@ -107,10 +107,18 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **THEN** the check fails with an error instead of treating it as a new capability
 - **AND** the same applies when a delta in the task's own change names a capability that differs from an existing one only by letter case or Unicode form
 
+## REMOVED Requirements
+
 ### Requirement: Specification merge readiness diagnostics
+**Reason**: It and its conflict scenario are named after the removed development branch, and a modification cannot rename a scenario.
+**Migration**: Specification merge readiness diagnostics on main replaces it with main as the base branch.
+
+## ADDED Requirements
+
+### Requirement: Specification merge readiness diagnostics on main
 Before fetching a pull request test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission. It SHALL distinguish a conflict with main from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
 
-#### Scenario: Pull request conflicts with dev
+#### Scenario: Pull request conflicts with main
 - **WHEN** the API reports mergeable false for a head SHA matching the requested candidate SHA
 - **THEN** the check fails immediately with a conflict diagnostic naming the task branch and instructing the author to merge main with `git merge main` and push
 - **AND** it does not advise re-running the job
