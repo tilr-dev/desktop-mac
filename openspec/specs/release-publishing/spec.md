@@ -25,7 +25,7 @@ Release tools SHALL use existing authorized credentials without printing secrets
 - **AND** its public key, derived from the file, must equal the configured public key before publication
 
 ### Requirement: Immutable publication with feed last
-App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
+Direct app publication SHALL target beta only; stable SHALL require promotion of a verified CI release candidate, with no emergency flag or environment override. App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
 
 #### Scenario: Publish a pair
 - **WHEN** release_all.py publishes or --publish-only is used
@@ -38,6 +38,11 @@ App publication SHALL validate completed receipts and exact artifacts, upload im
 - **AND** a CDN rule overriding origin cache headers must exclude mac/**/appcast.xml before distribution; signed DMGs/bundles are never edited after appcast generation, and changed contents require rebuilding/signing/notarization
 - **AND** --notes may embed release notes; a changed archive at an existing URL or an attempted downgrade/newer-feed overwrite is rejected
 - **AND** failed builds publish neither architecture; serial feed writes are not atomic, require one release runner and are not coordinated across Macs by the local lock
+
+#### Scenario: Reject direct stable publication
+- **WHEN** release_all.py --publish or --publish-only selects stable, explicitly or through build/latest-app-release.json (including upload.command)
+- **THEN** it stops with an error explaining that stable requires promotion of a verified CI RC, before any CDN upload or feed change
+- **AND** local beta publication retains its existing behavior
 
 ### Requirement: Verified resume and downloads evidence
 Publication SHALL resume idempotently only from completed artifacts matching the requested metadata and publicly verified bytes.
@@ -107,16 +112,16 @@ Release apps SHALL use Sparkle pinned to 2.10.0 in Package.swift/Package.resolve
 - **AND** subsequent fresh appcast checks use the stable feed; switching the preference does not cancel the prepared installer
 
 ### Requirement: Release from CI
-The Release workflow SHALL build, sign, notarize and publish both app architectures and acquire the pinned signed/notarized upstream server on GitHub-hosted macOS, run by hand from a release/X.Y branch, each key only in the job that uses it.
+The Release workflow SHALL build, sign, notarize and publish both app architectures and acquire the pinned signed/notarized upstream server on GitHub-hosted macOS, publish only release candidates to beta, run by hand from a release/X.Y branch, each key only in the job that uses it.
 
 #### Scenario: Run a CI release
-- **WHEN** Release runs with version, channel and an optional build
+- **WHEN** Release runs with numeric marketing version X.Y.Z, a positive RC number N and an optional build (without a channel input)
 - **THEN** the app job acquires the pinned tilrd GitHub Release for both architectures, verifies the archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
-- **AND** the publish job waits for approval in the release environment and publishes those artifacts with --publish-only, holding the Sparkle key and the R2 keys but no Apple keys
-- **AND** the app job resolves one build before packaging: the highest published build across both architecture appcasts of that channel plus one when the build input is empty, or the explicit build after checking it exceeds that maximum
+- **AND** the publish job waits for approval in the release environment and publishes those artifacts to beta with --publish-only, holding the Sparkle key and the R2 keys but no Apple keys
+- **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one when the build input is empty, or the explicit build after checking it exceeds that maximum
 - **AND** that build is logged and passed explicitly to both architecture builds and publication, without changing local release numbering
-- **AND** after successful CDN publication the publish job creates tag v<version> on the workflow commit and a GitHub Release named Tilr <version> (<build>), with both unchanged DMGs from the app artifact and the notes input
+- **AND** after successful CDN publication the publish job creates tag vX.Y.Z-rc.N on the workflow commit and a GitHub pre-release (--prerelease) named Tilr X.Y.Z-rc.N (<build>), with both unchanged DMGs from the app artifact and the notes input
 - **AND** only the publish job has contents: write; the workflow commits no repository changes
 
 #### Scenario: Run from a branch other than a release branch
@@ -125,11 +130,16 @@ The Release workflow SHALL build, sign, notarize and publish both app architectu
 - **AND** the apple-signing and release environments accept only release/* branches, so a job with keys cannot run from another ref either
 
 #### Scenario: Resolve a build from channel appcasts
-- **WHEN** the two architecture appcasts contain different builds or multiple historical releases
-- **THEN** numbering uses the highest build across every entry in both appcasts of the selected channel
+- **WHEN** the four stable/beta architecture appcasts contain different builds or multiple historical releases
+- **THEN** numbering uses the highest build across every entry in all four appcasts
 - **AND** a missing appcast contributes no builds, but network, HTTP errors other than missing feeds, malformed XML or invalid build values stop the run rather than guessing a number
 - **AND** an explicit build not greater than the published maximum is rejected
 
 #### Scenario: Protect an existing version tag
-- **WHEN** v<version> already exists during GitHub publication
+- **WHEN** vX.Y.Z-rc.N already exists during GitHub publication
 - **THEN** the run stops with a clear error without updating or deleting the tag or changing an existing GitHub Release
+
+#### Scenario: Keep the marketing version numeric
+- **WHEN** an RC is built with version X.Y.Z and RC number N
+- **THEN** CFBundleShortVersionString and both DMG names use X.Y.Z without an RC suffix
+- **AND** the RC suffix appears only in the Git tag and GitHub pre-release metadata
