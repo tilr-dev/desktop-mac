@@ -1,4 +1,8 @@
 import io
+import os
+import shutil
+from contextlib import ExitStack
+import release
 from contextlib import redirect_stdout
 import plistlib
 import json
@@ -29,6 +33,71 @@ class ReleaseAllTests(unittest.TestCase):
             self.assertEqual(kw["env"]["TILR_UPDATE_FEED"], f"https://cdn.tilr.dev/mac/{arch}/appcast.xml")
         self.assertTrue(all("--publish" not in cmd for cmd, _ in calls[2:4]))
         self.assertTrue(all("--publish" in cmd for cmd, _ in calls[4:]))
+
+    def test_channels_package_identical_plists_with_only_receipt_routing(self):
+        template = (release.ROOT / "Info.plist").read_bytes()
+        outputs = {}
+        for channel in ("stable", "beta"):
+            root = self.root / channel
+            root.mkdir()
+            (root / "Info.plist").write_bytes(template)
+            (root / "Resources").mkdir()
+            (root / "Resources/AppIcon.icns").write_bytes(b"icon")
+            (root / "placeholder.html").write_text("placeholder")
+            binary_dir = root / "binary"
+            binary_dir.mkdir()
+            (binary_dir / "Tilr").write_bytes(b"compiled app")
+            framework = root / "framework"
+            framework.mkdir()
+            config = dict(TILR_UPDATE_PUBLIC_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                          TILR_SIGN_IDENTITY="Developer ID Application: Test",
+                          TILR_NOTARY_PROFILE="test-profile")
+
+            def platform_run(*args, **kwargs):
+                args = list(map(str, args))
+                if args[0] == "ditto":
+                    if "-c" in args:
+                        Path(args[-1]).write_bytes(b"notarization archive")
+                    elif Path(args[1]).is_dir():
+                        shutil.copytree(args[1], args[2])
+                    else:
+                        shutil.copy2(args[1], args[2])
+                elif args[:2] == ["hdiutil", "create"]:
+                    Path(args[-1]).write_bytes(b"completed dmg")
+
+            def runner(command, env):
+                argv = [str(x) for x in command[1:]] + ["--skip-build", "--framework", str(framework)]
+                with patch.object(release.sys, "argv", argv), patch.dict(os.environ, env, clear=True):
+                    release.main()
+
+            previous_cwd = Path.cwd()
+            try:
+                with ExitStack() as stack, redirect_stdout(io.StringIO()):
+                    stack.enter_context(patch.object(release, "ROOT", root))
+                    stack.enter_context(patch.object(release, "run", side_effect=platform_run))
+                    stack.enter_context(patch.object(release.subprocess, "check_output", side_effect=
+                        lambda cmd, **kw: str(binary_dir) if "--show-bin-path" in cmd else "checksum"))
+                    for name in ("strip_executable", "embed_framework", "audit", "sign", "size_report"):
+                        stack.enter_context(patch.object(release, name))
+                    for name in ("bundle_plugins", "verify_plugin_publishers"):
+                        stack.enter_context(patch("bundle_plugins." + name))
+                    stack.enter_context(patch("bundle_plugins.plugin_inventory", return_value=[]))
+                    stack.enter_context(patch("bundle_server.bundle_server", return_value=
+                        dict(protocolVersion=1, build=1, version="0.1.0")))
+                    stack.enter_context(patch.object(release_all, "completed", return_value=[]))
+                    directories = release_all.execute("0.1.0", 1, channel, config, root=root, runner=runner)
+                outputs[channel] = []
+                for directory in directories:
+                    data = (directory / "Tilr.app/Contents/Info.plist").read_bytes()
+                    info = plistlib.loads(data)
+                    self.assertNotIn("SUFeedURL", info)
+                    self.assertEqual(info["TilrUpdateFeedSelection"], "preferences")
+                    receipt = json.loads((directory / "release.json").read_text())
+                    self.assertEqual(receipt["feed"], release_all.feed_for(receipt["arch"], channel))
+                    outputs[channel].append(data)
+            finally:
+                os.chdir(previous_cwd)
+        self.assertEqual(outputs["stable"], outputs["beta"])
 
     def test_second_build_failure_publishes_nothing(self):
         calls = []

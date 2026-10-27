@@ -5,18 +5,68 @@ import UserNotifications
 /// Retain one instance for the application's lifetime. Sparkle owns download,
 /// signature verification, installation and relaunch; this module owns reminders.
 /// The host must forward notification callbacks here if it supplies its own delegate.
-public final class AppUpdates: NSObject, SPUStandardUserDriverDelegate, UNUserNotificationCenterDelegate {
-    public private(set) var controller: SPUStandardUpdaterController!
+public final class AppUpdates: NSObject, SPUStandardUserDriverDelegate, UNUserNotificationCenterDelegate, NSMenuItemValidation {
+    @objc public dynamic private(set) var controller: SPUStandardUpdaterController!
     private let center = UNUserNotificationCenter.current()
     private let identifier = "app-update-available"
     private var notificationsAllowed = false
     private var pendingVersion: String?
     private var started = false
+    public let preferences: UpdatePreferences
+    private let feedDelegate: UpdateFeedDelegate
+    private var settings: UpdateSettings?
+    private var sessionObserver: NSKeyValueObservation?
+    private var currentFeed: String
 
-    public init(updaterDelegate: SPUUpdaterDelegate? = nil) {
+    public init(updaterDelegate: SPUUpdaterDelegate? = nil, preferences: UpdatePreferences = UpdatePreferences()) {
+        self.preferences = preferences
+        currentFeed = preferences.feedURL
+        feedDelegate = UpdateFeedDelegate(preferences: preferences, host: updaterDelegate)
         super.init()
+        makeController()
+        preferences.didChange = { [weak self] in self?.refreshFeed() }
+    }
+
+    private func makeController() {
         controller = SPUStandardUpdaterController(startingUpdater: false,
-                                                  updaterDelegate: updaterDelegate, userDriverDelegate: self)
+                                                  updaterDelegate: feedDelegate, userDriverDelegate: self)
+        sessionObserver = controller.updater.observe(\.sessionInProgress, options: [.new]) { [weak self] _, change in
+            guard change.newValue == false else { return }
+            // Sparkle completes its callback and schedules its old timer before retiring it.
+            DispatchQueue.main.async { self?.refreshFeed() }
+        }
+    }
+
+    private func refreshFeed() {
+        guard preferences.feedURL != currentFeed, !controller.updater.sessionInProgress else { return }
+        // Sparkle can retain a deferred update after a session ends. A new updater
+        // discards that in-memory offer; deinitializing the old one cancels its timer.
+        currentFeed = preferences.feedURL
+        makeController()
+        settings?.use(updater: controller.updater)
+        if started { controller.startUpdater() }
+    }
+
+    @objc public func checkForUpdates(_ sender: Any?) {
+        refreshFeed()
+        controller.checkForUpdates(sender)
+    }
+
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(checkForUpdates(_:)) {
+            return controller.updater.canCheckForUpdates
+        }
+        return true
+    }
+
+    public func checkForUpdateInformation() {
+        refreshFeed()
+        controller.updater.checkForUpdateInformation()
+    }
+
+    public func showSettings() {
+        if settings == nil { settings = UpdateSettings(preferences: preferences, updater: controller.updater) }
+        settings?.show()
     }
 
     public func start() {
