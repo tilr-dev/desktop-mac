@@ -6,6 +6,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -90,6 +91,22 @@ class UpstreamServerTests(unittest.TestCase):
         with self.patches():
             return fetch_server.main()
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'Requires macOS codesign')
+    def test_real_codesign_parses_inline_requirement_before_rejecting_unsigned_code(self):
+        binary = self.root / 'unsigned'
+        binary.write_text('#!/bin/sh\nexit 0\n')
+        binary.chmod(0o755)
+        real_run = subprocess.run
+
+        def capture(command, **kwargs):
+            return real_run(command, **(kwargs | dict(capture_output=True, text=True)))
+
+        with patch.object(fetch_server.subprocess, 'run', side_effect=capture):
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                fetch_server.check_signature(binary)
+        self.assertIn('code object is not signed at all', raised.exception.stderr)
+        self.assertNotIn('invalid requirement specification', raised.exception.stderr)
+
     def test_import_bundle_and_publish_validation_preserve_signed_bytes(self):
         self.assertEqual(self.main(), 0)
         for arch in fetch_server.TARGETS:
@@ -102,11 +119,23 @@ class UpstreamServerTests(unittest.TestCase):
             self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilrd').read_bytes(), self.binaries[arch])
             receipt = json.loads((path / 'release.json').read_text())
             self.assertEqual(receipt['upstream']['url'], fetch_server.release_url('0.2.0', arch))
-        requirements = [c[c.index('-R') + 1] for c in self.commands if '-R' in c]
+        requirements = [arg[3:] for c in self.commands for arg in c if arg.startswith('-R=')]
         self.assertTrue(requirements)
-        self.assertTrue(all('anchor apple generic' in r and '100.6.1.13' in r for r in requirements))
+        self.assertTrue(all('anchor apple generic' in r and '100.6.1.13' in r
+                            and '100.6.2.6' in r and fetch_server.TEAM in r for r in requirements))
         self.assertFalse(any('--sign' in c or c[0] in ('cargo', 'xcrun', 'strip') for c in self.commands))
         self.assertEqual(self.main(), 0)  # Reuse validates, never overwrites.
+
+    def test_release_identity_can_follow_an_adjacent_rust_string(self):
+        for arch in fetch_server.TARGETS:
+            self.archive(arch, version='no-exec0.2.0-abcdef0')
+        self.assertEqual(self.main(), 0)
+
+    def test_other_release_number_is_not_a_substring_match(self):
+        self.archive('arm64', version='10.2.0-abcdef0')
+        with self.assertRaisesRegex(ValueError, 'release version/platform'):
+            self.main()
+        self.assertFalse((self.root / 'build').exists())
 
     def test_staging_on_another_filesystem_preserves_bytes_and_executable_mode(self):
         # rename(2) cannot move the verified file from system temp onto another volume.
@@ -137,6 +166,14 @@ class UpstreamServerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'Unsafe'):
                     self.main()
         self.assertFalse((self.root / 'build').exists())
+
+    def test_invalid_signature_stops_acquisition_before_execution_or_install(self):
+        with self.patches(), patch.object(fetch_server.subprocess, 'run',
+                                         side_effect=subprocess.CalledProcessError(1, 'codesign')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                fetch_server.main()
+        self.assertFalse((self.root / 'build').exists())
+        self.assertFalse(any(c[1:] == ['--version'] for c in self.commands))
 
     def test_other_team_adhoc_and_missing_timestamp_are_rejected_before_execution(self):
         for details in ('TeamIdentifier=OTHER\nTimestamp=t\n',

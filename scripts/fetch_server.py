@@ -24,7 +24,7 @@ def check_signature(binary):
     requirement = (f'anchor apple generic and certificate leaf[subject.OU] = "{TEAM}" '
                    'and certificate 1[field.1.2.840.113635.100.6.2.6] exists '
                    'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
-    subprocess.run(["codesign", "--verify", "--strict", "-R", requirement, str(binary)], check=True)
+    subprocess.run(["codesign", "--verify", "--strict", f"-R={requirement}", str(binary)], check=True)
     details = subprocess.run(["codesign", "-dv", "--verbose=2", str(binary)], check=True,
                              capture_output=True, text=True).stderr
     if (f"TeamIdentifier={TEAM}" not in details or not re.search(r"^Timestamp=", details, re.M)
@@ -40,9 +40,10 @@ def check_binary(binary, arch, version):
     # clap's version string is concat!(TILR_VERSION, " (", TILR_PLATFORM, ")").
     # Inspect that signed string for foreign architectures too; they cannot run on Intel.
     cpu = "aarch64" if arch == "arm64" else "x86_64"
-    pattern = rb"(?<![0-9A-Za-z.-])(" + re.escape(version.encode()) + rb"-[0-9a-f]{7,40}) \(macos-" + cpu.encode() + rb"\)"
+    # Rust can concatenate adjacent literals, so parse full release numbers first.
+    pattern = rb"([0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{7,40}) \(macos-" + cpu.encode() + rb"\)"
     versions = set(re.findall(pattern, binary.read_bytes()))
-    if len(versions) != 1:
+    if len(versions) != 1 or not next(iter(versions)).startswith(version.encode() + b"-"):
         raise ValueError("Server does not contain the expected upstream release version/platform")
     identity = versions.pop().decode()
     native = "arm64" if platform.machine() in ("arm64", "aarch64") else "x86_64"

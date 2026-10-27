@@ -67,3 +67,13 @@ The desktop repository SHALL provide a command to acquire an upstream server rel
 #### Scenario: Invalid input or failed step
 - **WHEN** release input, acquisition, verification, or publication fails
 - **THEN** the command exits unsuccessfully without proceeding to later release steps
+
+#### Scenario: Verify inline code signing requirements
+- **WHEN** an upstream macOS server is checked before import
+- **THEN** codesign receives the inline Apple trust, Developer ID certificate and team requirement as one -R=<requirement> argument
+- **AND** an invalid signature, unexpected team, missing Developer ID authority or missing secure timestamp stops acquisition
+
+#### Scenario: Inspect the version in optimized upstream binaries
+- **WHEN** Rust stores the upstream version/platform immediately after another string literal
+- **THEN** acquisition recognizes the full version/platform without requiring a delimiter before the version
+- **AND** a different full release number is rejected even when it contains the pinned version as a suffix

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Release from CI
-The Release workflow SHALL build, sign, notarize and publish both app architectures and acquire the pinned signed/notarized upstream server on GitHub-hosted macOS, run by hand from main, each key only in the job that uses it.
+The Release workflow SHALL build, sign, notarize and publish both app architectures and acquire the pinned signed/notarized upstream server on GitHub-hosted macOS, run by hand from a release/X.Y branch, each key only in the job that uses it.
 
 #### Scenario: Run a CI release
 - **WHEN** Release runs with version, channel and an optional build
