@@ -3,7 +3,7 @@
 ### Requirement: Removal preserves user state
 Tilr SHALL preserve ordinary daemon user state, sessions, token and logs when local-server support is disabled or removal is requested, and SHALL use the application installation marker to distinguish an application-installed daemon from a pre-existing installation. A matching marker SHALL authorize daemon removal; an unmarked installation SHALL require explicit user consent.
 
-#### Scenario: Disable integration
+#### Scenario: Disable or remove
 - **WHEN** local_server.enabled becomes false
 - **THEN** application integration stops without deleting default daemon state or claiming a pre-existing installation as application-owned
 
