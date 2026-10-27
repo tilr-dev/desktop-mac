@@ -75,6 +75,23 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertNotIn("cargo", publish)
         self.assertNotIn("wrangler", self.text)
 
+    def test_resolved_number_flows_to_packaging_and_publication(self):
+        build_input = self.text.split('      build:', 1)[1].split('      channel:', 1)[0]
+        self.assertIn('required: false', build_input)
+        app = self.jobs["app"]
+        self.assertIn("build: ${{ steps.number.outputs.build }}", app)
+        self.assertLess(index(app, "scripts/ci_release.py build"), index(app, "name: Compile"))
+        self.assertEqual(app.count("BUILD: ${{ inputs.build }}"), 1)
+        self.assertEqual(app.count("BUILD: ${{ steps.number.outputs.build }}"), 2)
+        publish = self.jobs["publish"]
+        self.assertNotIn("inputs.build", publish)
+        self.assertEqual(publish.count("BUILD: ${{ needs.app.outputs.build }}"), 2)
+        self.assertLess(index(publish, "scripts/release_all.py"), index(publish, "scripts/ci_release.py github"))
+        self.assertIn("NOTES: ${{ inputs.notes }}", steps(publish)[index(publish, "scripts/ci_release.py github")])
+        self.assertEqual(self.text.count("contents: write"), 1)
+        self.assertIn("permissions:\n      contents: write", publish)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", publish)
+
     def test_no_caches_and_pinned_actions(self):
         self.assertNotIn("actions/cache", self.text)
         for action in re.findall(r"uses: (\S+)", self.text):

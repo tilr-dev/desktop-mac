@@ -71,11 +71,21 @@ jobs:
       - name: Build Intel (x86_64)
         run: swift build -c release --arch x86_64 --scratch-path .build/ci-x86_64
 
+      - name: Server protocol integration tests
+        run: |
+          swiftc Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o "$RUNNER_TEMP/test-server-updates"
+          "$RUNNER_TEMP/test-server-updates"
+          swiftc Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
+          "$RUNNER_TEMP/test-server-installation"
+
+      - name: App update preference integration tests
+        run: python3 scripts/test_app_updates.py
+
       - name: Release script tests
         working-directory: scripts
         run: |
           swift package resolve --package-path ..
-          for t in test_deltas test_fetch_server test_packaging test_plugin_inventory test_publish test_release_all test_release_workflow test_server_release test_signing test_sparkle_key; do
+          for t in test_ci_release test_deltas test_fetch_server test_packaging test_plugin_inventory test_publish test_release_all test_release_workflow test_server_release test_signing test_sparkle_key; do
             python3 -m unittest -v "$t"
           done
           python3 test_footprint.py

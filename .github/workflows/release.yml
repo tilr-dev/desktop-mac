@@ -1,5 +1,5 @@
 # Releases Tilr from CI (PRODUCTION.md, Release from CI): run it by hand from main with the
-# version, build and channel. Three jobs, so each key is only where it is used:
+# version, channel and optional build. Three jobs, so each key is only where it is used:
 # - server: the tilrd pinned in server-release.json. Already published: downloaded and checked,
 #   never rebuilt (a published release number keeps its bytes). Not yet: compiled first, then
 #   signed and notarized with the Developer ID of the apple-signing environment.
@@ -17,8 +17,8 @@ on:
         description: Marketing version (CFBundleShortVersionString), e.g. 0.3.0
         required: true
       build:
-        description: App build (CFBundleVersion); greater than every published build
-        required: true
+        description: App build (CFBundleVersion); empty selects highest published build + 1
+        required: false
       channel:
         description: Update channel
         type: choice
@@ -28,7 +28,7 @@ on:
         description: Oldest app build the pinned server supports (only when the server is built now)
         default: '1'
       notes:
-        description: Release notes shown by Sparkle (plain text, optional)
+        description: Release notes for Sparkle and GitHub (plain text, optional)
         default: ''
 
 permissions:
@@ -160,6 +160,8 @@ jobs:
 
   app:
     needs: server
+    outputs:
+      build: ${{ steps.number.outputs.build }}
     runs-on: macos-26
     timeout-minutes: 120
     environment: apple-signing
@@ -184,6 +186,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13'
+
+      - name: Resolve the app build
+        id: number
+        env:
+          BUILD: ${{ inputs.build }}
+          CHANNEL: ${{ inputs.channel }}
+        run: python3 scripts/ci_release.py build --channel "$CHANNEL" --build "$BUILD"
 
       - name: Toolchain
         run: |
@@ -228,7 +237,7 @@ jobs:
         env:
           TILR_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
           VERSION: ${{ inputs.version }}
-          BUILD: ${{ inputs.build }}
+          BUILD: ${{ steps.number.outputs.build }}
           CHANNEL: ${{ inputs.channel }}
         run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL"
 
@@ -240,7 +249,7 @@ jobs:
       - name: Pack the app
         env:
           VERSION: ${{ inputs.version }}
-          BUILD: ${{ inputs.build }}
+          BUILD: ${{ steps.number.outputs.build }}
         run: |
           tar -cf app.tar "build/releases/$VERSION-$BUILD-arm64" "build/releases/$VERSION-$BUILD-x86_64" \
             .build/artifacts/sparkle/Sparkle/bin
@@ -253,6 +262,8 @@ jobs:
 
   publish:
     needs: [server, app]
+    permissions:
+      contents: write
     runs-on: macos-26
     timeout-minutes: 30
     # Required reviewer: nothing is published before Dan approves the tested artifacts.
@@ -309,7 +320,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           VERSION: ${{ inputs.version }}
-          BUILD: ${{ inputs.build }}
+          BUILD: ${{ needs.app.outputs.build }}
           CHANNEL: ${{ inputs.channel }}
           NOTES: ${{ inputs.notes }}
         run: |
@@ -321,6 +332,14 @@ jobs:
           python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL" \
             --publish-only "${notes[@]}"
           cat "build/releases/$VERSION-$BUILD-$CHANNEL-downloads.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ needs.app.outputs.build }}
+          NOTES: ${{ inputs.notes }}
+        run: python3 scripts/ci_release.py github --version "$VERSION" --build "$BUILD"
 
       - name: Remove the Sparkle key
         if: always()

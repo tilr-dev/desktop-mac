@@ -1,5 +1,6 @@
 import AppKit
 import Sparkle
+import AppUpdates
 
 /// A native About panel. Sparkle supplies the server version using the same feed and
 /// compatibility rules as installation; opening the panel only requests information.
@@ -11,7 +12,8 @@ final class About: NSObject, SPUUpdaterDelegate {
     private var contentStack: NSStackView?
     private var checking = false
 
-    func show(updater: SPUStandardUpdaterController?, pluginStatus: [String]) {
+    func show(appUpdates: AppUpdates?, pluginStatus: [String]) {
+        let updater = appUpdates?.controller
         plugins.stringValue = (["Native plugins"] + (pluginStatus.isEmpty ? ["None loaded"] : pluginStatus)).joined(separator: "\n")
         if panel == nil {
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 420),
@@ -33,11 +35,11 @@ final class About: NSObject, SPUUpdaterDelegate {
             status.maximumNumberOfLines = 3
             status.textColor = .secondaryLabelColor
             status.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            let check = NSButton(title: "Check for Updates…", target: updater,
-                                 action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)))
+            let check = NSButton(title: "Check for Updates…", target: appUpdates,
+                                 action: #selector(AppUpdates.checkForUpdates(_:)))
             check.bezelStyle = .rounded
-            if let updater {
-                check.bind(.enabled, to: updater.updater, withKeyPath: "canCheckForUpdates", options: nil)
+            if let appUpdates {
+                check.bind(.enabled, to: appUpdates, withKeyPath: "controller.updater.canCheckForUpdates", options: nil)
             } else {
                 check.isEnabled = false
                 available.stringValue = "Available: Not configured"
@@ -77,7 +79,7 @@ final class About: NSObject, SPUUpdaterDelegate {
             checking = true
             available.stringValue = "Available: Checking…"
             status.stringValue = ""
-            updater.updater.checkForUpdateInformation()
+            appUpdates?.checkForUpdateInformation()
         } else if updater != nil, !checking {
             status.stringValue = "An update check is already in progress."
         }

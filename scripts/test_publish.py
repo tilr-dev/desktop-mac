@@ -33,7 +33,7 @@ class PublishTests(unittest.TestCase):
         with info.open("wb") as file:
             plistlib.dump(dict(CFBundleIdentifier="dev.tilr.mac", CFBundleVersion="2",
                                CFBundleShortVersionString="0.1.1", SUFeedURL=self.meta["feed"],
-                               SUPublicEDKey="public", TilrServerProtocolVersion=2, TilrBundledServerBuild=2,
+                               SUPublicEDKey="public", TilrServerProtocolVersion=1, TilrBundledServerBuild=2,
                                TilrBundledServerVersion="0.1.1", TilrServerPublicKey="public",
                                TilrServerFeedBaseURL="https://cdn.tilr.dev/server/macos"), file)
         helpers = self.root / "Tilr.app/Contents/Helpers"
@@ -43,8 +43,19 @@ class PublishTests(unittest.TestCase):
         resources.mkdir(parents=True)
         (resources / "app-managed.json").write_text(json.dumps(dict(
             version="0.1.1", build=2, arch="arm64", serverVersion="0.1.1-build2-test",
-            sha256=publish.digest(helpers / "tilrd"), protocolVersion=2, minAppBuild=1, maxAppBuild=None)))
+            sha256=publish.digest(helpers / "tilrd"), protocolVersion=1, minAppBuild=1, maxAppBuild=None)))
         self.manifest()
+
+    def test_protocol_one_release_rejects_other_server_protocols(self):
+        publish.validate_manifest(self.root)
+        path = self.root / "Tilr.app/Contents/Resources/server/app-managed.json"
+        manifest = json.loads(path.read_text())
+        for protocol in (0, 2):
+            with self.subTest(protocol=protocol):
+                manifest["protocolVersion"] = protocol
+                path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ValueError, "protocol does not match"):
+                    publish.validate_manifest(self.root)
 
     def test_server_missing_tampered_or_wrong_build_blocks_publication(self):
         helpers = self.root / "Tilr.app/Contents/Helpers"
@@ -76,6 +87,29 @@ class PublishTests(unittest.TestCase):
                 publish.validate_manifest(self.root)
             self.meta = original
         self.manifest()
+
+    def test_runtime_feed_metadata_and_legacy_validation(self):
+        path = self.root / "Tilr.app/Contents/Info.plist"
+        info = plistlib.loads(path.read_bytes())
+        # Completed channel-bound legacy artifacts still validate unchanged.
+        publish.validate_manifest(self.root)
+        info.pop("SUFeedURL")
+        info["TilrUpdateFeedSelection"] = "preferences"
+        path.write_bytes(plistlib.dumps(info))
+        for channel in ("stable", "beta"):
+            self.meta["feed"] = f"https://cdn.tilr.dev/mac/{'beta/' if channel == 'beta' else ''}arm64/appcast.xml"
+            self.manifest()
+            publish.validate_manifest(self.root)
+        for change in ({"TilrUpdateFeedSelection": "unknown"},
+                       {"SUFeedURL": self.meta["feed"]}, {"SUPublicEDKey": "wrong"}):
+            with self.subTest(change=change):
+                path.write_bytes(plistlib.dumps({**info, **change}))
+                with self.assertRaises(ValueError):
+                    publish.validate_manifest(self.root)
+        del info["TilrUpdateFeedSelection"]
+        path.write_bytes(plistlib.dumps(info))
+        with self.assertRaises(ValueError):
+            publish.validate_manifest(self.root)
 
     def test_downgrade_or_duplicate_rejected(self):
         publish.check_newer(None, 2)

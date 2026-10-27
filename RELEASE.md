@@ -154,9 +154,16 @@ only be used immediately after a successful matching build.
 
 The app uses SPUStandardUpdaterController and the native “Check for Updates…”
 menu. Automatic checks default to enabled (existing user preferences are respected);
-Sparkle manages download, signature verification, installation and relaunch. The release
-feed and public key are sealed into Info.plist before code signing. No updater
-contacts a feed during `--probe` or in unconfigured local builds.
+Sparkle manages download, signature verification, installation and relaunch. The
+public verification key and runtime-feed-selection marker are sealed into Info.plist before code signing; no publication channel or SUFeedURL is embedded.
+Update Settings exposes automatic checks/downloads and Receive RC versions. The RC
+preference defaults to off and persists between launches. Each check uses the app’s
+compiled architecture: `https://cdn.tilr.dev/mac/<arch>/appcast.xml` by default, or
+`https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml` with RC versions enabled. Changes
+apply to the next fresh appcast check; an active check continues unchanged. An
+automatic RC installation already prepared by Sparkle is kept and can still be
+installed after RC versions are disabled. `TILR_UPDATE_FEED`
+does not override runtime selection. No updater contacts a feed during `--probe` or in unconfigured local builds.
 
 After the first guided setup, publish subsequent releases with:
 
@@ -166,7 +173,11 @@ python3 scripts/release_all.py --version 0.1.1 --build 2 --channel stable --publ
 
 Add `--notes /path/to/changes.txt` for plain-text notes embedded in the feed.
 `release_all.py --channel` chooses stable/beta and derives both feeds. The lower-level
-single-architecture `release.py` reads the saved feed or `TILR_UPDATE_FEED` override.
+single-architecture `release.py` reads the saved feed or `TILR_UPDATE_FEED` override
+for its publication receipt only. Both channels produce the same signed Info.plist
+for a given architecture/version/build/key. Publication receipts and delta histories
+remain separate by channel; publishing existing artifacts on another channel is a
+separate publication workflow, not an edit to the signed bundle.
 
 `scripts/publish.py` verifies the completion receipt and archive hash, Apple code
 signatures and stapled notarization, and checks that the Keychain Sparkle public

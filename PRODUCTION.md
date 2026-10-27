@@ -107,9 +107,14 @@ Sparkle, серверному бинарнику и проверке подпи�
 
 The `Release` workflow (`.github/workflows/release.yml`) does the same on GitHub-hosted macOS,
 without the release Mac. Run it by hand from `main`: Actions → Release → Run workflow, or
-`gh workflow run release.yml --ref main -f version=0.3.0 -f build=21 -f channel=stable`.
-The build must exceed every build published on that channel: the runner has no local history,
-so no number is chosen automatically, and publication refuses a build not newer than the feed.
+`gh workflow run release.yml --ref main -f version=0.3.0 -f channel=stable`.
+Leave `build` empty to select the highest build in both architecture appcasts of that
+channel plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
+`https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml`). One number is logged and used for
+both architectures and publication. To override it, add `-f build=21`; an explicit
+build must exceed every published build on that channel. Missing feeds count as empty;
+other HTTP/network errors and malformed feeds stop the run. Local release numbering
+and reservations are unchanged.
 
 The pinned server is tilrd **0.2.0, build 3, protocol 1**. For its first CI release, set
 `server_min_app_build=17` (Actions input, or `-f server_min_app_build=17` with `gh workflow run`).
@@ -124,7 +129,14 @@ This sets the server feed's minimum app build; the app must also support protoco
    and packages the DMGs. No Sparkle key or Cloudflare token here.
 3. `publish`: waits for approval in the `release` environment, then `release_server.py
    --publish-only` and `release_all.py --publish-only` publish the same artifacts. No delta
-   patches: the runner has no DMG history, so the full DMG is published.
+   patches: the runner has no DMG history, so the full DMG is published. After the CDN
+   upload succeeds, it creates tag `v<version>` on the workflow commit (`github.sha`)
+   and GitHub Release `Tilr <version> (<build>)`, attaching both unchanged DMGs from
+   the `app` artifact and using `notes` for the release body as well as Sparkle.
+   Only this job has `contents: write`; no commit is made to `main`. An existing tag
+   causes a clear failure without updating/deleting it or changing a GitHub Release.
+   If GitHub publication fails after CDN upload or tag creation, those completed
+   steps remain published; inspect the failure before releasing again.
 
 `scripts/ci-apple-keychain.sh` imports the Apple keys into a temporary keychain (notarytool
 profile `tilr-ci` from an App Store Connect API key) and removes it at the end of the job.
@@ -199,9 +211,12 @@ update, publish the completed server separately, on the desired server channel:
 python3 scripts/release_server.py --version 0.1.0 --build 2 --channel beta --publish-only
 ```
 
-For stable app distribution build another new app build with `--channel stable`;
-the channel is embedded in the signed bundle. Server beta and app beta are separate
-settings: testing server beta requires `local_server.update_channel: beta`.
+App update selection is controlled in Tilr → Update Settings → Receive RC versions.
+It defaults to off (stable), persists between launches, and takes effect on the next
+fresh appcast check. An automatic RC installation already prepared by Sparkle is
+kept and can still be installed after disabling RC versions. Enabling the setting
+selects beta for the app’s compiled architecture. This does not
+change server update settings; testing server beta uses `local_server.update_channel: beta`.
 
 Verification so far: local tests cover both Sparkle architectures and ad-hoc
 signatures, real BinaryDelta create/apply and the reconstructed bundle signature,
@@ -493,9 +508,20 @@ Keep each entire release directory: the publisher also needs `Tilr.app` and the
 if the source changes after building. Changed source does not change what will be
 published. Do not edit the signed app or DMG.
 
-Choose `stable` at build time when these exact files will become the production
-release. The feed URL is embedded inside the signed application. A beta-built app
-cannot be promoted to stable by moving its DMG: that requires a new build and test.
+`--channel stable|beta` selects publication routing in `release.json`; it is absent
+from the signed application’s Info.plist. Stable and beta builds with the same
+architecture/version/build/key have identical Info.plist bytes. The same tested DMG
+can therefore be published on either channel without changing the bundle. The
+current upload commands still validate their receipt’s publication channel; this
+change does not add a promotion command.
+
+The signed bundle contains the verification public key and a runtime-selection
+marker, with no `SUFeedURL`. Tilr → Update Settings exposes Receive RC versions
+(initially off, saved between launches), automatic checks and automatic downloads.
+The next Sparkle check uses `https://cdn.tilr.dev/mac/<arch>/appcast.xml` when RC
+versions are off, or `https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml` when on, for
+the app’s compiled `arm64` or `x86_64` architecture. Changing the setting leaves an
+active check unchanged. A leftover `TILR_UPDATE_FEED` does not affect app selection.
 
 ## 3. Test the exact artifacts locally
 
@@ -513,7 +539,8 @@ python3 scripts/verify_release.py build/releases/0.1.0-1-x86_64
 
 The verifier checks the archive hash, DMG integrity/signature/stapling, mounts it
 read-only, and verifies the app inside it: signature, stapling, Gatekeeper assessment,
-version, architecture, feed and public key. It always detaches the image after checks.
+version, architecture, runtime-feed-selection marker and public key (or the matching
+feed for completed legacy artifacts). It always detaches the image after checks.
 `verification.json` records artifact checks, **not a GUI test pass**.
 
 `--launch` copies the app out of the verified DMG to `build/local-tests/`, then launches
