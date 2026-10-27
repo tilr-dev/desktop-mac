@@ -9,6 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LocalServerIntegrationTests(unittest.TestCase):
+    def test_application_uninstall(self):
+        with tempfile.TemporaryDirectory(prefix="tilr-uninstall-") as temp:
+            binary = Path(temp) / "test-uninstall"
+            subprocess.run(["swiftc", str(ROOT / "Sources/Tilr/ServerInstallation.swift"),
+                            str(ROOT / "Sources/Tilr/AppUninstall.swift"),
+                            str(ROOT / "scripts/test_app_uninstall.swift"), "-o", str(binary)], check=True)
+            result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+            self.assertIn("application uninstall tests passed", result.stdout)
+
     def test_disable_then_reenable_shared_server(self):
         with tempfile.TemporaryDirectory(prefix="tilr-host-") as temp:
             contents = Path(temp) / "Fixture.app/Contents"

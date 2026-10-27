@@ -86,7 +86,11 @@ struct ServerInstallation {
     }
     var isInstalled: Bool { selection.found || FileManager.default.isExecutableFile(atPath: binary.path) }
     var installedByApp: Bool {
-        (try? String(contentsOf: installationMarker, encoding: .utf8)) == binary.path
+        guard !selection.found || selection.binary != nil else { return false }
+        guard let path = try? String(contentsOf: installationMarker, encoding: .utf8), !path.isEmpty else { return false }
+        let expected = root.appendingPathComponent("tilrd").resolvingSymlinksInPath()
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath() == expected
+            && binary.resolvingSymlinksInPath() == expected
     }
     // The app's bundled CLI carries its supported protocol. An installed CLI could accept a
     // newer daemon that this app cannot speak to, so it must not validate app compatibility.
@@ -212,7 +216,7 @@ struct ServerInstallation {
                         minAppBuild: 0, maxAppBuild: nil)
     }
 
-    private func discover() throws -> Manifest? {
+    private func discover(start: Bool = true) throws -> Manifest? {
         if selection.helper == nil { selection.helper = source.appendingPathComponent("tilr") }
         if let version = try runningVersion() {
             if selection.binary == nil {
@@ -232,9 +236,12 @@ struct ServerInstallation {
         selection.binary = candidate
         let version = try executableVersion(candidate)
         selection.found = true
-        try startService()
+        if start { try startService() }
         return try installedManifest(version: version)
     }
+
+    /// Uninstall must also work with integration disabled, without starting or installing anything.
+    func locateForRemoval() throws { _ = try discover(start: false) }
 
     /// A bundled CLI beside its own daemon would select that daemon before PATH. If an external
     /// installation lacks a sibling CLI, a private temporary pair points the helper at that exact
@@ -273,7 +280,9 @@ struct ServerInstallation {
             throw Failure("Cannot determine the running tilrd executable; it was left untouched.")
         }
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let fd = open(root.appendingPathComponent(".tilr-app-install.lock").path, O_CREAT | O_RDWR, 0o600)
+        // Lock the stable directory inode: removal can clean the old lock file without
+        // allowing another installer to acquire a different lock inode concurrently.
+        let fd = open(root.path, O_RDONLY)
         guard fd >= 0 else { throw Failure("Cannot lock the tilrd installation") }
         defer { flock(fd, LOCK_UN); close(fd) }
         guard flock(fd, LOCK_EX) == 0 else { throw Failure("Cannot lock the tilrd installation") }
@@ -382,22 +391,39 @@ struct ServerInstallation {
         throw Failure("The ordinary tilrd service manages its own service definition.")
     }
 
-    enum Removal { case removed, notInstalled }
-    func remove() throws -> Removal {
-        guard installedByApp else { return .notInstalled }
-        let fd = open(root.appendingPathComponent(".tilr-app-install.lock").path, O_CREAT | O_RDWR, 0o600)
-        guard fd >= 0 else { throw Failure("Cannot lock the tilrd installation") }
-        defer { flock(fd, LOCK_UN); close(fd) }
-        guard flock(fd, LOCK_EX) == 0 else { throw Failure("Cannot lock the tilrd installation") }
-        guard installedByApp else { return .notInstalled }
-        let result = try command(root.appendingPathComponent("tilr"), ["service", "uninstall"])
+    enum Removal { case removed, notInstalled, declined }
+    func remove(confirmExternal: () throws -> Bool = { false }) throws -> Removal {
+        guard isInstalled else { return .notInstalled }
+        let owned = installedByApp
+        if !owned, try !confirmExternal() { return .declined }
+        guard !selection.found || selection.binary != nil else {
+            throw Failure("Cannot determine the running tilrd executable; it was left untouched.")
+        }
+        guard FileManager.default.fileExists(atPath: binary.path) else {
+            throw Failure("Cannot locate the installed tilrd executable for removal.")
+        }
+        // Serialize application-owned pair changes. Refusing an external removal creates no lock.
+        let lock = root.appendingPathComponent(".tilr-app-install.lock")
+        let fd = owned ? open(root.path, O_RDONLY) : -1
+        if owned {
+            guard fd >= 0, flock(fd, LOCK_EX) == 0 else {
+                if fd >= 0 { close(fd) }
+                throw Failure("Cannot lock the tilrd installation")
+            }
+        }
+        defer { if fd >= 0 { flock(fd, LOCK_UN); close(fd) } }
+        guard !owned || installedByApp else { throw Failure("The tilrd installation changed during removal. Try again.") }
+        let result = try command(client, ["service", "uninstall"])
         guard result.status == 0 else { throw Failure("Cannot uninstall tilrd service: \(result.text)") }
         let transactionFiles = [root.appendingPathComponent(".tilr-app-pending.json"),
                                 binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"),
                                 root.appendingPathComponent(".tilr.app-new"),
                                 root.appendingPathComponent(".tilr-app-server.previous.json"),
                                 binary.appendingPathExtension("previous")]
-        for file in transactionFiles + [binary, root.appendingPathComponent("tilr"), receipt, installationMarker] {
+        let files = owned
+            ? transactionFiles + [binary, root.appendingPathComponent("tilr"), receipt, installationMarker, lock]
+            : [binary]
+        for file in files {
             if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         }
         return .removed

@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
     var appUpdates: AppUpdates?
+    private var uninstalling = false
     let about = About()
     /// `switch.preload` as read at launch.
     var preload: Config.Preload = .onSelect
@@ -285,6 +286,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         about.show(appUpdates: appUpdates, pluginStatus: Array(Set(plugins)).sorted())
     }
     @objc func showLocalServer() { LocalServerHost.shared.showStatus() }
+
+    @objc func uninstallTilr() {
+        guard !uninstalling, Config.isDefaultDir, !probing else { return }
+        let alert = NSAlert()
+        alert.messageText = "Uninstall Tilr?"
+        alert.informativeText = "Tilr will remove its settings, plugins and web data, move this application to Trash, and quit. Shared tilrd state, tokens, logs and running sessions are kept. If tilrd was installed independently, you will be asked whether to remove it."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Uninstall Tilr").hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        uninstalling = true
+        Task { @MainActor in
+            do {
+                guard Bundle.main.bundleURL.pathExtension == "app",
+                      let identifier = Bundle.main.bundleIdentifier else {
+                    throw ServerInstallation.Failure("Uninstall requires an application bundle.")
+                }
+                let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library")
+                let uninstall = AppUninstall(bundle: Bundle.main.bundleURL, dataDirectories: [
+                    Config.defaultDir,
+                    library.appendingPathComponent("Caches/" + identifier),
+                    library.appendingPathComponent("WebKit/" + identifier),
+                    library.appendingPathComponent("Saved Application State/" + identifier + ".savedState"),
+                ])
+                try await uninstall.run(removeServer: {
+                    try await LocalServerHost.shared.removeForAppUninstall(settings: self.config.localServer)
+                }, stop: {
+                    self.configWatcher = nil
+                    self.preloadWork?.cancel()
+                    LocalServerHost.shared.stop()
+                    self.control?.stop()
+                    self.tabs.forEach { $0.webView.stopLoading(); $0.nativePlugins.stop() }
+                    await self.pluginManager.close()
+                    await withCheckedContinuation { (reply: CheckedContinuation<Void, Never>) in
+                        Instance.store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+                            reply.resume()
+                        }
+                    }
+                }, cleanPreferences: {
+                    UserDefaults.standard.removePersistentDomain(forName: identifier)
+                })
+                NSApp.terminate(nil)
+            } catch {
+                uninstalling = false
+                let failure = NSAlert()
+                failure.messageText = "Tilr was not uninstalled"
+                failure.informativeText = error.localizedDescription
+                failure.addButton(withTitle: "OK")
+                failure.runModal()
+            }
+        }
+    }
     @objc func checkServerUpdates() { LocalServerHost.shared.checkUpdates(userInitiated: true) }
     @objc func showNativePluginSettings() {
         Config.writeDefaults()
@@ -348,6 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     item("Native Plugin Settings…", #selector(showNativePluginSettings), ""),
                                     item("Local Server…", #selector(showLocalServer), ""),
                                     item("Check for Server Updates…", #selector(checkServerUpdates), ""), .separator()]
+        let uninstall = item("Uninstall Tilr…", #selector(uninstallTilr), "")
+        if !Config.isDefaultDir || probing { uninstall.action = nil; uninstall.isEnabled = false }
+        appItems.append(uninstall)
         appItems.append(item("Quit Tilr", #selector(NSApplication.terminate(_:)), "q"))
         submenu("Tilr", appItems)
         submenu("Edit", [
