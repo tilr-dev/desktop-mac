@@ -4,7 +4,7 @@ import Sparkle
 /// Kept alive by AppUpdates so the preference controls retain their targets.
 final class UpdateSettings: NSObject {
     private let preferences: UpdatePreferences
-    private let updater: SPUUpdater
+    private var updater: SPUUpdater
     private var panel: NSPanel?
     private let rc = NSButton(checkboxWithTitle: "Receive RC versions", target: nil, action: nil)
     private let checks = NSButton(checkboxWithTitle: "Automatically check for updates", target: nil, action: nil)
@@ -24,9 +24,7 @@ final class UpdateSettings: NSObject {
             panel.isReleasedWhenClosed = false
             rc.target = self
             rc.action = #selector(changeRC(_:))
-            checks.bind(.value, to: updater, withKeyPath: "automaticallyChecksForUpdates", options: nil)
-            downloads.bind(.value, to: updater, withKeyPath: "automaticallyDownloadsUpdates", options: nil)
-            downloads.bind(.enabled, to: updater, withKeyPath: "allowsAutomaticUpdates", options: nil)
+            use(updater: updater)
             let hint = NSTextField(wrappingLabelWithString: "RC versions are release candidates. Changes apply to the next update check.")
             hint.textColor = .secondaryLabelColor
             let stack = NSStackView(views: [checks, downloads, rc, hint])
@@ -47,6 +45,16 @@ final class UpdateSettings: NSObject {
         }
         rc.state = preferences.receivesRCVersions ? .on : .off
         panel?.makeKeyAndOrderFront(nil)
+    }
+
+    func use(updater: SPUUpdater) {
+        checks.unbind(.value)
+        downloads.unbind(.value)
+        downloads.unbind(.enabled)
+        self.updater = updater
+        checks.bind(.value, to: updater, withKeyPath: "automaticallyChecksForUpdates", options: nil)
+        downloads.bind(.value, to: updater, withKeyPath: "automaticallyDownloadsUpdates", options: nil)
+        downloads.bind(.enabled, to: updater, withKeyPath: "allowsAutomaticUpdates", options: nil)
     }
 
     @objc private func changeRC(_ sender: NSButton) {

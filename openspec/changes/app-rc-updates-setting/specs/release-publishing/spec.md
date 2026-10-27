@@ -34,3 +34,8 @@ Release apps SHALL use Sparkle pinned to 2.10.0 in Package.swift/Package.resolve
 - **AND** the setting defaults to off, persists between launches and can be switched back to stable for the next check
 - **AND** changing the setting does not interrupt a check already in progress
 - **AND** Update Settings also exposes Sparkle’s saved automatic checks/download choices
+
+#### Scenario: Switch after a deferred offer
+- **WHEN** Sparkle has retained an update offer from the previous feed and the user changes Receive RC versions
+- **THEN** the next check uses the newly selected feed instead of resuming the previous feed’s cached offer
+- **AND** an active session completes before the updater is replaced, preserving automatic-check/download preferences and functional menu, About and settings controls

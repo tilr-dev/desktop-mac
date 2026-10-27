@@ -24,7 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let probing = CommandLine.arguments.contains("--probe")
     var probed = false
     var appUpdates: AppUpdates?
-    var updater: SPUStandardUpdaterController? { appUpdates?.controller }
     let about = About()
     /// `switch.preload` as read at launch.
     var preload: Config.Preload = .onSelect
@@ -283,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return "\(tab.app.name): \(id) — \(entry["error"] as? String ?? "unavailable")"
             }
         }
-        about.show(updater: updater, pluginStatus: Array(Set(plugins)).sorted())
+        about.show(appUpdates: appUpdates, pluginStatus: Array(Set(plugins)).sorted())
     }
     @objc func showLocalServer() { LocalServerHost.shared.showStatus() }
     @objc func checkServerUpdates() { LocalServerHost.shared.checkUpdates(userInitiated: true) }
@@ -332,9 +331,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return entry
         }
         appMenuItems = apps
-        let check = item("Check for Updates…", #selector(SPUStandardUpdaterController.checkForUpdates(_:)), "")
-        check.target = updater
-        if updater == nil {
+        let check = item("Check for Updates…", #selector(AppUpdates.checkForUpdates(_:)), "")
+        check.target = appUpdates
+        if appUpdates == nil {
             // Keep the menu discoverable in local/preview builds, which have no update feed.
             check.action = nil
             check.isEnabled = false

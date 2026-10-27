@@ -9,6 +9,13 @@ final class HostDelegate: NSObject, SPUUpdaterDelegate {
     }
 }
 
+// Sparkle has no public way to seed a deferred update. KVC is confined to this
+// fixture for the pinned version; production code uses only the public lifecycle API.
+final class DeferredUpdate: NSObject {
+    @objc let updateItem = SUAppcastItem(dictionary: ["sparkle:version": "999", "link": "https://tilr.dev/rc"])!
+    @objc var secondaryUpdateItem: SUAppcastItem? { nil }
+}
+
 @main struct UpdateTests {
     static func main() {
         _ = NSApplication.shared
@@ -24,12 +31,28 @@ final class HostDelegate: NSObject, SPUUpdaterDelegate {
         try! updater.start()
         func expectFeed(_ beta: Bool) {
             let expected = "https://cdn.tilr.dev/mac/\(beta ? "beta/" : "")\(arch)/appcast.xml"
-            precondition(updater.feedURL?.absoluteString == expected,
+            precondition(updates.controller.updater.feedURL?.absoluteString == expected,
                          "Sparkle feed: \(String(describing: updater.feedURL)), expected \(expected)")
         }
         precondition(Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") == nil)
         precondition(ProcessInfo.processInfo.environment["TILR_UPDATE_FEED"] == "https://invalid.example/ignored.xml")
-        if mode == "enable" {
+        if mode == "active" {
+            let previous = updates.controller!
+            previous.updater.setValue(true, forKey: "sessionInProgress")
+            previous.updater.setValue(DeferredUpdate(), forKey: "resumableUpdate")
+            preferences.receivesRCVersions = true
+            precondition(updates.controller === previous, "An active check was interrupted")
+            previous.updater.setValue(false, forKey: "sessionInProgress")
+            // Drain the observation's queued replacement, using an event, not a delay.
+            DispatchQueue.main.async {
+                precondition(updates.controller !== previous)
+                precondition(updates.controller.updater.value(forKey: "resumableUpdate") == nil)
+                expectFeed(true)
+                defaults.removePersistentDomain(forName: suite)
+                CFRunLoopStop(CFRunLoopGetMain())
+            }
+            CFRunLoopRun()
+        } else if mode == "enable" {
             precondition(!preferences.receivesRCVersions)
             expectFeed(false)
             updates.showSettings()
@@ -52,7 +75,13 @@ final class HostDelegate: NSObject, SPUUpdaterDelegate {
         } else if mode == "disable" {
             precondition(preferences.receivesRCVersions, "RC preference did not survive relaunch")
             expectFeed(true)
+            updater.automaticallyDownloadsUpdates = true
+            updater.setValue(DeferredUpdate(), forKey: "resumableUpdate")
             preferences.receivesRCVersions = false
+            precondition(updates.controller.updater.value(forKey: "resumableUpdate") == nil,
+                         "Next check would resume a cached RC after disabling RC versions")
+            precondition(updates.controller.updater.automaticallyDownloadsUpdates)
+            precondition(!updates.controller.updater.automaticallyChecksForUpdates)
             expectFeed(false)
         } else {
             precondition(!preferences.receivesRCVersions, "Stable preference did not survive relaunch")

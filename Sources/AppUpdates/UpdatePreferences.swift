@@ -5,6 +5,7 @@ import Sparkle
 public final class UpdatePreferences {
     private let defaults: UserDefaults
     private let architecture: String
+    var didChange: (() -> Void)?
     private static let rcKey = "TilrReceiveRCVersions"
 
     public static var nativeArchitecture: String {
@@ -25,7 +26,11 @@ public final class UpdatePreferences {
 
     public var receivesRCVersions: Bool {
         get { defaults.bool(forKey: Self.rcKey) }
-        set { defaults.set(newValue, forKey: Self.rcKey) }
+        set {
+            guard newValue != receivesRCVersions else { return }
+            defaults.set(newValue, forKey: Self.rcKey)
+            didChange?()
+        }
     }
 
     public var feedURL: String {
