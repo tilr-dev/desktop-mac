@@ -20,17 +20,92 @@ class ReleaseAllTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.config = {"TILR_UPDATE_PUBLIC_KEY": "public"}
 
+    def test_direct_non_beta_publication_has_no_effects(self):
+        for channel in ("stable", "STABLE", "", None):
+            for options in (dict(publish=True), dict(publish_only=True), dict(publish=True, publish_only=True)):
+                with self.subTest(channel=channel, options=options), patch.object(release_all, "completed") as completed, \
+                     self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
+                    release_all.execute("0.1.0", 1, channel, self.config, root=self.root,
+                                        runner=lambda *a, **kw: self.fail("Must not run a build or publisher"), **options)
+                completed.assert_not_called()
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_access_check_reaches_preflight_without_publishing_default_channel(self):
+        for mode in ("--publish-only", "--publish"):
+            with self.subTest(mode=mode), patch.object(release_all, "ROOT", self.root), \
+                 patch.object(release_all.sys, "argv", ["release_all.py", "--check", mode]), \
+                 patch.object(release_all, "settings", return_value=self.config) as settings, \
+                 patch.object(release_all, "preflight") as preflight, \
+                 patch.object(release_all, "execute") as execute:
+                release_all.main()
+                settings.assert_called_once_with(require_build=mode != "--publish-only")
+                preflight.assert_called_once_with(self.config, True, build=mode != "--publish-only")
+                execute.assert_not_called()
+
+    def test_unknown_saved_channel_cannot_route_publication_to_stable(self):
+        saved = self.root / "build/latest-app-release.json"
+        saved.parent.mkdir()
+        for channel in ("STABLE", "", None):
+            with self.subTest(channel=channel):
+                saved.write_text(json.dumps(dict(version="0.3.0", build=21, channel=channel)))
+                before = saved.read_bytes()
+                # These values all select stable in feed_for, so reject them before
+                # entering any credential or publication boundary.
+                self.assertEqual(release_all.feed_for("arm64", channel), release_all.feed_for("arm64", "stable"))
+                with patch.object(release_all, "ROOT", self.root), \
+                     patch.object(release_all.sys, "argv", ["release_all.py", "--latest", "--publish-only"]), \
+                     patch.object(release_all, "settings", side_effect=AssertionError("Reached credential preflight")) as settings, \
+                     patch.object(release_all, "execute") as execute, \
+                     self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
+                    release_all.main()
+                settings.assert_not_called()
+                execute.assert_not_called()
+                self.assertEqual(saved.read_bytes(), before)
+                self.assertEqual(list(saved.parent.iterdir()), [saved])
+
+    def test_cli_refuses_explicit_and_saved_stable_before_preflight(self):
+        for mode in ("--publish", "--publish-only"):
+            for selection in ("explicit", "default", "saved"):
+                with self.subTest(mode=mode, selection=selection):
+                    argv = ["release_all.py", mode]
+                    saved = self.root / "build/latest-app-release.json"
+                    if selection == "saved":
+                        if mode != "--publish-only":
+                            continue
+                        saved.parent.mkdir()
+                        saved.write_text(json.dumps(dict(version="0.3.0", build=21, channel="stable")))
+                        argv += ["--latest"]
+                    else:
+                        argv += ["--version", "0.3.0", "--build", "21"]
+                        if selection == "explicit":
+                            argv += ["--channel", "stable"]
+                    before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+                    with patch.object(release_all, "ROOT", self.root), \
+                         patch.object(release_all.sys, "argv", argv), \
+                         patch.object(release_all, "settings") as settings, \
+                         patch.object(release_all, "preflight") as preflight, \
+                         patch.object(release_all, "execute") as execute, \
+                         self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
+                        release_all.main()
+                    for boundary in (settings, preflight, execute):
+                        boundary.assert_not_called()
+                    self.assertEqual(before, {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+                    if selection == "saved":
+                        saved.unlink()
+                        saved.parent.rmdir()
+                    self.assertFalse((self.root / "build").exists())
+
     def test_both_builds_then_both_preparations_then_publications(self):
         calls = []
         with patch.object(release_all, "completed"):
-            release_all.execute("0.1.0", 1, "stable", self.config, publish=True, root=self.root,
+            release_all.execute("0.1.0", 1, "beta", self.config, publish=True, root=self.root,
                                 runner=lambda cmd, **kw: calls.append((cmd, kw)))
         self.assertEqual(len(calls), 6)
         for index, arch in enumerate(("arm64", "x86_64")):
             cmd, kw = calls[index]
             self.assertEqual(cmd[-1], arch)
             self.assertNotIn("--publish", cmd)
-            self.assertEqual(kw["env"]["TILR_UPDATE_FEED"], f"https://cdn.tilr.dev/mac/{arch}/appcast.xml")
+            self.assertEqual(kw["env"]["TILR_UPDATE_FEED"], f"https://cdn.tilr.dev/mac/beta/{arch}/appcast.xml")
         self.assertTrue(all("--publish" not in cmd for cmd, _ in calls[2:4]))
         self.assertTrue(all("--publish" in cmd for cmd, _ in calls[4:]))
 
@@ -90,6 +165,8 @@ class ReleaseAllTests(unittest.TestCase):
                 for directory in directories:
                     data = (directory / "Tilr.app/Contents/Info.plist").read_bytes()
                     info = plistlib.loads(data)
+                    self.assertEqual(info["CFBundleShortVersionString"], "0.1.0")
+                    self.assertTrue((directory / f"Tilr-0.1.0-1-{directory.name.rsplit('-', 1)[1]}.dmg").is_file())
                     self.assertNotIn("SUFeedURL", info)
                     self.assertEqual(info["TilrUpdateFeedSelection"], "preferences")
                     receipt = json.loads((directory / "release.json").read_text())
@@ -106,7 +183,7 @@ class ReleaseAllTests(unittest.TestCase):
             if cmd[-1] == "x86_64":
                 raise RuntimeError("Intel build failed")
         with patch.object(release_all, "completed"), self.assertRaises(RuntimeError):
-            release_all.execute("0.1.0", 1, "stable", self.config, publish=True, root=self.root, runner=runner)
+            release_all.execute("0.1.0", 1, "beta", self.config, publish=True, root=self.root, runner=runner)
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(Path(cmd[1]).name == "release.py" for cmd in calls))
 
@@ -115,7 +192,7 @@ class ReleaseAllTests(unittest.TestCase):
         with patch.object(release_all, 'completed', side_effect=[
                 [('audio', '0.1.0', 1)], [('audio', '0.1.1', 1)]]), \
              self.assertRaisesRegex(ValueError, 'Native plugin versions'):
-            release_all.execute('0.1.0', 1, 'stable', self.config, publish=True, root=self.root,
+            release_all.execute('0.1.0', 1, 'beta', self.config, publish=True, root=self.root,
                                 runner=lambda cmd, **kw: calls.append(cmd))
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(Path(cmd[1]).name == 'release.py' for cmd in calls))
@@ -138,7 +215,7 @@ class ReleaseAllTests(unittest.TestCase):
             if len(calls) == 4:
                 raise RuntimeError("Intel feed failed")
         with patch.object(release_all, "completed"), self.assertRaises(RuntimeError):
-            release_all.execute("0.1.0", 1, "stable", self.config, publish=True, root=self.root, runner=runner)
+            release_all.execute("0.1.0", 1, "beta", self.config, publish=True, root=self.root, runner=runner)
         self.assertTrue(all("--publish" not in cmd for cmd in calls))
 
     def test_publish_only_never_builds(self):
@@ -146,7 +223,7 @@ class ReleaseAllTests(unittest.TestCase):
             (self.root / "build/releases" / f"0.1.0-1-{arch}").mkdir(parents=True)
         calls = []
         with patch.object(release_all, "completed"):
-            release_all.execute("0.1.0", 1, "stable", self.config, publish=True, publish_only=True,
+            release_all.execute("0.1.0", 1, "beta", self.config, publish=True, publish_only=True,
                                 root=self.root, runner=lambda cmd, **kw: calls.append(cmd))
         self.assertEqual(len(calls), 4)
         self.assertTrue(all(Path(cmd[1]).name == "publish.py" for cmd in calls))
@@ -155,7 +232,7 @@ class ReleaseAllTests(unittest.TestCase):
         (self.root / "build/releases/0.1.0-1-arm64").mkdir(parents=True)
         calls = []
         with patch.object(release_all, "completed"), self.assertRaisesRegex(ValueError, "never builds"):
-            release_all.execute("0.1.0", 1, "stable", self.config, publish=True, publish_only=True,
+            release_all.execute("0.1.0", 1, "beta", self.config, publish=True, publish_only=True,
                                 root=self.root, runner=lambda cmd, **kw: calls.append(cmd))
         self.assertFalse(calls)
 
@@ -270,16 +347,32 @@ class AutomaticReleaseTests(unittest.TestCase):
             "CFBundleShortVersionString": "0.0.0-dev", "CFBundleVersion": "1"}))
         (self.root / "server-release.json").write_text(json.dumps({
             "version": "0.1.0", "build": 1, "protocolVersion": 1}))
+        output = io.StringIO()
         with patch.object(release_all, "ROOT", self.root), \
              patch.object(release_all.sys, "argv", ["release_all.py", "--auto", "--version", "0.3.0"]), \
              patch.object(release_all, "settings", return_value={}), \
              patch.object(release_all, "preflight"), \
              patch.object(release_all, "ensure_server"), \
-             patch.object(release_all, "execute", return_value=[]) as execute, redirect_stdout(io.StringIO()):
+             patch.object(release_all, "execute", return_value=[]) as execute, redirect_stdout(output):
             release_all.main()
         self.assertEqual(execute.call_args.args[:3], ("0.3.0", 2, "stable"))
         self.assertEqual(json.loads((self.root / "build/release-auto.json").read_text()),
                          {"version": "0.3.0", "build": 2})
+
+        self.assertIn("Stable publication requires promotion of a verified CI RC", output.getvalue())
+        self.assertNotIn("./upload.command", output.getvalue())
+        self.assertNotIn("--publish-only", output.getvalue())
+
+    def test_beta_build_prints_the_publish_command(self):
+        output = io.StringIO()
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.sys, "argv", ["release_all.py", "--version", "0.3.0", "--build", "21", "--channel", "beta"]), \
+             patch.object(release_all, "settings", return_value={}), \
+             patch.object(release_all, "preflight"), \
+             patch.object(release_all, "execute", return_value=[]), redirect_stdout(output):
+            release_all.main()
+        self.assertIn("./upload.command", output.getvalue())
+        self.assertIn("--channel beta --publish-only", output.getvalue())
 
     def test_invalid_override_does_not_reserve(self):
         with self.assertRaises(ValueError):

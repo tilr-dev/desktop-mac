@@ -97,8 +97,14 @@ def completed(directory, version, build, arch, feed, key):
     return [(p['id'], p['version'], p['abi']) for p in meta.get('native_plugins', [])]
 
 
+def require_beta_publication(channel, publishing):
+    if publishing and channel != "beta":
+        raise ValueError("Stable publication requires promotion of a verified CI RC; direct stable publication is disabled")
+
+
 def execute(version, build, channel, config, publish=False, resume=False, notes=None, root=ROOT, runner=run, publish_only=False):
     """Never start publishing until BOTH architecture builds have completed."""
+    require_beta_publication(channel, publish or publish_only)
     outputs = []
     inventories = []
     for arch in ARCHES:
@@ -256,6 +262,7 @@ def main():
     if args.publish_only and args.publish:
         parser.error("Choose --publish-only or --publish")
     publishing = args.publish or args.publish_only
+    require_beta_publication(args.channel, publishing and not args.check)
     config = settings(require_build=not args.publish_only)
     (ROOT / "build").mkdir(exist_ok=True)
     with (ROOT / "build/release-all.lock").open("w") as lock:
@@ -289,8 +296,11 @@ def main():
             success("Both notarized builds are ready. Nothing published.")
             for output in outputs:
                 success(f"Output: {output}")
-            print("Publish this completed pair after testing: ./upload.command")
-            print(f"Or explicitly: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel {args.channel} --publish-only")
+            if args.channel == "beta":
+                print("Publish this completed pair after testing: ./upload.command")
+                print(f"Or explicitly: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel beta --publish-only")
+            else:
+                print("Stable publication requires promotion of a verified CI RC; direct stable publication is disabled")
 
 
 if __name__ == "__main__":

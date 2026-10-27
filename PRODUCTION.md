@@ -4,59 +4,53 @@ The default process separates building from publishing. The files tested locally
 are the exact signed, notarized DMGs later uploaded; publishing never rebuilds them.
 There are two downloads: Apple Silicon (`arm64`) and Intel (`x86_64`).
 
-## Быстрый рабочий процесс
+## Local beta build and publication
 
-Обычные команды запускайте из Terminal на релизном Mac:
+Run local beta commands from Terminal on the release Mac:
 
 ```sh
 cd /Users/dan/projects/tilr/tilr-mac
 ./release.command --status
-./release.command
-# Проверить собранные артефакты, затем:
+./release.command --channel beta
+# Inspect and test the completed artifacts, then:
 ./upload.command
 ```
 
-- `--status` ничего не собирает, не резервирует build и не обращается к Keychain.
-  Показывает значения исходного `Info.plist`, текущую релизную версию, наибольший
-  локальный/зарезервированный build, следующий build, последнюю успешно собранную
-  пару DMG и закреплённую версию сервера. Это **локальная история**, а не проверка
-  установленного приложения или актуального CDN. Версию установленного приложения
-  смотрите в About Tilr; сервер — в Tilr → Local Server….
-- `release.command` собирает текущие исходники приложения. Маркетинговую версию
-  сохраняет, build увеличивает. После проверки доступа резервирует номер, собирает
-  отсутствующие артефакты закреплённого сервера, затем обе подписанные и
-  нотарифицированные DMG. Уже собранный сервер использует без пересборки.
-  Ничего не публикует. Незавершённые артефакты не перезаписывает.
-- `upload.command` публикует **приложение** из последней успешно завершённой пары,
-  записанной в `build/latest-app-release.json`. Не компилирует и не меняет файлы.
-  Использует сохранённый канал stable/beta; печатает выбранные version/build/channel
-  и после проверки CDN — две ссылки. Если новой записи ещё нет, используйте явные
-  version/build. Неудачная следующая сборка не меняет указатель: перед upload
-  проверьте `--status`, чтобы не выбрать предыдущую успешную сборку.
+- `--status` shows the source version, remembered version, highest local/reserved
+  build, next build, last completed DMG pair and pinned server. It does not build,
+  reserve numbers, access Keychain or query the CDN. Check installed versions in
+  About Tilr and Tilr → Local Server….
+- `release.command` builds current app sources, retaining the marketing version and
+  increasing the build after credential preflight. It acquires missing pinned signed
+  server artifacts, reuses completed servers unchanged, and creates both signed and
+  notarized DMGs. It publishes nothing and never overwrites incomplete output.
+- `upload.command` publishes the last completed app pair recorded in
+  `build/latest-app-release.json` without rebuilding or changing files. It prints
+  version/build/channel and the verified CDN URLs. A saved stable channel is refused:
+  stable requires promotion of a verified CI RC. There is no direct stable override.
+  Without a saved pair, provide explicit version/build/channel. A failed later build
+  leaves the pointer unchanged; inspect `--status` before uploading.
 
-### Версия, build и канал
+### Version, build and channel
 
 ```sh
-./release.command --version 0.3.0           # новая версия, следующий build
-./release.command --build 20               # текущая версия, вручную build 20
-./release.command --version 0.3.0 --build 21
-./release.command --channel beta            # отдельная beta-сборка
-./upload.command                            # канал последней готовой сборки
-./upload.command --version 0.3.0 --build 21 --channel stable
+./release.command --version 0.3.0 --channel beta  # new version, next local build
+./release.command --build 20 --channel beta       # explicit local build
+./release.command --version 0.3.0 --build 21 --channel beta
+./upload.command                                 # saved completed pair
+./upload.command --version 0.3.0 --build 21 --channel beta
 ```
 
-Числа здесь — примеры. Явный build должен быть больше всех известных локальных
-номеров, включая неудачные попытки и preview. Build не сбрасывается при смене
-версии. Новая версия запоминается при резервировании сборки. `Info.plist` исходников
-не переписывается: нужные номера подставляются в собранное приложение.
-Проверьте номера на CDN при переносе на другой Mac: автоматическая нумерация
-не читает публичные feeds. Сохраняйте каталог `build` с историей и артефактами.
+These numbers are examples. An explicit local build must exceed all local numbers,
+including failed and preview reservations; changing version never resets it. The
+version is remembered when reserving a build, and source Info.plist is unchanged.
+Check CDN builds when moving to another Mac: local numbering does not read public
+feeds. Keep the build directory with its history and artifacts.
 
-После сбоя новый запуск `release.command` возьмёт следующий номер. Чтобы повторить
-именно старый, используйте `release_all.py --version … --build … --resume`:
-он повторно использует только завершённые проверенные артефакты. Незавершённый
-каталог сначала изучите и переместите в архив. После сбоя upload повторите ту же
-явную команду upload; не пересобирайте уже опубликованные файлы с тем же номером.
+After failure, the next build reserves a new number. To reuse the exact old completed
+artifacts, pass explicit version/build/channel and `--resume` to release_all.py.
+Inspect and archive incomplete output first. After an upload failure, repeat the
+same explicit upload command; never rebuild published bytes under the same number.
 
 ### Independent server release
 
@@ -105,15 +99,18 @@ The `Release` workflow (`.github/workflows/release.yml`) does the same on GitHub
 without the release Mac. Run it by hand from a release branch `release/X.Y` (it fixes the set
 of features; `main` moves with every merge and is never released): Actions → Release → Run
 workflow with that branch, or
-`gh workflow run release.yml --ref release/0.3 -f version=0.3.0 -f channel=stable`.
+`gh workflow run release.yml --ref release/0.3 -f version=0.3.0 -f rc=1`.
 From any other ref (`main`, a task branch, a tag) the first job, `branch`, fails before any
 job with keys starts; the `apple-signing` and `release` environments accept only `release/*`
 as well.
-Leave `build` empty to select the highest build in both architecture appcasts of that
-channel plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
+The workflow always publishes an RC to beta and has no channel input. Supply a positive
+RC number `N` (without leading zeros) for tag `vX.Y.Z-rc.N`; use a new number for each
+candidate. The app marketing version and DMG filenames remain `X.Y.Z` without `-rc`.
+Leave `build` empty to select the highest build across both architectures and both
+channels plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
 `https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml`). One number is logged and used for
 both architectures and publication. To override it, add `-f build=21`; an explicit
-build must exceed every published build on that channel. Missing feeds count as empty;
+build must exceed every published build across all four feeds. Missing feeds count as empty;
 other HTTP/network errors and malformed feeds stop the run. Local release numbering
 and reservations are unchanged.
 
@@ -131,8 +128,8 @@ This sets the server feed's minimum app build; the app must also support protoco
 2. `publish`: waits for approval in the `release` environment, then `release_server.py
    --publish-only` and `release_all.py --publish-only` publish the same artifacts. No delta
    patches: the runner has no DMG history, so the full DMG is published. After the CDN
-   upload succeeds, it creates tag `v<version>` on the workflow commit (`github.sha`)
-   and GitHub Release `Tilr <version> (<build>)`, attaching both unchanged DMGs from
+   upload succeeds, it creates tag `v<version>-rc.<N>` on the workflow commit (`github.sha`)
+   and GitHub pre-release `Tilr <version>-rc.<N> (<build>)` (`--prerelease`), attaching both unchanged DMGs from
    the `app` artifact and using `notes` for the release body as well as Sparkle.
    Only this job has `contents: write`; no commit is made to any branch. An existing tag
    causes a clear failure without updating/deleting it or changing a GitHub Release.
@@ -413,7 +410,7 @@ the default AWS credentials stay untouched:
 ```sh
 aws configure --profile tilr-r2      # Access Key ID and Secret of the R2 token, region auto
 export AWS_PROFILE=tilr-r2
-python3 scripts/release_all.py --check --publish-only
+python3 scripts/release_all.py --check --publish-only --channel beta
 ```
 
 That check uses the existing Sparkle key and `aws s3api head-bucket` on `tilr-cdn` through
@@ -430,10 +427,10 @@ permissions. See [AGENT_RELEASE.md](AGENT_RELEASE.md).
 ## 2. Build both production DMGs, without publishing
 
 ```sh
-python3 scripts/release_all.py --version 0.1.0 --build 1 --channel stable
+python3 scripts/release_all.py --version 0.1.0 --build 1 --channel beta
 ```
 
-Or open `release.command` for an automatic build. It also never publishes. The command
+Or run `./release.command --channel beta` for an automatic build. It also never publishes. The command
 builds both architectures, signs them with Developer ID, notarizes/staples them,
 and creates each DMG. Apple receives the binaries for notarization; nothing is
 uploaded to the public Tilr CDN and existing update feeds remain unchanged.
@@ -450,12 +447,18 @@ Keep each entire release directory: the publisher also needs `Tilr.app` and the
 if the source changes after building. Changed source does not change what will be
 published. Do not edit the signed app or DMG.
 
-`--channel stable|beta` selects publication routing in `release.json`; it is absent
-from the signed application’s Info.plist. Stable and beta builds with the same
-architecture/version/build/key have identical Info.plist bytes. The same tested DMG
-can therefore be published on either channel without changing the bundle. The
-current upload commands still validate their receipt’s publication channel; this
-change does not add a promotion command.
+`--channel stable|beta` selects receipt routing in `release.json`; it is absent
+from the signed application's Info.plist. Stable and beta builds with the same
+architecture/version/build/key have identical Info.plist bytes. Publication with
+`release_all.py --publish` or `--publish-only` is permitted only for beta; an explicit
+or saved stable channel stops before CDN uploads or feed changes. No flag or
+environment variable enables direct stable publication.
+
+For production, publish a CI RC to beta, download and check that RC on a Mac (enable
+Receive RC versions when testing updates), then promote those exact checked artifacts
+to stable. Promotion preserves the DMG bytes, numeric marketing version and build;
+it does not rebuild, re-sign or notarize them. The promotion command is a separate
+workflow; the release/upload commands here do not publish stable.
 
 The signed bundle contains the verification public key and a runtime-selection
 marker, with no `SUFeedURL`. Tilr → Update Settings exposes Receive RC versions
@@ -502,12 +505,12 @@ launch disables update checks. A true Sparkle N→N+1 test needs two notarized r
 on the separate beta feeds, a matching Mac and real installation/relaunch. Do not
 claim this passed merely because the verifier or script unit tests passed.
 
-## 4. Publish those same files later
+## 4. Publish those same files to beta later
 
 After local testing:
 
 ```sh
-python3 scripts/release_all.py --version 0.1.0 --build 1 --channel stable --publish-only
+python3 scripts/release_all.py --version 0.1.0 --build 1 --channel beta --publish-only
 ```
 
 This command refuses a missing/incomplete architecture. It never calls Swift,
@@ -523,11 +526,11 @@ An already-published matching archive is verified and retained; it is not overwr
 A newer build or different content at an existing URL stops the process.
 
 On success, the two website download URLs are printed and saved in
-`build/releases/0.1.0-1-stable-downloads.json`. The website's Apple Silicon and Intel
+`build/releases/0.1.0-1-beta-downloads.json`. The website's Apple Silicon and Intel
 buttons can use these URLs. The scripts do not edit or deploy the website itself.
 
 Next release: increase build (for example `0.1.1`, build `2`) and repeat build → test
-→ publish-only. For a bad published release, fix/revert the source and use a HIGHER
+→ publish-only, keeping `--channel beta` for both build and publication. For a bad published release, fix/revert the source and use a HIGHER
 build number. Keep the same bundle ID, feed URLs and normal signing keys.
 
 ## Current setup status
@@ -549,10 +552,11 @@ Selection happens under the release lock. `--build N` can reserve an explicit hi
 another release machine: automatic numbering does not query public feeds.
 
 Change the marketing version once with `./release.command --version 0.2.0`; it is
-remembered for subsequent builds. The default channel is stable; use `--channel beta`
-for beta. To resume an existing release, use explicit version/build with
-`release_all.py --resume`. Successful builds print artifact paths and the publish-only
-command. There are no terminal questions or final Return prompt. macOS Keychain
+remembered for subsequent builds. The default receipt channel is stable (build-only);
+use `--channel beta` for a locally publishable pair. Stable publication requires
+promotion of a verified CI RC. To resume an existing release, use explicit version/build with
+`release_all.py --resume`. Successful builds print artifact paths; beta builds also print the publish-only
+command, while stable builds explain the CI RC promotion requirement. There are no terminal questions or final Return prompt. macOS Keychain
 access prompts, if any, remain controlled by the key's existing access permissions.
 
 

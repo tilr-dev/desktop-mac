@@ -14,11 +14,9 @@ on:
       build:
         description: App build (CFBundleVersion); empty selects highest published build + 1
         required: false
-      channel:
-        description: Update channel
-        type: choice
-        options: [stable, beta]
-        default: stable
+      rc:
+        description: Positive RC number N for vX.Y.Z-rc.N (use a new number for each candidate)
+        required: true
       server_min_app_build:
         description: Oldest app build the pinned server supports
         default: '1'
@@ -50,11 +48,16 @@ jobs:
       - name: Refuse a ref other than a release branch
         env:
           REF: ${{ github.ref }}
+          VERSION: ${{ inputs.version }}
+          RC: ${{ inputs.rc }}
         run: |
           case "$REF" in
             refs/heads/release/?*) echo "Releasing from ${REF#refs/heads/}" ;;
             *) echo "::error::Release runs only from a release/X.Y branch, not $REF"; exit 1 ;;
           esac
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$RC" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Use numeric version X.Y.Z and a positive RC number without leading zeros"; exit 1
+          fi
 
 
   app:
@@ -90,8 +93,7 @@ jobs:
         id: number
         env:
           BUILD: ${{ inputs.build }}
-          CHANNEL: ${{ inputs.channel }}
-        run: python3 scripts/ci_release.py build --channel "$CHANNEL" --build "$BUILD"
+        run: python3 scripts/ci_release.py build --build "$BUILD"
 
       - name: Toolchain
         run: |
@@ -141,8 +143,7 @@ jobs:
           TILR_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
           VERSION: ${{ inputs.version }}
           BUILD: ${{ steps.number.outputs.build }}
-          CHANNEL: ${{ inputs.channel }}
-        run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL"
+        run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel beta
 
       - name: Remove the keychain
         if: always()
@@ -224,7 +225,6 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           VERSION: ${{ inputs.version }}
           BUILD: ${{ needs.app.outputs.build }}
-          CHANNEL: ${{ inputs.channel }}
           NOTES: ${{ inputs.notes }}
         run: |
           notes=()
@@ -232,17 +232,18 @@ jobs:
             printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.txt"
             notes=(--notes "$RUNNER_TEMP/notes.txt")
           fi
-          python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL" \
+          python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel beta \
             --publish-only "${notes[@]}"
-          cat "build/releases/$VERSION-$BUILD-$CHANNEL-downloads.json" >> "$GITHUB_STEP_SUMMARY"
+          cat "build/releases/$VERSION-$BUILD-beta-downloads.json" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create the GitHub Release
+      - name: Create the GitHub pre-release
         env:
           GH_TOKEN: ${{ github.token }}
+          RC: ${{ inputs.rc }}
           VERSION: ${{ inputs.version }}
           BUILD: ${{ needs.app.outputs.build }}
           NOTES: ${{ inputs.notes }}
-        run: python3 scripts/ci_release.py github --version "$VERSION" --build "$BUILD"
+        run: python3 scripts/ci_release.py github --version "$VERSION" --build "$BUILD" --rc "$RC"
 
       - name: Remove the Sparkle key
         if: always()
