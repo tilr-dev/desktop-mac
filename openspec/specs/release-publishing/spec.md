@@ -107,11 +107,11 @@ Release apps SHALL use Sparkle pinned to 2.10.0 in Package.swift/Package.resolve
 - **AND** subsequent fresh appcast checks use the stable feed; switching the preference does not cancel the prepared installer
 
 ### Requirement: Release from CI
-The Release workflow SHALL build, sign, notarize and publish both app architectures and acquire the pinned signed/notarized upstream server on GitHub-hosted macOS, run by hand from a release/X.Y branch, each key only in the job that uses it.
+The Release workflow SHALL build, sign, notarize and publish both app architectures and the pinned server on GitHub-hosted macOS, run by hand from a release/X.Y branch, each key only in the job that uses it.
 
 #### Scenario: Run a CI release
 - **WHEN** Release runs with version, channel and an optional build
-- **THEN** the app job acquires the pinned tilrd GitHub Release for both architectures, verifies the archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
+- **THEN** the server job reuses the published pinned server after checking its feed checksum and Developer ID signature, or compiles it from the tilrd tag and then signs and notarizes it
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
 - **AND** the publish job waits for approval in the release environment and publishes those artifacts with --publish-only, holding the Sparkle key and the R2 keys but no Apple keys
 - **AND** the app job resolves one build before packaging: the highest published build across both architecture appcasts of that channel plus one when the build input is empty, or the explicit build after checking it exceeds that maximum
