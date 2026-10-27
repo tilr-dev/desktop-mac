@@ -1,5 +1,8 @@
-# Releases Tilr from CI (PRODUCTION.md, Release from CI): run it by hand from main with the
-# version, channel and optional build. Three jobs, so each key is only where it is used:
+# Releases Tilr from CI (PRODUCTION.md, Release from CI): run it by hand from a release/X.Y
+# branch with the version, channel and optional build; main moves with every merge and is never
+# released. The branch job refuses any other ref before a key is touched (the apple-signing and
+# release environments allow only release/* as well). Then three jobs, so each key is only where
+# it is used:
 # - server: the tilrd pinned in server-release.json. Already published: downloaded and checked,
 #   never rebuilt (a published release number keeps its bytes). Not yet: compiled first, then
 #   signed and notarized with the Developer ID of the apple-signing environment.
@@ -48,7 +51,21 @@ env:
   TILR_NOTARY_PROFILE: tilr-ci
 
 jobs:
+  branch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Refuse a ref other than a release branch
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/heads/release/?*) echo "Releasing from ${REF#refs/heads/}" ;;
+            *) echo "::error::Release runs only from a release/X.Y branch, not $REF"; exit 1 ;;
+          esac
+
   server:
+    needs: branch
     # tilrd's own release runner and SDK: Zig builds libghostty-vt with this SDK.
     runs-on: macos-15
     timeout-minutes: 90
