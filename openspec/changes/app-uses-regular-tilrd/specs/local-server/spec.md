@@ -13,6 +13,7 @@ Tilr SHALL bundle unchanged signed/notarized tilrd and tilr executables from the
 - **WHEN** no ordinary tilrd installation is found
 - **THEN** the bundled matching tilrd and tilr are installed into ~/.local/bin without network access or build tools
 - **AND** tilr service install starts the ordinary service and a persistent marker records that the application installed it
+- **AND** a durable pair-installation journal recovers interruptions before or between executable publication and ownership marker creation
 - **AND** application and server version/build/channel tracks remain independent
 
 ### Requirement: Managed service ownership and configuration
@@ -34,7 +35,7 @@ Tilr SHALL authenticate signed server feed metadata and downloaded bytes before 
 #### Scenario: Install an update
 - **WHEN** a server update is chosen
 - **THEN** Ed25519 metadata signatures, component, architecture, channel, protocol, app-build range, size and SHA-256 are checked before executable use
-- **AND** replacement is atomic and explicitly requests session-preserving reload, waiting for an authenticated expected-version response
+- **AND** replacement is atomic and explicitly requests session-preserving reload through tilrd reload, including for ordinary servers launched outside launchd, waiting for an authenticated expected-version response
 - **AND** tilrd checks reload-state compatibility; the application does not invoke tilrd state-formats
 - **AND** the previous binary and receipt remain for manual recovery and a transaction journal reconciles interrupted replacement
 

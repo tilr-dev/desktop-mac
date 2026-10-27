@@ -126,8 +126,8 @@ import Darwin
         var reloadStatus: Int32 = 1
         let realRunner = absent.runner!
         update.runner = { url, args in
-            if url.lastPathComponent == "launchctl" {
-                expect(args == ["kill", "SIGUSR1", update.service])
+            if args == ["reload"] {
+                expect(url == absent.binary)
                 return .init(status: reloadStatus, text: "reload failed")
             }
             return try realRunner(url, args)
@@ -145,6 +145,40 @@ import Darwin
         // A successful reload request is not readiness until the server reports the new version.
         try Data("1.1.0-new\n".utf8).write(to: base(absent).appendingPathComponent("running"))
         expect(try absent.waitReady(version: updated.serverVersion, startupTimeout: 1, retryInterval: 1, wait: { _ in fatalError("Already ready") })["token"] == "shared-token")
+        // Recovery covers bootstrap after the client rename but before the daemon rename.
+        let half = try fixture("half-bootstrap")
+        try fm.createDirectory(at: half.root, withIntermediateDirectories: true)
+        let halfManifest = try JSONDecoder().decode(ServerInstallation.Manifest.self, from: Data(contentsOf: half.source.appendingPathComponent("app-managed.json")))
+        try fm.copyItem(at: half.source.appendingPathComponent("tilr"), to: half.root.appendingPathComponent("tilr"))
+        try fm.copyItem(at: half.source.appendingPathComponent("tilrd"), to: half.binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"))
+        let clientHash = try half.hash(half.root.appendingPathComponent("tilr"))
+        var transaction = try JSONSerialization.jsonObject(with: JSONEncoder().encode(halfManifest)) as! [String: Any]
+        transaction["binaryPath"] = half.binary.path
+        transaction["bootstrap"] = true
+        transaction["clientHash"] = clientHash
+        try JSONSerialization.data(withJSONObject: transaction).write(to: half.root.appendingPathComponent(".tilr-app-pending.json"))
+        expect(try half.install().build == 1)
+        expect(half.installedByApp)
+        // Recovery after both renames but before ownership marker creation repairs the marker.
+        try fm.removeItem(at: half.installationMarker)
+        try JSONSerialization.data(withJSONObject: transaction).write(to: half.root.appendingPathComponent(".tilr-app-pending.json"))
+        var resumedHalf = half
+        let halfRunner = half.runner!
+        resumedHalf.runner = { url, args in
+            if args == ["reload"] { return .init(status: 0, text: "") }
+            return try halfRunner(url, args)
+        }
+        _ = try resumedHalf.install()
+        expect(half.installedByApp)
+        // Update journal committed before the daemon rename retains and applies its stage.
+        try before.write(to: absent.binary)
+        try updateBytes.write(to: absent.binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"))
+        transaction = try JSONSerialization.jsonObject(with: JSONEncoder().encode(updated)) as! [String: Any]
+        transaction["binaryPath"] = absent.binary.path
+        transaction["bootstrap"] = false
+        try JSONSerialization.data(withJSONObject: transaction).write(to: pending)
+        expect(try resume.install().build == 2)
+        expect(try Data(contentsOf: absent.binary) == updateBytes)
         // Failed signatures and mismatched clients cannot expose a partial pair.
         var unsigned = try fixture("unsigned")
         let previousRunner = unsigned.runner!

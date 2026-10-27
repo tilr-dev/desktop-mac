@@ -148,10 +148,6 @@ struct ServerInstallation {
         throw Failure("The local server did not become ready.\(mismatch) See ~/Library/Logs/tilrd.log. Existing processes were not stopped.")
     }
 
-    func launchctl(_ args: [String]) throws -> Output {
-        try command(URL(fileURLWithPath: "/bin/launchctl"), args)
-    }
-
     func hash(_ url: URL) throws -> String {
         SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }
@@ -283,13 +279,11 @@ struct ServerInstallation {
         defer { flock(fd, LOCK_UN); close(fd) }
         guard flock(fd, LOCK_EX) == 0 else { throw Failure("Cannot lock the tilrd installation") }
         if !updateRequested, !hasPending, let found = try discover() { return found }
-        if let data = try? Data(contentsOf: pending),
-           let saved = try? JSONDecoder().decode(Manifest.self, from: data),
-           (try? hash(binary)) == saved.sha256 {
-            try JSONEncoder().encode(saved).write(to: receipt, options: .atomic)
-            try applyReplacement()
-            try fm.removeItem(at: pending)
-            return saved
+        if fm.fileExists(atPath: pending.path) {
+            let data = try Data(contentsOf: pending)
+            let saved = try JSONDecoder().decode(Manifest.self, from: data)
+            let transaction = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            return try finishTransaction(saved, transaction: transaction, pending: pending)
         }
         let data = try Data(contentsOf: sourceManifest ?? source.appendingPathComponent("app-managed.json"))
         let wanted = try JSONDecoder().decode(Manifest.self, from: data)
@@ -310,14 +304,22 @@ struct ServerInstallation {
                   version.text.hasPrefix("tilr \(wanted.serverVersion) (") else { throw Failure("Bundled client does not match the daemon") }
             guard !fm.fileExists(atPath: root.appendingPathComponent("tilr").path),
                   !fm.fileExists(atPath: binary.path) else { throw Failure("An existing installation was left untouched") }
-            // Validate the complete pair before exposing either executable.
-            try fm.copyItem(at: cli, to: root.appendingPathComponent("tilr"))
+            // Both stages and their durable journal precede either executable's publication.
         } else if let saved = try? JSONDecoder().decode(Manifest.self, from: Data(contentsOf: receipt)) {
             guard wanted.build > saved.build || wanted == saved else { throw Failure("Server update would downgrade or reuse a release number") }
         }
-        let staged = binary.deletingLastPathComponent().appendingPathComponent(".tilrd.new.\(UUID().uuidString)")
-        defer { try? fm.removeItem(at: staged) }
+        let staged = binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new")
+        let stagedClient = root.appendingPathComponent(".tilr.app-new")
+        // Stages left before journal creation have never been published and can be replaced.
+        for file in [staged, stagedClient] where fm.fileExists(atPath: file.path) { try fm.removeItem(at: file) }
+        defer {
+            if !fm.fileExists(atPath: pending.path) {
+                try? fm.removeItem(at: staged)
+                try? fm.removeItem(at: stagedClient)
+            }
+        }
         try fm.copyItem(at: payload, to: staged)
+        if !updateRequested { try fm.copyItem(at: source.appendingPathComponent("tilr"), to: stagedClient) }
         if fm.fileExists(atPath: binary.path) {
             let previous = binary.appendingPathExtension("previous")
             try? fm.removeItem(at: previous)
@@ -328,20 +330,47 @@ struct ServerInstallation {
         }
         var transaction = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         transaction["binaryPath"] = binary.path
+        transaction["bootstrap"] = !updateRequested
+        if !updateRequested { transaction["clientHash"] = try hash(stagedClient) }
         try JSONSerialization.data(withJSONObject: transaction).write(to: pending, options: .atomic)
-        guard rename(staged.path, binary.path) == 0 else { throw Failure("Cannot replace installed tilrd") }
-        try data.write(to: receipt, options: .atomic)
-        if !updateRequested { try Data(binary.path.utf8).write(to: installationMarker, options: .atomic) }
+        return try finishTransaction(wanted, transaction: transaction, pending: pending)
+    }
+
+    /// A journal is committed only after both stages exist. Each rename and marker write can
+    /// be replayed after process termination, including a stop between the two pair renames.
+    private func finishTransaction(_ wanted: Manifest, transaction: [String: Any], pending: URL) throws -> Manifest {
+        let fm = FileManager.default
+        let bootstrap = transaction["bootstrap"] as? Bool == true
+        let staged = binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new")
+        let stagedClient = root.appendingPathComponent(".tilr.app-new")
+        if bootstrap {
+            let installedClient = root.appendingPathComponent("tilr")
+            guard let clientHash = transaction["clientHash"] as? String else { throw Failure("Invalid bootstrap transaction") }
+            if (try? hash(installedClient)) != clientHash {
+                guard !fm.fileExists(atPath: installedClient.path), try hash(stagedClient) == clientHash,
+                      rename(stagedClient.path, installedClient.path) == 0 else {
+                    throw Failure("Cannot complete the installed tilr client")
+                }
+            }
+        }
+        if (try? hash(binary)) != wanted.sha256 {
+            guard try hash(staged) == wanted.sha256,
+                  rename(staged.path, binary.path) == 0 else { throw Failure("Cannot replace installed tilrd") }
+        }
+        try JSONEncoder().encode(wanted).write(to: receipt, options: .atomic)
+        if bootstrap { try Data(binary.path.utf8).write(to: installationMarker, options: .atomic) }
         selection.binary = binary
         selection.found = true
         try applyReplacement()
         try fm.removeItem(at: pending)
+        try? fm.removeItem(at: staged)
+        try? fm.removeItem(at: stagedClient)
         return wanted
     }
 
     private func applyReplacement() throws {
         if try runningVersion() != nil {
-            let result = try launchctl(["kill", "SIGUSR1", service])
+            let result = try command(binary, ["reload"])
             guard result.status == 0 else { throw Failure("The server update was installed, but the local server was not reloaded: \(result.text)") }
         } else {
             try startService()

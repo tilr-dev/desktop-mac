@@ -5,6 +5,12 @@ import WebKit
 /// update feed, version, channel and installation lifecycle, separate from Sparkle.
 final class LocalServerHost: NSObject {
     static let shared = LocalServerHost()
+    private let homeDirectory: URL
+
+    init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.homeDirectory = homeDirectory
+        super.init()
+    }
     private var status = "Local server is not enabled in this instance."
     private var starting = false
     private var busy = false
@@ -41,6 +47,7 @@ final class LocalServerHost: NSObject {
         guard settings.enabled else {
             timer?.invalidate()
             timer = nil
+            self.settings = nil
             result = .success(nil)
             status = "Local server integration is disabled."
             return
@@ -100,8 +107,8 @@ final class LocalServerHost: NSObject {
     private func makeInstallation(bundle: URL, settings: Config.LocalServer, origins: [String],
                                   appBuild: Int, protocolVersion: Int) -> ServerInstallation {
         var install = ServerInstallation(source: bundle.appendingPathComponent("Helpers"),
-            root: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin"),
-            agents: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents"),
+            root: homeDirectory.appendingPathComponent(".local/bin"),
+            agents: homeDirectory.appendingPathComponent("Library/LaunchAgents"),
             label: "sh.tilr.tilrd", port: 7890, timeout: settings.commandTimeout,
             origins: Array(Set(origins)), appBuild: appBuild, protocolVersion: protocolVersion, architecture: Self.architecture,
             sourceManifest: bundle.appendingPathComponent("Resources/server/app-managed.json"))
