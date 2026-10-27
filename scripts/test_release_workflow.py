@@ -1,6 +1,7 @@
-"""Contract of .github/workflows/release.yml: each key only in the job that uses it."""
+"""Contract of .github/workflows/release.yml: only from a release branch, each key only in the job that uses it."""
 from pathlib import Path
 import re
+import subprocess
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/release.yml"
@@ -31,10 +32,39 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.text = WORKFLOW.read_text()
         self.jobs = jobs(self.text)
 
-    def test_two_jobs_run_only_by_hand(self):
-        self.assertEqual(list(self.jobs), ["app", "publish"])
+    def test_three_jobs_run_only_by_hand(self):
+        self.assertEqual(list(self.jobs), ["branch", "app", "publish"])
         triggers = self.text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, flags=re.M), ["workflow_dispatch"])
+
+    def test_every_key_job_waits_for_the_branch_check(self):
+        branch = self.jobs["branch"]
+        self.assertNotIn("environment:", branch)
+        self.assertNotIn("secrets.", branch)
+        self.assertIn("needs: branch", self.jobs["app"])
+        self.assertIn("needs: app", self.jobs["publish"])
+
+    def guard(self, ref):
+        """Runs the branch job's script as Actions would, with github.ref in REF."""
+        (step,) = steps(self.jobs["branch"])
+        self.assertIn("REF: ${{ github.ref }}", step)
+        script = step.split("run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        return subprocess.run(["bash", "-eo", "pipefail", "-c", script], env={"REF": ref},
+                              capture_output=True, text=True)
+
+    def test_a_release_branch_passes_the_branch_check(self):
+        for ref in ("refs/heads/release/0.1", "refs/heads/release/1.12"):
+            run = self.guard(ref)
+            self.assertEqual(run.returncode, 0, run.stdout)
+            self.assertIn("Releasing from release/", run.stdout)
+
+    def test_main_and_other_refs_are_refused(self):
+        for ref in ("refs/heads/main", "refs/heads/release/", "refs/heads/task/release/0.1",
+                    "refs/tags/v0.3.0", "refs/heads/releases/0.1", ""):
+            run = self.guard(ref)
+            self.assertEqual(run.returncode, 1, ref)
+            self.assertIn("::error::Release runs only from a release/X.Y branch", run.stdout)
 
     def test_signing_jobs_hold_no_publication_keys(self):
         for name in ("app",):

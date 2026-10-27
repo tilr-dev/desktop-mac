@@ -88,6 +88,29 @@ class PublishTests(unittest.TestCase):
             self.meta = original
         self.manifest()
 
+    def test_runtime_feed_metadata_and_legacy_validation(self):
+        path = self.root / "Tilr.app/Contents/Info.plist"
+        info = plistlib.loads(path.read_bytes())
+        # Completed channel-bound legacy artifacts still validate unchanged.
+        publish.validate_manifest(self.root)
+        info.pop("SUFeedURL")
+        info["TilrUpdateFeedSelection"] = "preferences"
+        path.write_bytes(plistlib.dumps(info))
+        for channel in ("stable", "beta"):
+            self.meta["feed"] = f"https://cdn.tilr.dev/mac/{'beta/' if channel == 'beta' else ''}arm64/appcast.xml"
+            self.manifest()
+            publish.validate_manifest(self.root)
+        for change in ({"TilrUpdateFeedSelection": "unknown"},
+                       {"SUFeedURL": self.meta["feed"]}, {"SUPublicEDKey": "wrong"}):
+            with self.subTest(change=change):
+                path.write_bytes(plistlib.dumps({**info, **change}))
+                with self.assertRaises(ValueError):
+                    publish.validate_manifest(self.root)
+        del info["TilrUpdateFeedSelection"]
+        path.write_bytes(plistlib.dumps(info))
+        with self.assertRaises(ValueError):
+            publish.validate_manifest(self.root)
+
     def test_downgrade_or_duplicate_rejected(self):
         publish.check_newer(None, 2)
         publish.check_newer(feed(1), 2)

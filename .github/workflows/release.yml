@@ -1,6 +1,7 @@
-# Releases Tilr from CI by hand. The app job downloads and verifies the pinned signed
-# upstream tilrd release, then compiles, signs and notarizes both app architectures.
-# The publish job publishes the tested server and app artifacts unchanged after approval.
+# Releases Tilr from CI by hand from a release/X.Y branch. The branch job refuses
+# other refs before keys are used. The app job verifies the pinned signed upstream
+# tilrd release, then compiles, signs and notarizes both app architectures.
+# The publish job publishes the tested server and app artifacts after approval.
 # No caches: dependency build scripts run on clean runners. Release runs are serialized.
 name: Release
 
@@ -42,7 +43,22 @@ env:
   TILR_NOTARY_PROFILE: tilr-ci
 
 jobs:
+  branch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Refuse a ref other than a release branch
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/heads/release/?*) echo "Releasing from ${REF#refs/heads/}" ;;
+            *) echo "::error::Release runs only from a release/X.Y branch, not $REF"; exit 1 ;;
+          esac
+
+
   app:
+    needs: branch
     outputs:
       build: ${{ steps.number.outputs.build }}
     runs-on: macos-26

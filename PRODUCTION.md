@@ -102,8 +102,13 @@ Sparkle, серверному бинарнику и проверке подпи�
 ## Release from CI
 
 The `Release` workflow (`.github/workflows/release.yml`) does the same on GitHub-hosted macOS,
-without the release Mac. Run it by hand from `main`: Actions → Release → Run workflow, or
-`gh workflow run release.yml --ref main -f version=0.3.0 -f channel=stable`.
+without the release Mac. Run it by hand from a release branch `release/X.Y` (it fixes the set
+of features; `main` moves with every merge and is never released): Actions → Release → Run
+workflow with that branch, or
+`gh workflow run release.yml --ref release/0.3 -f version=0.3.0 -f channel=stable`.
+From any other ref (`main`, a task branch, a tag) the first job, `branch`, fails before any
+job with keys starts; the `apple-signing` and `release` environments accept only `release/*`
+as well.
 Leave `build` empty to select the highest build in both architecture appcasts of that
 channel plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
 `https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml`). One number is logged and used for
@@ -129,7 +134,7 @@ This sets the server feed's minimum app build; the app must also support protoco
    upload succeeds, it creates tag `v<version>` on the workflow commit (`github.sha`)
    and GitHub Release `Tilr <version> (<build>)`, attaching both unchanged DMGs from
    the `app` artifact and using `notes` for the release body as well as Sparkle.
-   Only this job has `contents: write`; no commit is made to `main`. An existing tag
+   Only this job has `contents: write`; no commit is made to any branch. An existing tag
    causes a clear failure without updating/deleting it or changing a GitHub Release.
    If GitHub publication fails after CDN upload or tag creation, those completed
    steps remain published; inspect the failure before releasing again.
@@ -144,12 +149,12 @@ Secrets (Settings → Environments), provisioned by Dan:
 
 | Environment | Secret | What it is |
 |---|---|---|
-| `apple-signing` (branch `main` only) | `APPLE_CERTIFICATE_P12_BASE64` | Developer ID Application `.p12` with its key, base64 |
+| `apple-signing` (branches `release/*` only) | `APPLE_CERTIFICATE_P12_BASE64` | Developer ID Application `.p12` with its key, base64 |
 | | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password |
 | | `APPLE_SIGN_IDENTITY` | `Developer ID Application: Rexuni LLC (V57FF3MX26)` |
 | | `APPLE_API_KEY_P8_BASE64` | App Store Connect API key (`.p8`, role Developer), base64 |
 | | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` | that key's Key ID and Issuer ID |
-| `release` (required reviewer Dan, `main` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
+| `release` (required reviewer Dan, `release/*` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
 | | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | R2 API token (S3) with object read and write on the bucket `tilr-cdn` |
 
 ## Compact packaging and delta updates (implemented)
@@ -207,9 +212,12 @@ update, publish the completed server separately, on the desired server channel:
 python3 scripts/release_server.py --version 0.1.0 --build 2 --channel beta --publish-only
 ```
 
-For stable app distribution build another new app build with `--channel stable`;
-the channel is embedded in the signed bundle. Server beta and app beta are separate
-settings: testing server beta requires `local_server.update_channel: beta`.
+App update selection is controlled in Tilr → Update Settings → Receive RC versions.
+It defaults to off (stable), persists between launches, and takes effect on the next
+fresh appcast check. An automatic RC installation already prepared by Sparkle is
+kept and can still be installed after disabling RC versions. Enabling the setting
+selects beta for the app’s compiled architecture. This does not
+change server update settings; testing server beta uses `local_server.update_channel: beta`.
 
 Verification so far: local tests cover both Sparkle architectures and ad-hoc
 signatures, real BinaryDelta create/apply and the reconstructed bundle signature,
@@ -482,9 +490,20 @@ Keep each entire release directory: the publisher also needs `Tilr.app` and the
 if the source changes after building. Changed source does not change what will be
 published. Do not edit the signed app or DMG.
 
-Choose `stable` at build time when these exact files will become the production
-release. The feed URL is embedded inside the signed application. A beta-built app
-cannot be promoted to stable by moving its DMG: that requires a new build and test.
+`--channel stable|beta` selects publication routing in `release.json`; it is absent
+from the signed application’s Info.plist. Stable and beta builds with the same
+architecture/version/build/key have identical Info.plist bytes. The same tested DMG
+can therefore be published on either channel without changing the bundle. The
+current upload commands still validate their receipt’s publication channel; this
+change does not add a promotion command.
+
+The signed bundle contains the verification public key and a runtime-selection
+marker, with no `SUFeedURL`. Tilr → Update Settings exposes Receive RC versions
+(initially off, saved between launches), automatic checks and automatic downloads.
+The next Sparkle check uses `https://cdn.tilr.dev/mac/<arch>/appcast.xml` when RC
+versions are off, or `https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml` when on, for
+the app’s compiled `arm64` or `x86_64` architecture. Changing the setting leaves an
+active check unchanged. A leftover `TILR_UPDATE_FEED` does not affect app selection.
 
 ## 3. Test the exact artifacts locally
 
@@ -502,7 +521,8 @@ python3 scripts/verify_release.py build/releases/0.1.0-1-x86_64
 
 The verifier checks the archive hash, DMG integrity/signature/stapling, mounts it
 read-only, and verifies the app inside it: signature, stapling, Gatekeeper assessment,
-version, architecture, feed and public key. It always detaches the image after checks.
+version, architecture, runtime-feed-selection marker and public key (or the matching
+feed for completed legacy artifacts). It always detaches the image after checks.
 `verification.json` records artifact checks, **not a GUI test pass**.
 
 `--launch` copies the app out of the verified DMG to `build/local-tests/`, then launches

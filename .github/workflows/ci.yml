@@ -3,6 +3,7 @@
 name: CI
 
 on:
+  merge_group:
   pull_request:
     branches: [main]
   push:
@@ -77,6 +78,9 @@ jobs:
           "$RUNNER_TEMP/test-server-updates"
           swiftc Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
           "$RUNNER_TEMP/test-server-installation"
+
+      - name: App update preference integration tests
+        run: python3 scripts/test_app_updates.py
 
       - name: Release script tests
         working-directory: scripts
