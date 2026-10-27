@@ -20,6 +20,9 @@ class CIReleaseIntegration(unittest.TestCase):
                         GITHUB_REPOSITORY='tilr-dev/tilr-mac', GITHUB_SHA='a' * 40,
                         NOTES='First line\nSecond line with `code` and $(literal)\n')
         self.feeds = {}
+        for channel in ('stable', 'beta'):
+            for arch in ('arm64', 'x86_64'):
+                self.feed(arch, channel=channel, status='404')
         self.executable('curl', '''import json, os, pathlib, sys
 root = pathlib.Path(os.environ['FIXTURE_ROOT'])
 args = sys.argv[1:]
@@ -60,19 +63,22 @@ else:
     def run_helper(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args], env=self.env, capture_output=True, text=True)
 
-    def assert_build(self, expected, channel='stable', requested=''):
+    def assert_build(self, expected, requested=''):
         (self.root / 'output').unlink(missing_ok=True)
-        result = self.run_helper('build', '--channel', channel, '--build', requested)
+        result = self.run_helper('build', '--build', requested)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / 'output').read_text(), f'build={expected}\n')
         self.assertIn(f'App build: {expected}', result.stdout)
 
-    def test_auto_build_uses_history_and_both_architectures_on_each_channel(self):
-        for channel in ('stable', 'beta'):
-            with self.subTest(channel=channel):
-                self.feed('arm64', [8, 2], channel)
-                self.feed('x86_64', [3, 12, 1], channel)
-                self.assert_build(13, channel)
+    def test_auto_build_uses_history_across_both_channels_and_architectures(self):
+        for maximum_channel in ('stable', 'beta'):
+            for maximum_arch in ('arm64', 'x86_64'):
+                with self.subTest(channel=maximum_channel, arch=maximum_arch):
+                    for channel in ('stable', 'beta'):
+                        for arch in ('arm64', 'x86_64'):
+                            self.feed(arch, [3, 12, 1] if (channel, arch) ==
+                                      (maximum_channel, maximum_arch) else [8, 2], channel)
+                    self.assert_build(13)
 
     def test_missing_and_empty_feeds(self):
         for status in ('200', '404'):
@@ -85,9 +91,10 @@ else:
     def test_explicit_build_must_exceed_maximum(self):
         self.feed('arm64', [7])
         self.feed('x86_64', [9])
-        for value in ('7', '9', '0', '-1', 'oops', '1.5'):
+        self.feed('arm64', [15], 'beta')
+        for value in ('7', '9', '14', '15', '0', '-1', 'oops', '1.5'):
             with self.subTest(build=value):
-                result = self.run_helper('build', '--channel', 'stable', '--build', value)
+                result = self.run_helper('build', '--build', value)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((self.root / 'output').exists())
         self.assert_build(20, requested='20')
@@ -101,7 +108,7 @@ else:
             for requested in ('', '20'):
                 with self.subTest(case=case, requested=requested):
                     self.feed('x86_64', **case)
-                    result = self.run_helper('build', '--channel', 'stable', '--build', requested)
+                    result = self.run_helper('build', '--build', requested)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse((self.root / 'output').exists())
 
@@ -111,8 +118,8 @@ else:
             directory.mkdir()
             (directory / f'Tilr-0.3.0-13-{arch}.dmg').write_text(f'signed notarized {arch}')
 
-    def github(self):
-        return self.run_helper('github', '--version', '0.3.0', '--build', '13', '--root', str(self.root))
+    def github(self, rc='2', version='0.3.0'):
+        return self.run_helper('github', '--version', version, '--build', '13', '--rc', rc, '--root', str(self.root))
 
     def test_github_uses_build_commit_notes_and_original_dmgs(self):
         self.assets()
@@ -120,12 +127,13 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [json.loads(line) for line in (self.root / 'calls').read_text().splitlines()]
         self.assertEqual(calls[0], ['api', '--method', 'POST', 'repos/tilr-dev/tilr-mac/git/refs',
-                                  '-f', 'ref=refs/tags/v0.3.0', '-f', 'sha=' + 'a' * 40])
+                                  '-f', 'ref=refs/tags/v0.3.0-rc.2', '-f', 'sha=' + 'a' * 40])
         release = json.loads((self.root / 'release').read_text())
-        self.assertEqual(release['args'][:4], ['release', 'create', 'v0.3.0', '--repo'])
+        self.assertEqual(release['args'][:4], ['release', 'create', 'v0.3.0-rc.2', '--repo'])
         self.assertEqual(release['args'][4], self.env['GITHUB_REPOSITORY'])
         self.assertIn('--verify-tag', release['args'])
-        self.assertIn('Tilr 0.3.0 (13)', release['args'])
+        self.assertIn('--prerelease', release['args'])
+        self.assertIn('Tilr 0.3.0-rc.2 (13)', release['args'])
         self.assertEqual(release['notes'], self.env['NOTES'])
         self.assertEqual(release['assets'], {f'Tilr-0.3.0-13-{a}.dmg': f'signed notarized {a}'
                                             for a in ('arm64', 'x86_64')})
@@ -141,6 +149,19 @@ else:
         self.assertEqual((self.root / 'tag').read_text(), 'original commit')
         self.assertEqual((self.root / 'release').read_text(), 'original release')
         self.assertEqual(len((self.root / 'calls').read_text().splitlines()), 1)
+
+    def test_invalid_rc_or_marketing_version_does_not_call_github(self):
+        self.assets()
+        for rc in ('0', '-1', '1.5', '01', 'abc', ''):
+            with self.subTest(rc=rc):
+                result = self.github(rc=rc)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('RC number must be a positive integer', result.stderr)
+                self.assertFalse((self.root / 'calls').exists())
+        result = self.github(version='0.3.0-rc.2')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Invalid release version', result.stderr)
+        self.assertFalse((self.root / 'calls').exists())
 
     def test_missing_dmg_does_not_create_tag(self):
         result = self.github()

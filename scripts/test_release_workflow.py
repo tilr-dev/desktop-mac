@@ -44,13 +44,13 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertIn("needs: branch", self.jobs["app"])
         self.assertIn("needs: app", self.jobs["publish"])
 
-    def guard(self, ref):
+    def guard(self, ref, version='0.3.0', rc='1'):
         """Runs the branch job's script as Actions would, with github.ref in REF."""
         (step,) = steps(self.jobs["branch"])
         self.assertIn("REF: ${{ github.ref }}", step)
         script = step.split("run: |\n", 1)[1]
         script = "\n".join(line[10:] for line in script.splitlines())
-        return subprocess.run(["bash", "-eo", "pipefail", "-c", script], env={"REF": ref},
+        return subprocess.run(["bash", "-eo", "pipefail", "-c", script], env={"REF": ref, "VERSION": version, "RC": rc},
                               capture_output=True, text=True)
 
     def test_a_release_branch_passes_the_branch_check(self):
@@ -65,6 +65,28 @@ class ReleaseWorkflowContract(unittest.TestCase):
             run = self.guard(ref)
             self.assertEqual(run.returncode, 1, ref)
             self.assertIn("::error::Release runs only from a release/X.Y branch", run.stdout)
+
+    def test_only_beta_rc_publication_is_exposed(self):
+        inputs = self.text.split('    inputs:', 1)[1].split('\npermissions:', 1)[0]
+        self.assertNotRegex(inputs, r'(?m)^      channel:')
+        rc_input = inputs.split('      rc:', 1)[1].split('      server_min_app_build:', 1)[0]
+        self.assertIn('required: true', rc_input)
+        self.assertNotIn('inputs.channel', self.text)
+        for name in ('app', 'publish'):
+            step = steps(self.jobs[name])[index(self.jobs[name], 'scripts/release_all.py')]
+            self.assertIn('--channel beta', step)
+        github = steps(self.jobs['publish'])[index(self.jobs['publish'], 'ci_release.py github')]
+        self.assertIn('RC: ${{ inputs.rc }}', github)
+        self.assertIn('--rc "$RC"', github)
+
+    def test_invalid_rc_or_version_is_rejected_before_key_jobs(self):
+        for rc in ('0', '-1', '01', '1.5', 'abc', ''):
+            with self.subTest(rc=rc):
+                run = self.guard('refs/heads/release/0.3', rc=rc)
+                self.assertEqual(run.returncode, 1)
+                self.assertIn('positive RC number', run.stdout)
+        run = self.guard('refs/heads/release/0.3', version='0.3.0-rc.1')
+        self.assertEqual(run.returncode, 1)
 
     def test_signing_jobs_hold_no_publication_keys(self):
         for name in ("app",):
@@ -110,7 +132,7 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertNotIn("wrangler", self.text)
 
     def test_resolved_number_flows_to_packaging_and_publication(self):
-        build_input = self.text.split('      build:', 1)[1].split('      channel:', 1)[0]
+        build_input = self.text.split('      build:', 1)[1].split('      rc:', 1)[0]
         self.assertIn('required: false', build_input)
         app = self.jobs["app"]
         self.assertIn("build: ${{ steps.number.outputs.build }}", app)
