@@ -38,13 +38,13 @@ The Release workflow SHALL build, sign, notarize and publish both app architectu
 - **THEN** a first job without keys or environment fails naming the ref, and no job holding keys starts
 - **AND** the apple-signing and release environments accept only release/* branches, so a job with keys cannot run from another ref either
 
-#### Scenario: Resolve a build across all appcasts
+#### Scenario: Resolve a build from channel appcasts
 - **WHEN** the four stable/beta architecture appcasts contain different builds or multiple historical releases
 - **THEN** numbering uses the highest build across every entry in all four appcasts
 - **AND** a missing appcast contributes no builds, but network, HTTP errors other than missing feeds, malformed XML or invalid build values stop the run rather than guessing a number
 - **AND** an explicit build not greater than the published maximum is rejected
 
-#### Scenario: Protect an existing RC tag
+#### Scenario: Protect an existing version tag
 - **WHEN** vX.Y.Z-rc.N already exists during GitHub publication
 - **THEN** the run stops with a clear error without updating or deleting the tag or changing an existing GitHub Release
 
