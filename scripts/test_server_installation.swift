@@ -222,6 +222,14 @@ import Darwin
         try Data(external.path.utf8).write(to: disabled.installationMarker)
         expect(!disabled.installedByApp)
         expect(try disabled.remove(confirmExternal: { false }) == .declined)
+        // Resume a partial removal: daemon deletion succeeded but client/metadata remain.
+        let partialRemoval = try fixture("partial-removal")
+        _ = try partialRemoval.install()
+        try fm.removeItem(at: partialRemoval.binary)
+        expect(fm.fileExists(atPath: partialRemoval.root.appendingPathComponent("tilr").path))
+        expect(try partialRemoval.remove() == .removed)
+        expect(!fm.fileExists(atPath: partialRemoval.installationMarker.path))
+        expect(!fm.fileExists(atPath: partialRemoval.root.appendingPathComponent("tilr").path))
         // Failed signatures and mismatched clients cannot expose a partial pair.
         var unsigned = try fixture("unsigned")
         let previousRunner = unsigned.runner!
