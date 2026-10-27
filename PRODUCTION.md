@@ -450,7 +450,7 @@ the default AWS credentials stay untouched:
 ```sh
 aws configure --profile tilr-r2      # Access Key ID and Secret of the R2 token, region auto
 export AWS_PROFILE=tilr-r2
-python3 scripts/release_all.py --check --publish-only
+python3 scripts/release_all.py --check --publish-only --channel beta
 ```
 
 That check uses the existing Sparkle key and `aws s3api head-bucket` on `tilr-cdn` through
