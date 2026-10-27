@@ -8,7 +8,7 @@ import Foundation
         defer { try? fm.removeItem(at: temp) }
         enum Failure: Error { case expected }
 
-        for scenario in ["owned", "external-no", "external-yes", "service-error", "trash-error"] {
+        for scenario in ["owned", "owned-removed", "external-no", "external-yes", "service-error", "trash-error"] {
             let base = temp.appendingPathComponent(scenario)
             let bin = base.appendingPathComponent("bin")
             let app = base.appendingPathComponent("Tilr.app")
@@ -27,6 +27,12 @@ import Foundation
             installation.runner = { _, args in
                 commands.append(args)
                 return .init(status: scenario == "service-error" ? 1 : 0, text: "fixture")
+            }
+            if scenario == "owned-removed" {
+                installation.selection.found = true
+                installation.selection.binary = server
+                let removal = try installation.remove()
+                precondition(removal == .removed)
             }
             var questions = 0
             var stopped = false
@@ -59,6 +65,7 @@ import Foundation
                 precondition(fm.fileExists(atPath: client.path) == !owned)
             }
             precondition(commands.isEmpty == (scenario == "external-no"))
+            if scenario == "owned-removed" { precondition(commands.count == 1) }
             precondition(fm.fileExists(atPath: app.path) == !trashed)
         }
         print("application uninstall tests passed")

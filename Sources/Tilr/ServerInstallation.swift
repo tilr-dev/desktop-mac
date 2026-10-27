@@ -395,13 +395,13 @@ struct ServerInstallation {
     func remove(confirmExternal: () throws -> Bool = { false }) throws -> Removal {
         let owned = installedByApp
         guard isInstalled || owned else { return .notInstalled }
-        if !owned, try !confirmExternal() { return .declined }
         guard !selection.found || selection.binary != nil else {
             throw Failure("Cannot determine the running tilrd executable; it was left untouched.")
         }
         guard owned || FileManager.default.fileExists(atPath: binary.path) else {
             throw Failure("Cannot locate the installed tilrd executable for removal.")
         }
+        if !owned, try !confirmExternal() { return .declined }
         // Serialize application-owned pair changes. Refusing an external removal creates no lock.
         let lock = root.appendingPathComponent(".tilr-app-install.lock")
         let fd = owned ? open(root.path, O_RDONLY) : -1
@@ -426,6 +426,8 @@ struct ServerInstallation {
         for file in files {
             if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         }
+        selection.found = false
+        selection.binary = nil
         return .removed
     }
 

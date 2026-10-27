@@ -71,7 +71,10 @@ import Darwin
         expect(!commands(running).contains("service install"))
         expect(!fm.fileExists(atPath: running.root.path))
         expect(try running.credentials() == ["url": "ws://127.0.0.1:7890", "token": "shared-token"])
-        expect(try running.remove() == .declined)
+        let beforeUnknownRemoval = commands(running)
+        var unknownQuestions = 0
+        rejects { _ = try running.remove(confirmExternal: { unknownQuestions += 1; return true }) }
+        expect(unknownQuestions == 0 && commands(running) == beforeUnknownRemoval)
         // Login PATH wins over ~/.local/bin, including a tilrd without a sibling client.
         let path = try fixture("path")
         let external = base(path).appendingPathComponent("external/tilrd")
@@ -95,6 +98,15 @@ import Darwin
         expect(questions == 2 && !fm.fileExists(atPath: external.path))
         expect(try Data(contentsOf: path.root.appendingPathComponent("tilrd")) == original)
         expect(commands(path).contains("service uninstall"))
+        // A selected external executable can disappear before the user requests removal.
+        let missing = try fixture("missing-removal")
+        try executable(missing.root.appendingPathComponent("tilrd"), "echo 'tilrd 1.0.0-abc (macos-aarch64)'\n")
+        try missing.locateForRemoval()
+        try fm.removeItem(at: missing.binary)
+        let beforeMissingRemoval = commands(missing)
+        var missingQuestions = 0
+        rejects { _ = try missing.remove(confirmExternal: { missingQuestions += 1; return true }) }
+        expect(missingQuestions == 0 && commands(missing) == beforeMissingRemoval)
         // Local-bin fallback preserves the pre-existing pair and does not claim ownership.
         let local = try fixture("local")
         try fm.createDirectory(at: local.root, withIntermediateDirectories: true)
@@ -213,6 +225,12 @@ import Darwin
         expect(!fm.fileExists(atPath: linked.root.appendingPathComponent("tilr").path))
         expect(!fm.fileExists(atPath: linked.installationMarker.path))
         expect(fm.fileExists(atPath: base(linked).appendingPathComponent("running").path))
+        // Reusing the same selection after removal must not offer or confirm removal again.
+        expect(!linked.isInstalled)
+        expect(linked.selection.binary == nil)
+        let afterRemoval = commands(linked)
+        expect(try linked.remove(confirmExternal: { fatalError("Removed pair must not ask") }) == .notInstalled)
+        expect(commands(linked) == afterRemoval)
         // Discovery for uninstall with disabled integration never starts a service.
         let disabled = try fixture("disabled-removal")
         try executable(disabled.root.appendingPathComponent("tilrd"), "echo 'tilrd 1.0.0-abc (macos-aarch64)'\n")
