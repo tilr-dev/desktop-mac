@@ -202,3 +202,18 @@ Before fetching a pull request test merge for specification authorization, the t
 - **WHEN** merge readiness decisions are tested
 - **THEN** API responses, fetched parents, elapsed time and waits are controlled by fixtures without real waiting
 - **AND** coverage includes a pending result becoming current, an immediate conflict, a stale API head becoming current, and stale results reaching the deadline
+
+### Requirement: CI coverage for main and release branches
+The CI workflow SHALL run the mac job for pull requests targeting main or release/** and pushes to main or release/**.
+
+#### Scenario: Pull request targets a release branch
+- **WHEN** a pull request targets release/0.1 or another branch matching release/**
+- **THEN** CI runs the mac job
+
+#### Scenario: Push updates a release branch
+- **WHEN** a commit is pushed to a branch matching release/**
+- **THEN** CI runs the mac job
+
+#### Scenario: Main retains CI coverage
+- **WHEN** a pull request targets main or a commit is pushed to main
+- **THEN** CI runs the mac job
