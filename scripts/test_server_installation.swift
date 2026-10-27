@@ -26,8 +26,8 @@ import Darwin
         var runningVersion = "1.0-build1-test"
         var acceptsReload = true
         func expect(_ value: Bool, line: UInt = #line) { precondition(value, "line \(line)") }
-        func payload(_ build: Int, _ bytes: String) throws {
-            version = "1.0-build\(build)-test"
+        func payload(_ build: Int, _ bytes: String, releaseVersion: String? = nil) throws {
+            version = releaseVersion ?? "1.0-build\(build)-test"
             let data = Data(bytes.utf8)
             try data.write(to: source.appendingPathComponent("tilrd"))
             let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -79,7 +79,8 @@ import Darwin
         func rejects(_ body: () throws -> Void) {
             do { try body(); fatalError("Expected refusal") } catch { }
         }
-        try payload(1, "one")
+        // Upstream release identity has a commit and no desktop feed build suffix.
+        try payload(1, "one", releaseVersion: "0.2.0-abcdef0")
         for identity in ["tilr-server", "other"] {
             versionIdentity = identity
             rejects { _ = try install.install() }

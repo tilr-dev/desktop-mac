@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent macOS server release: build/notarize, then publish the tested artifacts.
+"""Independent macOS server release: acquire upstream artifacts, then publish the tested artifacts.
 
 App releases only copy the server artifact pinned in ../server-release.json.
 Server publication never rebuilds or publishes the Mac application/Sparkle feed.
@@ -13,9 +13,9 @@ import re
 import subprocess
 import tempfile
 
-from bundle_server import ROOT, TARGETS, TILRD, build_server, digest
+from bundle_server import ROOT, TARGETS, digest
+from fetch_server import acquire, validate_completed
 from publish import CDN, fetch, put as put_object, run, sparkle_key, sparkle_public_key
-from release import sign
 from release_all import settings
 
 TOOLS = ROOT / ".build/artifacts/sparkle/Sparkle/bin"
@@ -78,41 +78,9 @@ def signed_feed(feed, directory):
     return envelope
 
 
-def build_release(directory, arch, version, build, config, preview, min_app_build, max_app_build, source=TILRD):
-    directory.mkdir(parents=True, exist_ok=False)
-    manifest = build_server(directory, arch, version, build,
-                            lambda binary: sign(binary, "-" if preview else config["TILR_SIGN_IDENTITY"]),
-                            min_app_build, max_app_build, core=source)
-    run("codesign", "--verify", "--strict", directory / "tilrd")
-    if not preview:
-        archive = directory / "notarization.zip"
-        run("ditto", "-c", "-k", directory / "tilrd", archive)
-        response = subprocess.check_output(["xcrun", "notarytool", "submit", str(archive), "--keychain-profile",
-                                            config["TILR_NOTARY_PROFILE"], "--wait", "--output-format", "json"], text=True)
-        notarization = json.loads(response)
-        (directory / "notarization.json").write_text(response)
-        if notarization.get("status") != "Accepted":
-            raise ValueError("Apple did not accept the server notarization; nothing can be published")
-        archive.unlink()
-    (directory / "sizes.json").write_text(json.dumps(dict(
-        architecture=arch, binary_bytes=(directory / "tilrd").stat().st_size,
-        unstripped_bytes=(directory / "symbols/tilrd.unstripped").stat().st_size), indent=2) + "\n")
-    receipt = dict(preview=preview, manifest=manifest, public_key=config.get("TILR_UPDATE_PUBLIC_KEY", ""))
-    (directory / "release.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    return manifest
-
-
 def validated(directory, version, build, arch, key):
-    receipt = json.loads((directory / "release.json").read_text())
     manifest = json.loads((directory / "app-managed.json").read_text())
-    if receipt.get("preview") is not False or receipt.get("public_key") != key or receipt.get("manifest") != manifest:
-        raise ValueError("Only the completed signed server release can be published")
-    if any(manifest.get(k) != v for k, v in dict(version=version, build=build, arch=arch).items()):
-        raise ValueError("Server release differs from the requested version/build/architecture")
-    if digest(directory / "tilrd") != manifest["sha256"]:
-        raise ValueError("Server changed after release completion")
-    run("codesign", "--verify", "--strict", directory / "tilrd")
-    return manifest
+    return validate_completed(directory, version, build, arch, manifest["protocolVersion"], key)
 
 
 def publish_release(directory, manifest, channel):
@@ -159,26 +127,25 @@ def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
     parser.add_argument("--build", required=True, type=int, help="Server release number, independent of app build numbers")
-    parser.add_argument("--arch", choices=tuple(TARGETS), action="append", help="Default: build/publish both architectures")
+    parser.add_argument("--arch", choices=tuple(TARGETS), action="append", help="Default: acquire/publish both architectures")
     parser.add_argument("--channel", choices=("stable", "beta"), default="stable")
     parser.add_argument("--min-app-build", type=int, default=1)
     parser.add_argument("--max-app-build", type=int)
-    parser.add_argument("--preview", action="store_true")
     parser.add_argument("--publish-only", action="store_true")
-    parser.add_argument("--source", type=Path, default=TILRD, help="Explicit tilrd source checkout")
+    parser.add_argument("--protocol-version", type=int, help="Protocol declared by the pinned upstream release")
     args = parser.parse_args()
-    if not re.fullmatch(r"\d+(?:\.\d+){0,2}", args.version) or args.build < 1:
+    if not re.fullmatch(r"\d+\.\d+\.\d+", args.version) or args.build < 1:
         parser.error("Use a numeric version and positive server build")
     if args.min_app_build < 1 or (args.max_app_build is not None and args.max_app_build < args.min_app_build):
         parser.error("Invalid compatible app build range")
-    if args.preview and args.publish_only:
-        parser.error("Preview servers cannot be published")
+    if not args.publish_only and (args.protocol_version is None or not 0 < args.protocol_version <= 4294967295):
+        parser.error("Acquisition requires a positive u32 --protocol-version")
     arches = list(dict.fromkeys(args.arch or TARGETS))
-    config = {} if args.preview else settings(require_build=not args.publish_only)
+    config = settings(require_build=False)
     (ROOT / "build").mkdir(exist_ok=True)
     with (ROOT / "build/server-release.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        outputs = [(arch, ROOT / "build/server-releases" / f"{args.version}-{args.build}-{arch}{'-preview' if args.preview else ''}") for arch in arches]
+        outputs = [(arch, ROOT / "build/server-releases" / f"{args.version}-{args.build}-{arch}") for arch in arches]
         if args.publish_only:
             key = sparkle_public_key(TOOLS)
             if key != config["TILR_UPDATE_PUBLIC_KEY"]:
@@ -188,17 +155,12 @@ def main():
             for (_, path), manifest in zip(outputs, manifests):
                 publish_release(path, manifest, args.channel)
         else:
-            installed = subprocess.check_output(["rustup", "target", "list", "--installed"], text=True).split()
-            missing = [TARGETS[a] for a in arches if TARGETS[a] not in installed]
-            if missing:
-                raise ValueError("Run on the build machine: rustup target add " + " ".join(missing))
             for arch, path in outputs:
-                build_release(path, arch, args.version, args.build, config, args.preview, args.min_app_build, args.max_app_build, args.source.resolve())
+                acquire(path, arch, args.version, args.build, args.protocol_version,
+                        config.get("TILR_UPDATE_PUBLIC_KEY", ""), args.min_app_build, args.max_app_build)
                 success(f"Server artifact ready: {path}")
-            if args.preview:
-                print("Local preview only; it cannot be published. Build again without --preview for a public release.")
-            else:
-                print("Nothing published. Test these artifacts, then run the same version/build with --publish-only.")
+            print("Nothing published. Test these artifacts, then run the same version/build with --publish-only.")
+
 
 
 if __name__ == "__main__":

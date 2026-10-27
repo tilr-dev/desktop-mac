@@ -203,7 +203,8 @@ def show_status(root=ROOT):
 
 
 def ensure_server(root=ROOT, runner=run):
-    """Build missing pinned artifacts; never overwrite or rebuild an existing server."""
+    """Acquire missing pinned upstream artifacts and validate existing completed imports."""
+    from fetch_server import validate_completed
     pin = json.loads((root / "server-release.json").read_text())
     directory = Path(os.environ.get("TILR_SERVER_RELEASE_ROOT", root / "build/server-releases"))
     missing = []
@@ -211,12 +212,13 @@ def ensure_server(root=ROOT, runner=run):
         output = directory / f"{pin['version']}-{pin['build']}-{arch}"
         if not output.exists():
             missing.append(arch)
-        elif not (output / "release.json").exists():
-            raise ValueError(f"Incomplete pinned server artifact: {output}. Inspect and move it aside before retrying.")
+        else:
+            validate_completed(output, pin["version"], pin["build"], arch, pin["protocolVersion"])
     if missing:
         if directory.resolve() != (root / "build/server-releases").resolve():
             raise ValueError("Pinned server missing from TILR_SERVER_RELEASE_ROOT; provide completed artifacts there")
-        command = [sys.executable, root / "scripts/release_server.py", "--version", pin["version"], "--build", str(pin["build"])]
+        command = [sys.executable, root / "scripts/release_server.py", "--version", pin["version"], "--build", str(pin["build"]),
+                   "--protocol-version", str(pin["protocolVersion"])]
         for arch in missing:
             command += ["--arch", arch]
         runner(command)

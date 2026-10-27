@@ -4,39 +4,14 @@ import json
 import os
 from pathlib import Path
 import plistlib
-import re
 import subprocess
-from release_packaging import strip_executable
 
 ROOT = Path(__file__).resolve().parents[1]
-TILRD = ROOT.parent / "tilrd"
 TARGETS = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def build_server(destination, arch, version, build, sign, min_app_build=1, max_app_build=None, core=TILRD):
-    commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=core, text=True).strip()
-    protocol = int(re.search(r"PROTOCOL_VERSION: u32 = (\d+)", (core / "crates/tilr-proto/src/lib.rs").read_text())[1])
-    env = dict(os.environ, TILR_BUILD_VERSION=f"{version}-build{build}", TILR_BUILD_COMMIT=commit,
-               MACOSX_DEPLOYMENT_TARGET="14.0")
-    target = TARGETS[arch]
-    subprocess.run(["cargo", "build", "--locked", "--release", "-p", "tilrd", "--target", target,
-                    "--target-dir", str(core / "target")],
-                   cwd=core, env=env, check=True)
-    destination.mkdir(parents=True, exist_ok=True)
-    binary = destination / "tilrd"
-    subprocess.run(["ditto", str(core / "target" / target / "release/tilrd"), str(binary)], check=True)
-    subprocess.run(["lipo", str(binary), "-verify_arch", arch], check=True)
-    strip_executable(binary, destination / "symbols")
-    sign(binary)
-    metadata = dict(version=version, build=build, arch=arch,
-                    serverVersion=f"{version}-build{build}-{commit}", sha256=digest(binary),
-                    protocolVersion=protocol, minAppBuild=min_app_build, maxAppBuild=max_app_build)
-    (destination / "app-managed.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    return metadata
 
 
 def validate_payload(directory, arch, protocol, app_build, manifest_path=None):
@@ -56,10 +31,10 @@ def bundle_server(app, arch, app_build, preview=False, root=ROOT):
     pin = json.loads((root / "server-release.json").read_text())
     releases = Path(os.environ.get("TILR_SERVER_RELEASE_ROOT", root / "build/server-releases"))
     directory = releases / f"{pin['version']}-{pin['build']}-{arch}"
-    if preview and not directory.exists():
-        directory = directory.with_name(directory.name + "-preview")
     if not (directory / "release.json").exists():
-        raise ValueError(f"Build the pinned server release first: scripts/release_server.py --version {pin['version']} --build {pin['build']} --arch {arch}; missing {directory}")
+        raise ValueError(f"Acquire the pinned upstream server release first: scripts/release_server.py --version {pin['version']} --build {pin['build']} --protocol-version {pin['protocolVersion']} --arch {arch}; missing {directory}")
+    from fetch_server import validate_completed
+    validate_completed(directory, pin["version"], pin["build"], arch, pin["protocolVersion"])
     receipt = json.loads((directory / "release.json").read_text())
     if not preview and receipt.get("preview") is not False:
         raise ValueError("A public app cannot bundle a preview server")

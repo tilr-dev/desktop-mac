@@ -13,38 +13,6 @@ import release_server
 
 
 class IndependentServerReleaseTests(unittest.TestCase):
-    def test_builds_tilrd_package_and_packages_its_signed_binary(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            core = root / "tilrd-source"
-            proto = core / "crates/tilr-proto/src/lib.rs"
-            proto.parent.mkdir(parents=True)
-            proto.write_text("pub const PROTOCOL_VERSION: u32 = 1;")
-            output = core / "target/aarch64-apple-darwin/release/tilrd"
-            calls = []
-            def run(command, **kwargs):
-                calls.append(command)
-                if command[0] == "cargo":
-                    self.assertEqual(command[command.index("-p") + 1], "tilrd")
-                    self.assertEqual(kwargs["cwd"], core)
-                    self.assertEqual(kwargs["env"]["TILR_BUILD_VERSION"], "0.2.0-build7")
-                    output.parent.mkdir(parents=True)
-                    output.write_bytes(b"built tilrd executable")
-                elif command[0] == "ditto":
-                    self.assertEqual(Path(command[1]), output)
-                    shutil.copyfile(command[1], command[2])
-            destination = root / "artifact"
-            def sign(binary):
-                binary.write_bytes(binary.read_bytes() + b" signed")
-            with patch.object(bundle_server.subprocess, "check_output", return_value="abc123\n"), \
-                 patch.object(bundle_server.subprocess, "run", side_effect=run), \
-                 patch.object(bundle_server, "strip_executable"):
-                meta = bundle_server.build_server(destination, "arm64", "0.2.0", 7, sign, core=core)
-            self.assertEqual((destination / "tilrd").read_bytes(), b"built tilrd executable signed")
-            self.assertEqual(meta["protocolVersion"], 1)
-            self.assertEqual(meta["sha256"], bundle_server.digest(destination / "tilrd"))
-            self.assertEqual(json.loads((destination / "app-managed.json").read_text()), meta)
-
     @unittest.skipUnless(sys.platform == "darwin", "Requires macOS codesign")
     def test_real_bundle_codesign_with_server_metadata_in_resources(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -69,7 +37,7 @@ class IndependentServerReleaseTests(unittest.TestCase):
             meta["sha256"] = bundle_server.digest(binary)
             (artifact / "app-managed.json").write_text(json.dumps(meta))
             (artifact / "release.json").write_text(json.dumps(dict(preview=False, manifest=meta)))
-            with patch.dict(bundle_server.os.environ, {}, clear=True):
+            with patch.dict(bundle_server.os.environ, {}, clear=True), patch("fetch_server.validate_completed", return_value=meta):
                 bundle_server.bundle_server(app, "arm64", 1, root=root)
             subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True, capture_output=True)
             subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True, capture_output=True)
@@ -107,7 +75,7 @@ class IndependentServerReleaseTests(unittest.TestCase):
                 calls.append(command)
                 if command[0] == "ditto":
                     shutil.copyfile(command[1], command[2])
-            with patch.object(bundle_server.subprocess, "run", side_effect=run), patch.dict(bundle_server.os.environ, {}, clear=True):
+            with patch.object(bundle_server.subprocess, "run", side_effect=run), patch.dict(bundle_server.os.environ, {}, clear=True), patch("fetch_server.validate_completed", return_value=meta):
                 result = bundle_server.bundle_server(root / "App.app", "arm64", 37, root=root)
             self.assertFalse((root / "App.app/Contents/Helpers/app-managed.json").exists())
             self.assertEqual(json.loads((root / "App.app/Contents/Resources/server/app-managed.json").read_text()), meta)
