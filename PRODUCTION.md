@@ -281,8 +281,8 @@ protocol declared by the selected upstream release with `--protocol-version`.
 Output is `build/server-releases/<version>-<build>-<arch>`. Existing directories
 are never overwritten; inspect and move aside incomplete output before retrying.
 
-The upstream server executable is already Developer ID signed and notarized;
-acquisition verifies its signature before writing the completion receipt. Publication checks the receipt/checksum, preserves immutable
+The upstream server and client executables are already Developer ID signed and notarized;
+acquisition verifies both signatures, matching versions and archive checksum before writing the completion receipt. Publication checks the receipt/checksum, preserves immutable
 binary URLs, verifies the public download, then publishes the signed feed last.
 It retains previous compatible releases instead of making older clients download
 an incompatible latest server. Feed signatures use Ed25519 (CryptoKit at runtime),
@@ -307,7 +307,7 @@ feed base URL and public verification key in its signed Info.plist. Downloads
 are selected by server build within the supported protocol, architecture and app
 build range; hashes/signatures are verified before replacement. The app installs
 the replacement binary and requests reload; tilrd checks reload-state compatibility
-before handing over. The app confirms the update through `ps --server-version`.
+before handing over. The app confirms the update through `tilr version` on the default socket.
 If reload is refused and the running version stays unchanged, the app reports
 "The local server did not become ready. Reload did not complete: running version
 X, expected Y" with the server log path and confirmation that existing processes
@@ -319,95 +319,55 @@ not undo an independent server update.
 
 ### Runtime and controls
 
-The default instance installs into
-`~/Library/Application Support/dev.tilr.mac/server/` and creates
-`~/Library/LaunchAgents/dev.tilr.server.plist`. It listens on loopback port 7890,
-with private managed state/token and runtime files. The job runs the signed
-`tilrd` directly (no shell wrapper); panes get the user's login environment
-because the server starts their shell as a login shell (server 0.1.0 build 3+).
-The plist's `AssociatedBundleIdentifiers` (the app's bundle id, `dev.tilr.mac`) makes Login
-Items and the "Background Items Added" notice show the job as Tilr rather than the signing team
-(macOS 13+; the binary and the app must share a Team ID); a job lacking the key is migrated like
-a zsh one below.
-A plist of ours with another definition (a job written by an earlier Tilr through
-`/bin/zsh -lc 'exec …'` or without the association, a changed port or environment) is
-rewritten and applied. "Ours" = Label `dev.tilr.server` and `ProgramArguments` running the
-installed `tilrd`, directly or through `/bin/zsh -lc`; any other plist under that name,
-or a loaded job of that name without the file, is refused with a message naming the file.
-launchd keeps a loaded definition until bootout, so applying it means a restart:
-- the job is stopped, or the server reports no live panes → `bootout` + `bootstrap` at once,
-  then the usual wait for the port;
-- the server has live panes, or does not answer → only the file is rewritten and
-  `server/restart-pending` is written. `Tilr > Local Server…` then says "A new service
-  definition is waiting; restart to apply" and offers Restart Server… (confirmation: open
-  panes will close). The next launch applies it by itself if the server has no panes then.
-  "Pending" is read from launchd: `launchctl print`'s program, arguments and environment
-  (minus `OSLogRateLimit` and `XPC_*`, which launchd adds) against the plist; a login that
-  loaded the new file counts as applied and clears the marker. The marker decides only when
-  that output cannot be parsed.
-"Live panes" comes from `tilrd ps --url ws://127.0.0.1:<port>` (the protocol's
-ListPanes over the server's WebSocket, with the stored token): a header plus one line per pane.
-After every `bootstrap`, a job that `launchctl print` shows loaded without a `pid` is
-`kickstart`ed. Standalone installations are
-not adopted or stopped; conflicting ports/services produce a visible error.
-The generated `origins.toml` allows configured Tilr app origins. Config changes
-are applied on app launch through a session-preserving reload.
+Tilr shares one ordinary daemon with the terminal client. Discovery checks a running
+server on the default socket first, `tilrd` in the user's login-shell PATH second,
+and `~/.local/bin/tilrd` third. A found installation is used without copying
+bundled binaries or claiming ownership. Incompatible servers are reported and
+left untouched. The local WebSocket endpoint is `ws://127.0.0.1:7890`.
 
-`Tilr > Check for Updates…` checks the **application**.
-`Tilr > Check for Server Updates…` checks the **server** and offers Update Server.
-`Tilr > Local Server…` shows the installed version/channel, any available update, a pending
-service definition (Restart Server…) and Remove Local Server…, and while Tilr works, the
-launchd step it is on.
-Opening it performs an authenticated connection check off the UI thread and shows
-"Running" with the actual running version, or "Not running or unreachable" when the
-server cannot be reached. "Refresh" repeats the check; connection failure
-is not treated as proof that the process has exited.
-By default server checks run at launch and every 24 hours; installation requires
-pressing Update Server. `local_server.update_channel`, `auto_check`,
-`check_interval`, network timeouts and size limits are documented in `default.yml`.
-A network/feed failure leaves the local server and credentials usable. A feed URL that answers
-anything but 200 (404 before the first release of a channel) means "No server release is
-published for <channel>/<arch>": a manual check says so, an automatic one only logs it. A
-non-200 on the binary download is "Server update download failed (HTTP <status>)".
+If no installation exists, Tilr copies both signed helpers from the bundle into
+`~/.local/bin`, runs `tilr service install` for `sh.tilr.tilrd`, and records
+`~/.local/bin/.tilr-app-installed`. State and token use the ordinary daemon defaults
+(`~/.local/state/tilr` unless the normal environment overrides them). Credentials
+come from `tilr token` over the same local socket used by terminal clients.
+No private application daemon, state directory or `dev.tilr.server` service is
+created. Previous private installations are not migrated; reinstall them.
+
+`Tilr > Check for Updates…` checks the application; `Check for Server Updates…`
+checks the independent server feed and requires explicit Update Server approval.
+Local Server shows the actual running version using the ordinary CLI's authenticated
+socket connection. Refresh repeats that check. Existing installations without app
+feed receipts are offered only releases with a newer upstream semantic version;
+commit suffixes alone do not establish release order.
+Feed errors leave the daemon and credentials usable. A feed HTTP error means
+"No server release is published for <channel>/<arch>"; a binary HTTP error is
+"Server update download failed (HTTP <status>)". Settings for automatic checks,
+channel, intervals, network timeouts and size limits remain in `default.yml`.
+
+Explicit updates replace the discovered executable atomically and request
+session-preserving reload. `tilrd.previous` stays next to that executable; app
+receipts and the pending transaction are `.tilr-app-server.json`,
+`.tilr-app-server.previous.json` and `.tilr-app-pending.json` in `~/.local/bin`.
+They do not prevent ordinary `tilr update`. If the running executable cannot be
+resolved, replacement is refused. Failed reloads keep the new installed binary,
+the previous copy and a pending transaction for recovery on the next launch;
+they never stop a live supervisor or report readiness before the expected version.
+Closing Tilr leaves terminal sessions running.
 
 ### Removal
 
-`local_server.enabled: false` in `config.yml` (at launch, or on save: the config is watched), or
-Remove Local Server… in `Tilr > Local Server…` (confirmation: open panes will close), removes
-what the app installed when the plist is ours (see above): `launchctl bootout
-gui/<uid>/dev.tilr.server`, the plist, and in `server/` the binary, `tilrd.previous`,
-`app-managed*.json`, `origins.toml`, `runtime/` and a pending-restart marker. `server/state/`
-(sessions, token, logs) and `server.log` stay. A foreign plist is left alone with a notice.
-Only release builds (with a bundled server) remove, as only they install. The dialog then
-shows "Not installed"; the next launch with `enabled: true` (or setting it back to `true`)
-installs afresh from the bundle.
+`local_server.enabled: false` disables application integration and leaves the
+shared daemon running. Remove Local Server is available only for a daemon whose
+path matches the application installation marker. It delegates startup removal
+to `tilr service uninstall`, removes the installed pair and marker, and preserves
+default daemon state, token and logs. The ordinary service command leaves the
+running daemon and panes until it exits; launchd forgets its definition at login.
+A pre-existing installation is left untouched.
 
-macOS's Background Task Management database keeps its record of the agent after the plist is
-gone (`sfltool dumpbtm` still lists `8.dev.tilr.server`): launchd no longer knows the job and
-nothing runs, but there is no public API to delete one legacy agent's record.
-
-By hand, when the app is already gone:
-
-```sh
-launchctl bootout gui/$(id -u)/dev.tilr.server     # stops the server; its panes close
-rm ~/Library/LaunchAgents/dev.tilr.server.plist
-rm -rf ~/Library/Application\ Support/dev.tilr.mac/server   # binary, receipts, state (sessions, token, logs)
-# Everything of the app: rm -rf ~/Library/Application\ Support/dev.tilr.mac
-```
-The managed server's `update` command points to this independent server updater.
-The separate Linux/standalone server updater is unchanged.
-
-Installation replaces the binary atomically at a fixed path and waits for an
-authenticated response with the expected running version. It never stops a
-running supervisor to upgrade. The server's reload preserves sessions; the old
-binary and its receipt remain as `tilrd.previous` and
-`app-managed.previous.json` for manual recovery, not automatic live rollback. A
-transaction journal reconciles interruptions before/after binary replacement on
-the next launch, even when that app bundles an older server. Closing the app leaves terminals running until logout.
 The server plugin receives credentials only through its trusted top-level
-`tilr://` bridge; remote profiles/defaults are preserved. Existing external site
-folders still need the rebuilt server plugin; no separate web-site updater is
-introduced. Test/probe/custom-config instances never manage the production server.
+`tilr://` bridge; remote profiles/defaults are preserved. External site folders
+still need their rebuilt server plugin. Probe and custom-config instances never
+manage the production service.
 
 ### Verification
 

@@ -369,14 +369,13 @@ struct Config: Decodable {
         #     site: apps/notes
         apps: []
 
-        # Bundled terminal server. These settings apply at launch, in the default
+        # Shared ordinary terminal server. These settings apply at launch, in the default
         # production instance only; --probe and separate --config instances never install it.
         local_server:
-          # Also applies on reload. false stops Tilr's service, removes it from Login Items
-          # and deletes the installed server (sessions, tokens and logs in server/state are
-          # kept); true installs it again.
+          # Also applies on reload. false disables app integration while the ordinary
+          # daemon keeps running; true discovers it or installs the bundled pair.
           enabled: true
-          # Loopback port; 1..65535. Do not change while the managed service is loaded.
+          # Ordinary daemon loopback port. Must remain 7890.
           port: 7890
           # Seconds allowed for each installation/check command.
           command_timeout: 15

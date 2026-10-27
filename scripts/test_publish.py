@@ -39,11 +39,18 @@ class PublishTests(unittest.TestCase):
         helpers = self.root / "Tilr.app/Contents/Helpers"
         helpers.mkdir()
         (helpers / "tilrd").write_bytes(b"server")
+        (helpers / "tilr").write_bytes(b"client")
         resources = self.root / "Tilr.app/Contents/Resources/server"
         resources.mkdir(parents=True)
         (resources / "app-managed.json").write_text(json.dumps(dict(
             version="0.1.1", build=2, arch="arm64", serverVersion="0.1.1-build2-test",
             sha256=publish.digest(helpers / "tilrd"), protocolVersion=1, minAppBuild=1, maxAppBuild=None)))
+        (resources / "client.json").write_text(json.dumps(dict(
+            version="0.1.1-build2-test", sha256=publish.digest(helpers / "tilr"))))
+        # These publication fixtures use bytes, not signed Mach-O executables.
+        binary_check = patch("fetch_server.check_binary", return_value="0.1.1-build2-test")
+        binary_check.start()
+        self.addCleanup(binary_check.stop)
         self.manifest()
 
     def test_protocol_one_release_rejects_other_server_protocols(self):

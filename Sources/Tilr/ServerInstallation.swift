@@ -43,26 +43,54 @@ struct ServerInstallation {
     let protocolVersion: Int
     let architecture: String
     var runner: Runner? = nil
-    var portCheck: (() throws -> Void)? = nil
     var sourceManifest: URL? = nil
-    /// Tests: the running server's live pane count instead of asking it (nil = no answer).
-    var paneCount: (() -> Int?)? = nil
     /// Each launchd step, for the status the app shows while it works.
     var progress: ((String) -> Void)? = nil
 
-    var binary: URL { root.appendingPathComponent("tilrd") }
-    var receipt: URL { root.appendingPathComponent("app-managed.json") }
-    var plist: URL { agents.appendingPathComponent(label + ".plist") }
-    var endpoint: String { "ws://127.0.0.1:\(port)" }
-    var service: String { "gui/\(getuid())/\(label)" }
-    var state: URL { root.appendingPathComponent("state") }
-    /// Written when our plist was rewritten but launchd still runs the old definition because the
-    /// server had live panes; cleared by the next bootstrap. Only a fallback: see `restartPending`.
-    var restartMarker: URL { root.appendingPathComponent("restart-pending") }
-    /// Our plist or our receipt is on disk: there is something for `remove()` to take away.
-    var isInstalled: Bool {
-        FileManager.default.fileExists(atPath: plist.path) || FileManager.default.fileExists(atPath: receipt.path)
+    /// Selection is shared with the UI across its background preparation operation.
+    final class Selection {
+        var binary: URL?
+        var found = false
+        var helper: URL?
     }
+    var selection = Selection()
+    var updateRequested = false
+    var loginShell: URL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
+    var socketPath: String = ServerInstallation.defaultSocket
+    var runningExecutable: (() throws -> URL?)? = nil
+
+    static var defaultSocket: String {
+        let env = ProcessInfo.processInfo.environment
+        if let socket = env["TILR_SOCKET"], !socket.isEmpty { return socket }
+        let directory: URL
+        if let runtime = env["TILR_RUNTIME_DIR"], !runtime.isEmpty {
+            directory = URL(fileURLWithPath: runtime)
+        } else if let runtime = env["XDG_RUNTIME_DIR"], !runtime.isEmpty {
+            directory = URL(fileURLWithPath: runtime).appendingPathComponent("tilr")
+        } else {
+            directory = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-\(geteuid())")
+        }
+        return directory.appendingPathComponent("tilrd.sock").path
+    }
+    var binary: URL { selection.binary ?? root.appendingPathComponent("tilrd") }
+    var receipt: URL { root.appendingPathComponent(".tilr-app-server.json") }
+    var installationMarker: URL { root.appendingPathComponent(".tilr-app-installed") }
+    var plist: URL { agents.appendingPathComponent(label + ".plist") }
+    var endpoint: String { "ws://127.0.0.1:7890" }
+    var service: String { "gui/\(getuid())/sh.tilr.tilrd" }
+    var state: URL {
+        let env = ProcessInfo.processInfo.environment
+        if let state = env["TILR_STATE_DIR"], !state.isEmpty { return URL(fileURLWithPath: state) }
+        if let state = env["XDG_STATE_HOME"], !state.isEmpty { return URL(fileURLWithPath: state).appendingPathComponent("tilr") }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/state/tilr")
+    }
+    var isInstalled: Bool { selection.found || FileManager.default.isExecutableFile(atPath: binary.path) }
+    var installedByApp: Bool {
+        (try? String(contentsOf: installationMarker, encoding: .utf8)) == binary.path
+    }
+    // The app's bundled CLI carries its supported protocol. An installed CLI could accept a
+    // newer daemon that this app cannot speak to, so it must not validate app compatibility.
+    var client: URL { selection.helper ?? source.appendingPathComponent("tilr") }
 
     func command(_ executable: URL, _ args: [String]) throws -> Output {
         if let runner { return try runner(executable, args) }
@@ -79,12 +107,8 @@ struct ServerInstallation {
         process.arguments = args
         process.standardOutput = file
         process.standardError = file
-        // App environment overrides must never repoint the managed server's state.
-        var env = ProcessInfo.processInfo.environment
-        env["TILR_STATE_DIR"] = state.path
-        env["TILR_RUNTIME_DIR"] = root.appendingPathComponent("runtime").path
-        env.removeValue(forKey: "TILR_CONFIG")
-        process.environment = env
+        // Use the ordinary CLI defaults, including user state and runtime configuration.
+        process.environment = ProcessInfo.processInfo.environment
         let ended = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in ended.signal() }
         try process.run()
@@ -106,402 +130,282 @@ struct ServerInstallation {
                    wait: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)) throws -> [String: String] {
         progress?("Waiting for the local server on port \(port)…")
         let deadline = now().addingTimeInterval(startupTimeout)
-        var runningVersion: String?
+        var observedVersion: String?
         repeat {
-            if let check = try? command(binary, ["ps", "--url", endpoint, "--server-version"]),
-               check.status == 0, !check.text.isEmpty {
-                runningVersion = check.text
-                if version == nil || check.text == version { return try credentials() }
+            if let current = try? runningVersion() {
+                observedVersion = current
+                if version == nil || current == version { return try credentials() }
             }
             wait(retryInterval)
         } while now() < deadline
         let mismatch: String
-        if let version, let runningVersion {
+        if let version, let runningVersion = observedVersion {
             mismatch = " Reload did not complete: running version \(runningVersion), expected \(version)."
         } else {
             mismatch = ""
         }
-        throw Failure("The local server did not become ready.\(mismatch) See \(root.appendingPathComponent("server.log").path). Existing processes were not stopped.")
-    }
-
-    func launchctl(_ args: [String]) throws -> Output {
-        try command(URL(fileURLWithPath: "/bin/launchctl"), args)
+        throw Failure("The local server did not become ready.\(mismatch) See ~/Library/Logs/tilrd.log. Existing processes were not stopped.")
     }
 
     func hash(_ url: URL) throws -> String {
         SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Shared by the offline bundle installer and signed server downloads.
-    /// File/receipt recovery is idempotent if the process died between their renames.
+    /// `version` authenticates the local socket without starting a daemon. The bundled client
+    /// performs the ordinary protocol and peer checks before any installation is considered.
+    func runningVersion() throws -> String? {
+        let response = try command(client, ["--socket", socketPath, "version"])
+        guard response.status == 0 else { throw Failure("Cannot connect to the ordinary tilrd: \(response.text)") }
+        for line in response.text.split(separator: "\n") {
+            if line.hasPrefix("tilrd "), !line.hasPrefix("tilrd is not running at "), let end = line.range(of: " at ") {
+                let value = String(line[line.index(line.startIndex, offsetBy: 6)..<end.lowerBound])
+                if !value.isEmpty { return value }
+            }
+        }
+        return nil
+    }
+
+    /// macOS exposes the connected peer's pid. Resolve the live daemon's path for explicit
+    /// replacement; startup itself never needs to search PATH after a successful socket probe.
+    private func socketExecutable() -> URL? {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(socketPath.utf8CString)
+        guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else { return nil }
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            for (index, byte) in bytes.enumerated() { destination[index] = UInt8(bitPattern: byte) }
+        }
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        guard connected == 0 else { return nil }
+        var pid: pid_t = 0
+        var size = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &size) == 0, pid > 0 else { return nil }
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &path, UInt32(path.count))
+        guard length > 0 else { return nil }
+        let executable = URL(fileURLWithPath: String(cString: path))
+        return executable.lastPathComponent == "tilrd" ? executable : nil
+    }
+
+    private func executableVersion(_ url: URL) throws -> String {
+        let response = try command(url, ["--version"])
+        guard response.status == 0, response.text.hasPrefix("tilrd "),
+              let end = response.text.range(of: " (") else { throw Failure("Invalid installed tilrd: \(response.text)") }
+        return String(response.text[response.text.index(response.text.startIndex, offsetBy: 6)..<end.lowerBound])
+    }
+
+    private func installedManifest(version: String) throws -> Manifest {
+        if let data = try? Data(contentsOf: receipt),
+           let saved = try? JSONDecoder().decode(Manifest.self, from: data),
+           saved.serverVersion == version, (try? hash(binary)) == saved.sha256 {
+            return saved
+        }
+        // An ordinary installation has no application feed build number or receipt.
+        return Manifest(version: version, build: 0, arch: architecture, serverVersion: version,
+                        sha256: (try? hash(binary)) ?? "", protocolVersion: protocolVersion,
+                        minAppBuild: 0, maxAppBuild: nil)
+    }
+
+    private func discover() throws -> Manifest? {
+        if selection.helper == nil { selection.helper = source.appendingPathComponent("tilr") }
+        if let version = try runningVersion() {
+            if selection.binary == nil {
+                selection.binary = try runningExecutable?() ?? socketExecutable()
+            }
+            selection.found = true
+            return try installedManifest(version: version)
+        }
+        let path = try command(loginShell, ["-lc", "command -v tilrd"])
+        var candidate: URL?
+        if path.status == 0, path.text.hasPrefix("/"), !path.text.contains("\n") {
+            candidate = URL(fileURLWithPath: path.text)
+        } else if FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("tilrd").path) {
+            candidate = root.appendingPathComponent("tilrd")
+        }
+        guard let candidate else { return nil }
+        selection.binary = candidate
+        let version = try executableVersion(candidate)
+        selection.found = true
+        try startService()
+        return try installedManifest(version: version)
+    }
+
+    /// A bundled CLI beside its own daemon would select that daemon before PATH. If an external
+    /// installation lacks a sibling CLI, a private temporary pair points the helper at that exact
+    /// daemon; service install canonicalizes the symlink into the ordinary service definition.
+    private func startService() throws {
+        progress?("Starting the ordinary tilrd service…")
+        let sibling = binary.deletingLastPathComponent().appendingPathComponent("tilr")
+        let response: Output
+        if FileManager.default.isExecutableFile(atPath: sibling.path) {
+            response = try command(sibling, ["--socket", socketPath, "service", "install"])
+        } else {
+            let temp = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-cli-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: temp) }
+            try FileManager.default.copyItem(at: (selection.helper ?? source.appendingPathComponent("tilr")), to: temp.appendingPathComponent("tilr"))
+            try FileManager.default.createSymbolicLink(at: temp.appendingPathComponent("tilrd"), withDestinationURL: binary)
+            response = try command(temp.appendingPathComponent("tilr"), ["--socket", socketPath, "service", "install"])
+        }
+        guard response.status == 0 else { throw Failure("Cannot start tilrd service: \(response.text)") }
+    }
+
+    /// The bundle is used only for an absent installation. Explicit signed updates retain the
+    /// existing atomic replacement and reload transaction at the ordinary executable path.
     func install() throws -> Manifest {
         let fm = FileManager.default
+        let pending = root.appendingPathComponent(".tilr-app-pending.json")
+        let hasPending = fm.fileExists(atPath: pending.path)
+        if hasPending, let data = try? Data(contentsOf: pending),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let path = object["binaryPath"] as? String {
+            selection.binary = URL(fileURLWithPath: path)
+        }
+        if !updateRequested, !hasPending, let found = try discover() { return found }
+        if updateRequested, !selection.found { _ = try discover() }
+        if updateRequested, selection.binary == nil {
+            throw Failure("Cannot determine the running tilrd executable; it was left untouched.")
+        }
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let fd = try lock()
+        let fd = open(root.appendingPathComponent(".tilr-app-install.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw Failure("Cannot lock the tilrd installation") }
         defer { flock(fd, LOCK_UN); close(fd) }
-
-        // Recover the binary/receipt transaction before comparing against an older bundle.
-        // Before rename: keep the old receipt. After rename: finish the new receipt and
-        // keep the transaction pending until reload has been requested (or the job started).
-        let pending = root.appendingPathComponent("pending-server.json")
-        var replacementPending = false
+        guard flock(fd, LOCK_EX) == 0 else { throw Failure("Cannot lock the tilrd installation") }
+        if !updateRequested, !hasPending, let found = try discover() { return found }
         if fm.fileExists(atPath: pending.path) {
-            let pendingData = try Data(contentsOf: pending)
-            let incoming = try JSONDecoder().decode(Manifest.self, from: pendingData)
-            if (try? hash(binary)) == incoming.sha256 {
-                try pendingData.write(to: receipt, options: .atomic)
-                replacementPending = true
-            } else {
-                try fm.removeItem(at: pending)
-            }
+            let data = try Data(contentsOf: pending)
+            let saved = try JSONDecoder().decode(Manifest.self, from: data)
+            let transaction = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            return try finishTransaction(saved, transaction: transaction, pending: pending)
         }
-        for file in try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            where file.lastPathComponent.hasPrefix("tilrd.new.") {
-            try fm.removeItem(at: file)
-        }
-
-        var data = try Data(contentsOf: sourceManifest ?? source.appendingPathComponent("app-managed.json"))
-        var wanted = try JSONDecoder().decode(Manifest.self, from: data)
-        var payload = source.appendingPathComponent("tilrd")
-        let existing: Manifest?
-        if fm.fileExists(atPath: receipt.path) {
-            existing = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: receipt))
-        } else {
-            existing = nil
-            guard !fm.fileExists(atPath: binary.path) else {
-                throw Failure("An unmanaged executable already occupies \(binary.path). It was not replaced.")
-            }
-        }
-        if let existing {
-            if existing.build > wanted.build {
-                // Bundle is a bootstrap copy, never a reason to downgrade a newer server.
-                wanted = existing
-                payload = binary
-                data = try Data(contentsOf: receipt)
-            } else if existing.build == wanted.build && existing != wanted {
-                throw Failure("Different server contents use the same server release number.")
-            }
-        }
+        let data = try Data(contentsOf: sourceManifest ?? source.appendingPathComponent("app-managed.json"))
+        let wanted = try JSONDecoder().decode(Manifest.self, from: data)
+        let payload = source.appendingPathComponent("tilrd")
         guard wanted.supports(appBuild: appBuild, protocolVersion: protocolVersion, arch: architecture) else {
-            throw Failure("The server is incompatible with this application. Check for Server Updates or update Tilr; the installed server was not downgraded or stopped.")
+            throw Failure("The server is incompatible with this application; the running daemon was left untouched.")
         }
         guard try hash(payload) == wanted.sha256 else { throw Failure("Server checksum mismatch") }
         let signature = try command(URL(fileURLWithPath: "/usr/bin/codesign"), ["--verify", "--strict", payload.path])
-        guard signature.status == 0 else { throw Failure("Server signature verification failed") }
-        let version = try command(payload, ["--version"])
-        guard version.status == 0, version.text.hasPrefix("tilrd \(wanted.serverVersion) (") else {
-            throw Failure("Server cannot run or has an unexpected version")
+        guard signature.status == 0, try executableVersion(payload) == wanted.serverVersion else {
+            throw Failure("Server signature or version verification failed")
         }
-
-        let job: [String: Any] = [
-            "Label": label,
-            // The binary itself, so launchd and Login Items name the signed server. Panes get the
-            // user's login environment from the server, which runs their shell as a login shell.
-            "ProgramArguments": [binary.path, "--listen", "127.0.0.1:\(port)", "--config", root.appendingPathComponent("origins.toml").path],
-            "EnvironmentVariables": ["TILR_STATE_DIR": state.path,
-                                     "TILR_RUNTIME_DIR": root.appendingPathComponent("runtime").path],
-            "RunAtLoad": true, "KeepAlive": ["SuccessfulExit": false],
-            "StandardOutPath": root.appendingPathComponent("server.log").path,
-            "StandardErrorPath": root.appendingPathComponent("server.log").path,
-            // macOS 13+: Login Items and the background-activity notice show the app (name, icon)
-            // instead of the signing team. Only the default instance installs the server.
-            "AssociatedBundleIdentifiers": [Self.appBundleIdentifier],
-        ]
-        let jobState = try launchctl(["print", service])
-        var loaded = jobState.status == 0
-        let running = loaded && jobState.text.contains("state = running")
-        // Our job with another definition (an earlier Tilr's, a changed port or environment):
-        // rewritten and applied. Another program's plist under our name is refused.
-        var changed = false
-        if fm.fileExists(atPath: plist.path) {
-            let old = try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil)
-            if let old = old as? NSDictionary, old.isEqual(to: job) {
-            } else if let old = old as? [String: Any], Self.isOwnJob(old, label: label, binary: binary) {
-                changed = true
-            } else {
-                throw Failure("\(plist.path) is not Tilr's local server service. It was left untouched.")
+        if !updateRequested {
+            let cli = source.appendingPathComponent("tilr")
+            let check = try command(URL(fileURLWithPath: "/usr/bin/codesign"), ["--verify", "--strict", cli.path])
+            let version = try command(cli, ["--version"])
+            guard check.status == 0, version.status == 0,
+                  version.text.hasPrefix("tilr \(wanted.serverVersion) (") else { throw Failure("Bundled client does not match the daemon") }
+            guard !fm.fileExists(atPath: root.appendingPathComponent("tilr").path),
+                  !fm.fileExists(atPath: binary.path) else { throw Failure("An existing installation was left untouched") }
+            // Both stages and their durable journal precede either executable's publication.
+        } else if let saved = try? JSONDecoder().decode(Manifest.self, from: Data(contentsOf: receipt)) {
+            guard wanted.build > saved.build || wanted == saved else { throw Failure("Server update would downgrade or reuse a release number") }
+        }
+        let staged = binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new")
+        let stagedClient = root.appendingPathComponent(".tilr.app-new")
+        // Stages left before journal creation have never been published and can be replaced.
+        for file in [staged, stagedClient] where fm.fileExists(atPath: file.path) { try fm.removeItem(at: file) }
+        defer {
+            if !fm.fileExists(atPath: pending.path) {
+                try? fm.removeItem(at: staged)
+                try? fm.removeItem(at: stagedClient)
             }
-        } else if loaded {
-            throw Failure("A service named \(label) is loaded without Tilr's file \(plist.path). It was left untouched.")
         }
-        // A separately installed server (or another application) may own this port.
-        if !loaded { try checkPort() }
+        try fm.copyItem(at: payload, to: staged)
+        if !updateRequested { try fm.copyItem(at: source.appendingPathComponent("tilr"), to: stagedClient) }
+        if fm.fileExists(atPath: binary.path) {
+            let previous = binary.appendingPathExtension("previous")
+            try? fm.removeItem(at: previous)
+            try fm.copyItem(at: binary, to: previous)
+            if let old = try? Data(contentsOf: receipt) {
+                try old.write(to: root.appendingPathComponent(".tilr-app-server.previous.json"), options: .atomic)
+            }
+        }
+        var transaction = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        transaction["binaryPath"] = binary.path
+        transaction["bootstrap"] = !updateRequested
+        if !updateRequested { transaction["clientHash"] = try hash(stagedClient) }
+        try JSONSerialization.data(withJSONObject: transaction).write(to: pending, options: .atomic)
+        return try finishTransaction(wanted, transaction: transaction, pending: pending)
+    }
 
-        let needsCopy = (try? hash(binary)) != wanted.sha256
-        let configFile = root.appendingPathComponent("origins.toml")
-        let encodedOrigins = String(decoding: try JSONSerialization.data(withJSONObject: origins.sorted(), options: [.withoutEscapingSlashes]), as: UTF8.self)
-        let configData = Data(("# Managed by Tilr.app; regenerated at launch.\nallow_origins = " + encodedOrigins + "\n").utf8)
-        let configChanged = (try? Data(contentsOf: configFile)) != configData
-        if needsCopy {
-            let staged = root.appendingPathComponent("tilrd.new.\(UUID().uuidString)")
-            defer { try? fm.removeItem(at: staged) }
-            try fm.copyItem(at: payload, to: staged)
-            if fm.fileExists(atPath: binary.path) {
-                let previous = root.appendingPathComponent("tilrd.previous")
-                try? fm.removeItem(at: previous)
-                try fm.copyItem(at: binary, to: previous)
-                if fm.fileExists(atPath: receipt.path) {
-                    try Data(contentsOf: receipt).write(to: root.appendingPathComponent("app-managed.previous.json"), options: .atomic)
+    /// A journal is committed only after both stages exist. Each rename and marker write can
+    /// be replayed after process termination, including a stop between the two pair renames.
+    private func finishTransaction(_ wanted: Manifest, transaction: [String: Any], pending: URL) throws -> Manifest {
+        let fm = FileManager.default
+        let bootstrap = transaction["bootstrap"] as? Bool == true
+        let staged = binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new")
+        let stagedClient = root.appendingPathComponent(".tilr.app-new")
+        if bootstrap {
+            let installedClient = root.appendingPathComponent("tilr")
+            guard let clientHash = transaction["clientHash"] as? String else { throw Failure("Invalid bootstrap transaction") }
+            if (try? hash(installedClient)) != clientHash {
+                guard !fm.fileExists(atPath: installedClient.path), try hash(stagedClient) == clientHash,
+                      rename(stagedClient.path, installedClient.path) == 0 else {
+                    throw Failure("Cannot complete the installed tilr client")
                 }
             }
-            // Mark it managed before exposing the executable: its standalone updater
-            // must never fetch a different release from the server CDN.
-            if configChanged { try configData.write(to: configFile, options: .atomic) }
-            try data.write(to: pending, options: .atomic)
-            if existing == nil { try data.write(to: receipt, options: .atomic) }
-            guard rename(staged.path, binary.path) == 0 else { throw Failure("Cannot replace the installed server") }
-            try data.write(to: receipt, options: .atomic)
-            replacementPending = true
         }
-        if !needsCopy && configChanged { try configData.write(to: configFile, options: .atomic) }
-        try fm.createDirectory(at: agents, withIntermediateDirectories: true)
-        if changed || !fm.fileExists(atPath: plist.path) {
-            try PropertyListSerialization.data(fromPropertyList: job, format: .xml, options: 0).write(to: plist, options: .atomic)
+        if (try? hash(binary)) != wanted.sha256 {
+            guard try hash(staged) == wanted.sha256,
+                  rename(staged.path, binary.path) == 0 else { throw Failure("Cannot replace installed tilrd") }
         }
-        // launchd keeps the definition it loaded until bootout. A stopped job, or a running one
-        // with no live panes, has nothing to lose: replace it now. Live panes (or a server that
-        // does not answer) keep the old definition; the restart waits for the user or the next launch.
-        if loaded && (changed || restartPending(printed: jobState.text)) {
-            if !running || livePanes() == 0 {
-                progress?("Stopping the local server to apply its new service definition…")
-                let result = try launchctl(["bootout", service])
-                guard result.status == 0 else { throw Failure("Cannot replace the local server service: \(result.text)") }
-                loaded = false
-            } else {
-                try Data().write(to: restartMarker, options: .atomic)
-            }
-        }
-        _ = try credentials()
-        if !loaded {
-            try bootstrapJob()
-        } else if !running {
-            // No -k: start a stopped job, never kill/restart an existing supervisor.
-            let result = try launchctl(["kickstart", service])
-            guard result.status == 0 else { throw Failure("Cannot start the local server: \(result.text)") }
-        } else if replacementPending || configChanged {
-            // The server reloads only on request. One signal applies both the installed binary
-            // and origins through its session-preserving path, without restarting the job.
-            do {
-                let result = try launchctl(["kill", "SIGUSR1", service])
-                guard result.status == 0 else { throw Failure(result.text) }
-            } catch {
-                if replacementPending {
-                    throw Failure("The server update was installed, but the local server was not reloaded: \(error.localizedDescription)")
-                }
-                throw Failure("Cannot reload the local server's allowed origins: \(error.localizedDescription)")
-            }
-        }
-        if replacementPending { try fm.removeItem(at: pending) }
+        try JSONEncoder().encode(wanted).write(to: receipt, options: .atomic)
+        if bootstrap { try Data(binary.path.utf8).write(to: installationMarker, options: .atomic) }
+        selection.binary = binary
+        selection.found = true
+        try applyReplacement()
+        try fm.removeItem(at: pending)
+        try? fm.removeItem(at: staged)
+        try? fm.removeItem(at: stagedClient)
         return wanted
     }
 
-    /// The app the job is attributed to in Login Items; a bare test executable has no bundle.
-    static var appBundleIdentifier: String { Bundle.main.bundleIdentifier ?? "dev.tilr.mac" }
-
-    /// Whether `old` is a job Tilr wrote: our Label, and it runs our installed `binary`, directly
-    /// or (an earlier Tilr) through `/bin/zsh -lc`. Its other keys may differ; they are ours to replace.
-    static func isOwnJob(_ old: [String: Any], label: String, binary: URL) -> Bool {
-        guard old["Label"] as? String == label, let args = old["ProgramArguments"] as? [String] else { return false }
-        return args.first == binary.path
-            || (args.first == "/bin/zsh" && args.dropFirst().first == "-lc" && args.contains(binary.path))
-    }
-
-    /// Whether launchd runs another definition than our plist file. Read from launchd itself
-    /// (`launchctl print`: program, arguments, environment), so a login that loaded the new file
-    /// counts as applied; the marker decides only when that output cannot be parsed. A match, or
-    /// a job that is not loaded (its next bootstrap reads the file), clears the marker.
-    func restartPending(printed: String? = nil) -> Bool {
-        let fm = FileManager.default
-        let marker = fm.fileExists(atPath: restartMarker.path)
-        var text = printed
-        if text == nil {
-            guard let loaded = try? launchctl(["print", service]) else { return marker }
-            if loaded.status != 0 { try? fm.removeItem(at: restartMarker); return false }
-            text = loaded.text
-        }
-        guard let file = try? PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as? [String: Any],
-              let same = Self.loadedDefinition(text ?? "", matches: file) else { return marker }
-        if same { try? fm.removeItem(at: restartMarker) }
-        return !same
-    }
-
-    /// Variables launchd adds to every job's `environment` block.
-    static let launchdEnvironment: Set<String> = ["OSLogRateLimit"]
-
-    /// Compares `launchctl print`'s program, arguments and environment with a job definition.
-    /// nil when the output has no program or arguments block (another format, or not loaded),
-    /// or no environment block while the job sets variables.
-    static func loadedDefinition(_ printed: String, matches job: [String: Any]) -> Bool? {
-        var program: String?
-        var arguments: [String]?
-        var environment: [String: String]?
-        var block: String?
-        var items: [String] = []
-        for line in printed.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
-            if let name = block {
-                if line == "\t}" {
-                    if name == "arguments" {
-                        arguments = items
-                    } else {
-                        var pairs: [String: String] = [:]
-                        for item in items {
-                            guard let arrow = item.range(of: " => ") else { return nil }
-                            pairs[String(item[..<arrow.lowerBound])] = String(item[arrow.upperBound...])
-                        }
-                        environment = pairs
-                    }
-                    block = nil
-                    items = []
-                } else {
-                    items.append(line.trimmingCharacters(in: .whitespaces))
-                }
-            } else if line.hasPrefix("\tprogram = ") {
-                program = String(line.dropFirst("\tprogram = ".count))
-            } else if line == "\targuments = {" {
-                block = "arguments"
-            } else if line == "\tenvironment = {" {
-                block = "environment"
-            }
-        }
-        guard let program, let arguments, let wanted = job["ProgramArguments"] as? [String] else { return nil }
-        let wantedEnvironment = job["EnvironmentVariables"] as? [String: String] ?? [:]
-        if environment == nil && !wantedEnvironment.isEmpty { return nil }
-        let loadedEnvironment = (environment ?? [:]).filter {
-            !launchdEnvironment.contains($0.key) && !$0.key.hasPrefix("XPC_")
-        }
-        return program == (job["Program"] as? String ?? wanted.first) && arguments == wanted
-            && loadedEnvironment == wantedEnvironment
-    }
-
-    private func lock() throws -> Int32 {
-        let fd = open(root.appendingPathComponent("install.lock").path, O_CREAT | O_RDWR, 0o600)
-        guard fd >= 0 else { throw Failure("Cannot open local server installation lock") }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-            close(fd)
-            throw Failure("Another Tilr is installing the server. Try again shortly.")
-        }
-        return fd
-    }
-
-    /// Our plist, parsed; nil when there is none; throws when the file is not ours.
-    private func ownPlist() throws -> [String: Any]? {
-        guard FileManager.default.fileExists(atPath: plist.path) else { return nil }
-        guard let old = try? PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as? [String: Any],
-              Self.isOwnJob(old, label: label, binary: binary) else {
-            throw Failure("\(plist.path) is not Tilr's local server service. It was left untouched.")
-        }
-        return old
-    }
-
-    /// The live panes of the running server: `tilrd ps` sends ListPanes over the server's
-    /// WebSocket with the stored token and prints a header and one line per pane. nil when the
-    /// server does not answer; callers treat that as busy.
-    func livePanes() -> Int? {
-        if let paneCount { return paneCount() }
-        guard let list = try? command(binary, ["ps", "--url", endpoint]), list.status == 0 else { return nil }
-        return max(0, list.text.split(separator: "\n").count - 1)
-    }
-
-    /// Loads our plist; a job that is loaded but has no process (launchd sometimes holds a
-    /// RunAtLoad job back) is started. Clears a pending restart: launchd now runs the file.
-    func bootstrapJob() throws {
-        progress?("Loading the local server service…")
-        var result = try launchctl(["bootstrap", "gui/\(getuid())", plist.path])
-        // A job just booted out may still be tearing down (EIO); give it a moment.
-        let deadline = Date().addingTimeInterval(timeout)
-        while result.status != 0 && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.25)
-            if try launchctl(["print", service]).status == 0 { result = Output(status: 0, text: ""); break }
-            result = try launchctl(["bootstrap", "gui/\(getuid())", plist.path])
-        }
-        guard result.status == 0 else { throw Failure("Cannot load the local server service: \(result.text)") }
-        try? FileManager.default.removeItem(at: restartMarker)
-        let loaded = try launchctl(["print", service])
-        let hasProcess = loaded.text.split(separator: "\n").contains {
-            $0.trimmingCharacters(in: .whitespaces).hasPrefix("pid = ")
-        }
-        if loaded.status == 0 && !hasProcess {
-            progress?("Starting the local server…")
-            let kick = try launchctl(["kickstart", service])
-            guard kick.status == 0 else { throw Failure("Cannot start the local server: \(kick.text)") }
+    private func applyReplacement() throws {
+        if try runningVersion() != nil {
+            let result = try command(binary, ["reload"])
+            guard result.status == 0 else { throw Failure("The server update was installed, but the local server was not reloaded: \(result.text)") }
+        } else {
+            try startService()
         }
     }
 
-    /// Restart with the plist's definition: bootout (open panes close) and bootstrap.
+    func restartPending() -> Bool { false }
+
     func restart() throws {
-        let fd = try lock()
-        defer { flock(fd, LOCK_UN); close(fd) }
-        guard try ownPlist() != nil else { throw Failure("The local server is not installed.") }
-        if try launchctl(["print", service]).status == 0 {
-            progress?("Stopping the local server…")
-            let result = try launchctl(["bootout", service])
-            guard result.status == 0 else { throw Failure("Cannot stop the local server: \(result.text)") }
-        }
-        try bootstrapJob()
+        throw Failure("The ordinary tilrd service manages its own service definition.")
     }
 
     enum Removal { case removed, notInstalled }
-
-    /// Takes away what the app installed: the job (bootout, so launchd and Login Items forget it),
-    /// its plist, the binary, receipts, origins and runtime. `state/` (sessions, token, logs) and
-    /// server.log stay. Another program's plist or a loaded job without our file is left alone.
     func remove() throws -> Removal {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: root.path) || fm.fileExists(atPath: plist.path) else { return .notInstalled }
-        try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let fd = try lock()
+        guard installedByApp else { return .notInstalled }
+        let fd = open(root.appendingPathComponent(".tilr-app-install.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw Failure("Cannot lock the tilrd installation") }
         defer { flock(fd, LOCK_UN); close(fd) }
-        let ours = try ownPlist() != nil
-        let loaded = try launchctl(["print", service]).status == 0
-        if !ours && loaded {
-            throw Failure("A service named \(label) is loaded without Tilr's file \(plist.path). It was left untouched.")
-        }
-        guard ours || fm.fileExists(atPath: receipt.path) else { return .notInstalled }
-        if loaded {
-            progress?("Stopping the local server…")
-            let result = try launchctl(["bootout", service])
-            let gone = try launchctl(["print", service]).status != 0
-            guard result.status == 0 || gone else {
-                throw Failure("Cannot stop the local server: \(result.text)")
-            }
-        }
-        progress?("Removing the local server…")
-        if ours { try fm.removeItem(at: plist) }
-        let names = ["tilrd", "tilrd.previous", "app-managed.json", "app-managed.previous.json",
-                     "pending-server.json", "origins.toml", "runtime", "restart-pending"]
-        for name in names { try? fm.removeItem(at: root.appendingPathComponent(name)) }
-        for file in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-            where file.lastPathComponent.hasPrefix("tilrd.new.") {
-            try? fm.removeItem(at: file)
-        }
-        guard !fm.fileExists(atPath: binary.path), !fm.fileExists(atPath: receipt.path) else {
-            throw Failure("Cannot delete the installed server in \(root.path).")
+        guard flock(fd, LOCK_EX) == 0 else { throw Failure("Cannot lock the tilrd installation") }
+        guard installedByApp else { return .notInstalled }
+        let result = try command(root.appendingPathComponent("tilr"), ["service", "uninstall"])
+        guard result.status == 0 else { throw Failure("Cannot uninstall tilrd service: \(result.text)") }
+        let transactionFiles = [root.appendingPathComponent(".tilr-app-pending.json"),
+                                binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"),
+                                root.appendingPathComponent(".tilr.app-new"),
+                                root.appendingPathComponent(".tilr-app-server.previous.json"),
+                                binary.appendingPathExtension("previous")]
+        for file in transactionFiles + [binary, root.appendingPathComponent("tilr"), receipt, installationMarker] {
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         }
         return .removed
     }
 
-    func checkPort() throws {
-        if let portCheck { return try portCheck() }
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw Failure("Cannot check the local server port") }
-        defer { close(fd) }
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = port.bigEndian
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let result = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-        }
-        guard result == 0 else {
-            if errno != EADDRINUSE { throw Failure("Cannot check the local server port: \(String(cString: strerror(errno)))") }
-            throw Failure("Port \(port) is already in use. The existing server was left untouched. Choose another local_server.port in Tilr's config, or stop the separate server yourself.")
-        }
-    }
-
     func credentials() throws -> [String: String] {
-        let token = try command(binary, ["token"])
-        guard token.status == 0, !token.text.isEmpty else { throw Failure("Cannot read the local server token") }
+        let token = try command(client, ["--socket", socketPath, "token"])
+        guard token.status == 0, !token.text.isEmpty else { throw Failure("Cannot read the local server token: \(token.text)") }
         return ["url": endpoint, "token": token.text]
     }
 }

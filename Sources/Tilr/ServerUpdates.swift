@@ -87,7 +87,11 @@ struct ServerUpdates {
             throw ServerInstallation.Failure("Published server contents changed without a new release number")
         }
         return feed.releases.filter {
-            $0.manifest.build > installed.build && $0.manifest.supports(appBuild: appBuild, protocolVersion: protocolVersion, arch: arch)
+            // A pre-existing ordinary installation has no app-feed build. Only offer a clearly
+            // newer upstream semantic version; commit suffixes do not establish release order.
+            let newer = installed.build != 0 || String($0.manifest.serverVersion.split(separator: "-").first ?? "").compare(
+                String(installed.serverVersion.split(separator: "-").first ?? ""), options: .numeric) == .orderedDescending
+            return newer && $0.manifest.build > installed.build && $0.manifest.supports(appBuild: appBuild, protocolVersion: protocolVersion, arch: arch)
         }.max { $0.manifest.build < $1.manifest.build }
     }
 

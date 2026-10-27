@@ -25,20 +25,28 @@ class UpstreamServerTests(unittest.TestCase):
         (self.root / 'server-release.json').write_text(json.dumps(dict(version='0.2.0', build=4, protocolVersion=1)))
         self.remote = {}
         self.binaries = {}
+        self.clients = {}
         self.commands = []
         self.signature = f'Authority=Developer ID Application: Rexuni ({fetch_server.TEAM})\nTeamIdentifier={fetch_server.TEAM}\nTimestamp=Oct 27, 2026\n'
         for arch in fetch_server.TARGETS:
             self.archive(arch)
 
-    def archive(self, arch, unsafe=None, version="0.2.0-abcdef0"):
+    def archive(self, arch, unsafe=None, version="0.2.0-abcdef0", client_version=None, omit_client=False, duplicate_client=False):
         url = fetch_server.release_url('0.2.0', arch)
         cpu = 'aarch64' if arch == 'arm64' else arch
         binary = f"#!/bin/sh\nprintf 'tilrd {version} (macos-{cpu})\\n'\n".encode()
         self.binaries[arch] = binary
+        client = f"#!/bin/sh\nprintf 'tilr {client_version or version} (macos-{cpu})\\n'\n".encode()
+        self.clients[arch] = client
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode='w:gz') as tar:
             top = Path(url).name.removesuffix('.tar.gz')
-            for name, content in [('tilrd', binary), ('tilr', b'client'), ('LICENSE-MIT', b'license')]:
+            contents = [('tilrd', binary), ('LICENSE-MIT', b'license')]
+            if not omit_client:
+                contents.append(('tilr', client))
+            if duplicate_client:
+                contents.append(('tilr', client))
+            for name, content in contents:
                 entry = tarfile.TarInfo(f'{top}/{name}')
                 entry.size = len(content)
                 tar.addfile(entry, io.BytesIO(content))
@@ -85,7 +93,7 @@ class UpstreamServerTests(unittest.TestCase):
             return arch + '\n'
         self.assertEqual(command[1:], ['--version'])
         self.assertEqual(arch, 'arm64', 'Foreign architecture must not be executed')
-        return 'tilrd 0.2.0-abcdef0 (macos-aarch64)\n'
+        return ('tilr' if binary in self.clients.values() else 'tilrd') + ' 0.2.0-abcdef0 (macos-aarch64)\n'
 
     def main(self):
         with self.patches():
@@ -117,6 +125,11 @@ class UpstreamServerTests(unittest.TestCase):
             self.assertEqual(manifest['serverVersion'], '0.2.0-abcdef0')
             self.assertEqual((path / 'tilrd').read_bytes(), self.binaries[arch])
             self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilrd').read_bytes(), self.binaries[arch])
+            self.assertEqual((path / 'tilr').read_bytes(), self.clients[arch])
+            self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilr').read_bytes(), self.clients[arch])
+            client = json.loads((path / 'client.json').read_text())
+            self.assertEqual(client['sha256'], hashlib.sha256(self.clients[arch]).hexdigest())
+            self.assertEqual(client['version'], manifest['serverVersion'])
             receipt = json.loads((path / 'release.json').read_text())
             self.assertEqual(receipt['upstream']['url'], fetch_server.release_url('0.2.0', arch))
         requirements = [arg[3:] for c in self.commands for arg in c if arg.startswith('-R=')]
@@ -145,6 +158,9 @@ class UpstreamServerTests(unittest.TestCase):
             binary = self.root / f'build/server-releases/0.2.0-4-{arch}/tilrd'
             self.assertEqual(binary.read_bytes(), self.binaries[arch])
             self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+            client = binary.with_name('tilr')
+            self.assertEqual(client.read_bytes(), self.clients[arch])
+            self.assertEqual(client.stat().st_mode & 0o777, 0o755)
 
     def test_missing_asset_has_no_build_fallback_or_completed_output(self):
         del self.remote[fetch_server.release_url('0.2.0', 'x86_64')]
@@ -194,6 +210,78 @@ class UpstreamServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'release version/platform'):
             self.main()
         self.assertFalse((self.root / 'build').exists())
+
+    def test_missing_duplicate_or_mismatched_client_prevents_completion(self):
+        for options in (dict(omit_client=True), dict(duplicate_client=True),
+                        dict(client_version="0.2.0-1234567")):
+            with self.subTest(options=options):
+                self.archive('arm64', **options)
+                with self.assertRaises(ValueError):
+                    self.main()
+                self.assertFalse((self.root / 'build').exists())
+
+    def test_foreign_client_must_match_the_full_server_identity(self):
+        self.archive('x86_64', client_version='0.2.0-1234567')
+        with self.assertRaisesRegex(ValueError, 'Client and server upstream versions differ'):
+            self.main()
+        self.assertFalse((self.root / 'build').exists())
+
+    def test_client_signature_failure_prevents_completed_output(self):
+        def command(command, **kwargs):
+            if command[0] == 'codesign' and Path(command[-1]).name.startswith('tilr-'):
+                raise subprocess.CalledProcessError(1, command)
+            return self.command_run(command, **kwargs)
+        with self.patches(), patch.object(fetch_server.subprocess, 'run', side_effect=command):
+            with self.assertRaises(subprocess.CalledProcessError):
+                fetch_server.main()
+        self.assertFalse((self.root / 'build').exists())
+
+    def test_client_team_timestamp_architecture_and_version_are_verified(self):
+        for fault in ('team', 'timestamp', 'arch', 'version'):
+            with self.subTest(fault=fault):
+                def run(command, **kwargs):
+                    result = self.command_run(command, **kwargs)
+                    if command[0] == 'codesign' and Path(command[-1]).name.startswith('tilr-'):
+                        if fault == 'team':
+                            result.stderr = self.signature.replace(fetch_server.TEAM, 'OTHER')
+                        if fault == 'timestamp':
+                            result.stderr = self.signature.replace('Timestamp=Oct 27, 2026\n', '')
+                    return result
+                def output(command, **kwargs):
+                    if command[0] == 'lipo' and Path(command[-1]).name == 'tilr-arm64' and fault == 'arch':
+                        return 'x86_64\n'
+                    if command[0] != 'lipo' and Path(command[0]).name == 'tilr-arm64' and fault == 'version':
+                        return 'tilr 0.2.0-1234567 (macos-aarch64)\n'
+                    return self.output(command, **kwargs)
+                with self.patches(), patch.object(fetch_server.subprocess, 'run', side_effect=run), \
+                        patch.object(fetch_server.subprocess, 'check_output', side_effect=output):
+                    with self.assertRaises(ValueError):
+                        fetch_server.main()
+                self.assertFalse((self.root / 'build').exists())
+
+    def test_packaged_client_metadata_and_bytes_are_verified(self):
+        self.main()
+        app = self.root / 'arm64.app'
+        import plistlib
+        (app / 'Contents').mkdir(parents=True)
+        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
+            TilrServerProtocolVersion=1, TilrBundledServerBuild=4, TilrBundledServerVersion='0.2.0')))
+        with self.patches():
+            bundle_server.bundle_server(app, 'arm64', 17, root=self.root)
+            bundle_server.verify_server(app, '0.2.0', 17, 'arm64')
+            (app / 'Contents/Helpers/tilr').write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, 'Bundled client'):
+                bundle_server.verify_server(app, '0.2.0', 17, 'arm64')
+
+    def test_cached_client_tampering_or_missing_file_is_rejected(self):
+        self.main()
+        path = self.root / 'build/server-releases/0.2.0-4-arm64/tilr'
+        path.write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, 'Client changed after'):
+            self.main()
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.main()
 
     def test_cached_tampering_and_legacy_compiled_receipt_are_rejected(self):
         self.main()
