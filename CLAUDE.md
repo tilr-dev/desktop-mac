@@ -37,7 +37,7 @@ Launch runs `syncDist` once to migrate the configured workspace's legacy dist co
 plugins only; failures are logged and do not abort startup. Missing/empty workspaces are not
 created, unmanaged files are preserved, and probes use temporary workspaces.
 CI generates bindings from the full commit SHA in `gitpm.pin`; its first field is a
-revision label (a tag or `dev`). Local and release builds use `../git/gitpm` or
+revision label (a tag or `main`). Local and release builds use `../git/gitpm` or
 `GITPM_DIR`, so that checkout must expose the same API as the pin. The service uses
 `PackageManager`/`InstalledPackage`; `replace(original:replacement:)` has no confirmation
 parameter and refuses incompatible consumers. Restore the original with

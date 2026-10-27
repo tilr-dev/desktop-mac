@@ -49,8 +49,8 @@ Development SHALL maintain the documented private API inventory and check guards
 - **THEN** Shell desktop CGS/SLS operations, browser hover selector, Debug WebContent PID, app/provider WebKit high-refresh features and Memory inspector selectors are checked against their documented guarded calls and fallbacks
 - **AND** an unavailable API is not treated as evidence of successful desktop movement, native hover, refresh rate or inspector display
 
-### Requirement: Specification change authorization on dev
-Pull requests into dev SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; the dev tree SHALL carry no copy of that workflow. Other tests SHALL remain local for dev.
+### Requirement: Specification change authorization on main
+Pull requests into main SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main, never from a workflow file of the pull request.
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -87,9 +87,10 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 
 #### Scenario: Candidate code cannot replace the checker
 - **WHEN** a pull request changes checker scripts or workflow definitions
-- **THEN** the check still runs the workflow from main, not a workflow file from the pull request or dev
+- **THEN** the check still runs the workflow from main, not a workflow file from the pull request
 - **AND** the trusted workflow reads candidate Git objects without checking out or executing candidate files
 - **AND** the shared checker content is verified against a digest pinned in main's workflow before execution, and a new digest takes effect only through a pull request into main
+- **AND** the shared checker scripts are downloaded from an immutable commit named in main's workflow, so a change in their source takes effect only through a pull request into main
 - **AND** only the checker process receives the read-only task credential
 
 #### Scenario: Malformed scope declaration
@@ -106,7 +107,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **THEN** both archive and edit authorization are required for that change
 
 #### Scenario: Text is inserted into an existing requirement
-- **WHEN** a pull request adds a sentence, scenario, or scenario step inside a requirement already present in dev
+- **WHEN** a pull request adds a sentence, scenario, or scenario step inside a requirement already present in main
 - **THEN** matching modify authorization for that existing requirement is required
 - **AND** adding a separate new requirement remains allowed without authorization
 
@@ -120,7 +121,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 
 #### Scenario: Chained requirement renames retain their original authorization
 - **WHEN** an own delta renames an existing requirement through intermediate names and modifies or removes it
-- **THEN** the operation requires authorization for the original requirement in dev
+- **THEN** the operation requires authorization for the original requirement in main
 - **AND** cyclic or ambiguous rename mappings fail the check
 
 #### Scenario: A new requirement takes an existing scenario
@@ -129,11 +130,11 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 
 #### Scenario: Reusing a renamed requirement's former name
 - **WHEN** an own delta renames an existing requirement and another requirement takes its former name
-- **THEN** each rename remains authorized against its own original requirement in dev
+- **THEN** each rename remains authorized against its own original requirement in main
 - **AND** modifying or removing the first requirement under its new name requires permission for that original requirement
 
 #### Scenario: A requirement's text moves under another existing requirement
-- **WHEN** a pull request deletes or moves the heading of an existing requirement so that some of its text or scenarios fall under another requirement already present in dev
+- **WHEN** a pull request deletes or moves the heading of an existing requirement so that some of its text or scenarios fall under another requirement already present in main
 - **THEN** authorization to remove or modify the requirement whose heading changed does not cover the change
 - **AND** modify authorization for the requirement that absorbs the text is required
 
@@ -142,7 +143,7 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **THEN** the check fails with an error instead of treating any other word as the own change
 
 #### Scenario: An existing archive shares the own change name
-- **WHEN** a pull request edits an archive that already exists in dev under the same change name as the task's own change
+- **WHEN** a pull request edits an archive that already exists in main under the same change name as the task's own change
 - **THEN** the archive is treated as a foreign change and edit authorization is required
 
 #### Scenario: A new capability differs from an existing one only by letter case or Unicode form
@@ -150,12 +151,12 @@ Pull requests into dev SHALL pass the required spec-change check. One shared che
 - **THEN** the check fails with an error instead of treating it as a new capability
 - **AND** the same applies when a delta in the task's own change names a capability that differs from an existing one only by letter case or Unicode form
 
-### Requirement: Specification merge readiness diagnostics
-Before fetching a pull request test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission. It SHALL distinguish a conflict with dev from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
+### Requirement: Specification merge readiness diagnostics on main
+Before fetching a pull request test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission. It SHALL distinguish a conflict with main from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
 
-#### Scenario: Pull request conflicts with dev
+#### Scenario: Pull request conflicts with main
 - **WHEN** the API reports mergeable false for a head SHA matching the requested candidate SHA
-- **THEN** the check fails immediately with a conflict diagnostic naming the task branch and instructing the author to merge dev with `git merge dev` and push
+- **THEN** the check fails immediately with a conflict diagnostic naming the task branch and instructing the author to merge main with `git merge main` and push
 - **AND** it does not advise re-running the job
 
 #### Scenario: GitHub is still computing the merge
