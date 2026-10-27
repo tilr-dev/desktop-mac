@@ -262,7 +262,7 @@ def main():
     if args.publish_only and args.publish:
         parser.error("Choose --publish-only or --publish")
     publishing = args.publish or args.publish_only
-    require_beta_publication(args.channel, publishing)
+    require_beta_publication(args.channel, publishing and not args.check)
     config = settings(require_build=not args.publish_only)
     (ROOT / "build").mkdir(exist_ok=True)
     with (ROOT / "build/release-all.lock").open("w") as lock:

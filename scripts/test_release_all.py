@@ -30,6 +30,18 @@ class ReleaseAllTests(unittest.TestCase):
                 completed.assert_not_called()
                 self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_access_check_reaches_preflight_without_publishing_default_channel(self):
+        for mode in ("--publish-only", "--publish"):
+            with self.subTest(mode=mode), patch.object(release_all, "ROOT", self.root), \
+                 patch.object(release_all.sys, "argv", ["release_all.py", "--check", mode]), \
+                 patch.object(release_all, "settings", return_value=self.config) as settings, \
+                 patch.object(release_all, "preflight") as preflight, \
+                 patch.object(release_all, "execute") as execute:
+                release_all.main()
+                settings.assert_called_once_with(require_build=mode != "--publish-only")
+                preflight.assert_called_once_with(self.config, True, build=mode != "--publish-only")
+                execute.assert_not_called()
+
     def test_unknown_saved_channel_cannot_route_publication_to_stable(self):
         saved = self.root / "build/latest-app-release.json"
         saved.parent.mkdir()
