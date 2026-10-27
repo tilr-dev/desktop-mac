@@ -335,16 +335,32 @@ class AutomaticReleaseTests(unittest.TestCase):
             "CFBundleShortVersionString": "0.0.0-dev", "CFBundleVersion": "1"}))
         (self.root / "server-release.json").write_text(json.dumps({
             "version": "0.1.0", "build": 1, "protocolVersion": 1}))
+        output = io.StringIO()
         with patch.object(release_all, "ROOT", self.root), \
              patch.object(release_all.sys, "argv", ["release_all.py", "--auto", "--version", "0.3.0"]), \
              patch.object(release_all, "settings", return_value={}), \
              patch.object(release_all, "preflight"), \
              patch.object(release_all, "ensure_server"), \
-             patch.object(release_all, "execute", return_value=[]) as execute, redirect_stdout(io.StringIO()):
+             patch.object(release_all, "execute", return_value=[]) as execute, redirect_stdout(output):
             release_all.main()
         self.assertEqual(execute.call_args.args[:3], ("0.3.0", 2, "stable"))
         self.assertEqual(json.loads((self.root / "build/release-auto.json").read_text()),
                          {"version": "0.3.0", "build": 2})
+
+        self.assertIn("Stable publication requires promotion of a verified CI RC", output.getvalue())
+        self.assertNotIn("./upload.command", output.getvalue())
+        self.assertNotIn("--publish-only", output.getvalue())
+
+    def test_beta_build_prints_the_publish_command(self):
+        output = io.StringIO()
+        with patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all.sys, "argv", ["release_all.py", "--version", "0.3.0", "--build", "21", "--channel", "beta"]), \
+             patch.object(release_all, "settings", return_value={}), \
+             patch.object(release_all, "preflight"), \
+             patch.object(release_all, "execute", return_value=[]), redirect_stdout(output):
+            release_all.main()
+        self.assertIn("./upload.command", output.getvalue())
+        self.assertIn("--channel beta --publish-only", output.getvalue())
 
     def test_invalid_override_does_not_reserve(self):
         with self.assertRaises(ValueError):

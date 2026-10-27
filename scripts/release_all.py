@@ -296,8 +296,11 @@ def main():
             success("Both notarized builds are ready. Nothing published.")
             for output in outputs:
                 success(f"Output: {output}")
-            print("Publish this completed pair after testing: ./upload.command")
-            print(f"Or explicitly: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel {args.channel} --publish-only")
+            if args.channel == "beta":
+                print("Publish this completed pair after testing: ./upload.command")
+                print(f"Or explicitly: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel beta --publish-only")
+            else:
+                print("Stable publication requires promotion of a verified CI RC; direct stable publication is disabled")
 
 
 if __name__ == "__main__":

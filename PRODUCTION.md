@@ -595,8 +595,8 @@ Change the marketing version once with `./release.command --version 0.2.0`; it i
 remembered for subsequent builds. The default receipt channel is stable (build-only);
 use `--channel beta` for a locally publishable pair. Stable publication requires
 promotion of a verified CI RC. To resume an existing release, use explicit version/build with
-`release_all.py --resume`. Successful builds print artifact paths and the publish-only
-command. There are no terminal questions or final Return prompt. macOS Keychain
+`release_all.py --resume`. Successful builds print artifact paths; beta builds also print the publish-only
+command, while stable builds explain the CI RC promotion requirement. There are no terminal questions or final Return prompt. macOS Keychain
 access prompts, if any, remain controlled by the key's existing access permissions.
 
 

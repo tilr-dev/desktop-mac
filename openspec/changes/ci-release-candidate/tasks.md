@@ -8,4 +8,4 @@
 
 ## 3. Verification
 - [x] 3.1 Cover RC publication, occupied tags, monotonic builds, numeric bundle versions and stable refusal with deterministic tests.
-- [ ] 3.2 Review the diff and archive the change.
+- [x] 3.2 Review the diff and archive the change.
