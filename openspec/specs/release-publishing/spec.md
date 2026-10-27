@@ -107,7 +107,7 @@ Release apps SHALL use Sparkle pinned to 2.10.0 in Package.swift/Package.resolve
 - **AND** subsequent fresh appcast checks use the stable feed; switching the preference does not cancel the prepared installer
 
 ### Requirement: Release from CI
-The Release workflow SHALL build, sign, notarize and publish both app architectures and the pinned server on GitHub-hosted macOS, run by hand from main, each key only in the job that uses it.
+The Release workflow SHALL build, sign, notarize and publish both app architectures and the pinned server on GitHub-hosted macOS, run by hand from a release/X.Y branch, each key only in the job that uses it.
 
 #### Scenario: Run a CI release
 - **WHEN** Release runs with version, channel and an optional build
@@ -118,6 +118,11 @@ The Release workflow SHALL build, sign, notarize and publish both app architectu
 - **AND** that build is logged and passed explicitly to both architecture builds and publication, without changing local release numbering
 - **AND** after successful CDN publication the publish job creates tag v<version> on the workflow commit and a GitHub Release named Tilr <version> (<build>), with both unchanged DMGs from the app artifact and the notes input
 - **AND** only the publish job has contents: write; the workflow commits no repository changes
+
+#### Scenario: Run from a branch other than a release branch
+- **WHEN** Release is started from main, a task branch or a tag
+- **THEN** a first job without keys or environment fails naming the ref, and no job holding keys starts
+- **AND** the apple-signing and release environments accept only release/* branches, so a job with keys cannot run from another ref either
 
 #### Scenario: Resolve a build from channel appcasts
 - **WHEN** the two architecture appcasts contain different builds or multiple historical releases
