@@ -29,6 +29,18 @@ final class DeferredUpdate: NSObject {
         let updater = updates.controller.updater
         // Validate Sparkle configuration without entering its scheduled runloop cycle.
         try! updater.start()
+        let menuItem = NSMenuItem(title: "Check for Updates…",
+                                  action: #selector(AppUpdates.checkForUpdates(_:)), keyEquivalent: "")
+        menuItem.target = updates
+        func expectMenuEnabled(_ enabled: Bool) {
+            let validator = menuItem.target as? NSMenuItemValidation
+            precondition(validator != nil, "Update menu target must preserve Sparkle validation")
+            precondition(validator!.validateMenuItem(menuItem) == enabled)
+        }
+        updater.setValue(true, forKey: "canCheckForUpdates")
+        expectMenuEnabled(true)
+        updater.setValue(false, forKey: "canCheckForUpdates")
+        expectMenuEnabled(false)
         func expectFeed(_ beta: Bool) {
             let expected = "https://cdn.tilr.dev/mac/\(beta ? "beta/" : "")\(arch)/appcast.xml"
             precondition(updates.controller.updater.feedURL?.absoluteString == expected,
@@ -48,6 +60,10 @@ final class DeferredUpdate: NSObject {
                 precondition(updates.controller !== previous)
                 precondition(updates.controller.updater.value(forKey: "resumableUpdate") == nil)
                 expectFeed(true)
+                updates.controller.updater.setValue(true, forKey: "canCheckForUpdates")
+                expectMenuEnabled(true)
+                updates.controller.updater.setValue(false, forKey: "canCheckForUpdates")
+                expectMenuEnabled(false)
                 defaults.removePersistentDomain(forName: suite)
                 CFRunLoopStop(CFRunLoopGetMain())
             }

@@ -5,7 +5,7 @@ import UserNotifications
 /// Retain one instance for the application's lifetime. Sparkle owns download,
 /// signature verification, installation and relaunch; this module owns reminders.
 /// The host must forward notification callbacks here if it supplies its own delegate.
-public final class AppUpdates: NSObject, SPUStandardUserDriverDelegate, UNUserNotificationCenterDelegate {
+public final class AppUpdates: NSObject, SPUStandardUserDriverDelegate, UNUserNotificationCenterDelegate, NSMenuItemValidation {
     @objc public dynamic private(set) var controller: SPUStandardUpdaterController!
     private let center = UNUserNotificationCenter.current()
     private let identifier = "app-update-available"
@@ -50,6 +50,13 @@ public final class AppUpdates: NSObject, SPUStandardUserDriverDelegate, UNUserNo
     @objc public func checkForUpdates(_ sender: Any?) {
         refreshFeed()
         controller.checkForUpdates(sender)
+    }
+
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(checkForUpdates(_:)) {
+            return controller.updater.canCheckForUpdates
+        }
+        return true
     }
 
     public func checkForUpdateInformation() {
