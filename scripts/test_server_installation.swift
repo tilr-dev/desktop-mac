@@ -179,6 +179,15 @@ import Darwin
         try JSONSerialization.data(withJSONObject: transaction).write(to: pending)
         expect(try resume.install().build == 2)
         expect(try Data(contentsOf: absent.binary) == updateBytes)
+        // Remove after a failed reload clears its transaction before the next bootstrap.
+        reloadStatus = 1
+        rejects { _ = try update.install() }
+        expect(fm.fileExists(atPath: pending.path))
+        expect(try absent.remove() == .removed)
+        expect(!fm.fileExists(atPath: pending.path))
+        try fm.removeItem(at: base(absent).appendingPathComponent("running"))
+        expect(try absent.install().build == 1)
+        expect(absent.installedByApp)
         // Failed signatures and mismatched clients cannot expose a partial pair.
         var unsigned = try fixture("unsigned")
         let previousRunner = unsigned.runner!
@@ -192,6 +201,13 @@ import Darwin
         try executable(mismatch.source.appendingPathComponent("tilr"), "if [ \"$1\" = --version ]; then echo 'tilr wrong (macos-aarch64)'; else echo 'tilrd is not running at local'; fi\n")
         rejects { _ = try mismatch.install() }
         expect(!fm.fileExists(atPath: mismatch.binary.path))
+        // An installed CLI can speak a newer protocol; only the bundled CLI validates app compatibility.
+        let sibling = try fixture("incompatible-sibling")
+        try executable(sibling.root.appendingPathComponent("tilr"), "echo 'tilrd 2.0.0-new at local'\n")
+        try executable(sibling.source.appendingPathComponent("tilr"), "echo 'incompatible protocol' >&2\nexit 1\n")
+        rejects { _ = try sibling.install() }
+        rejects { _ = try sibling.credentials() }
+        expect(!sibling.installedByApp)
         // A protocol/peer failure must not be treated as an absent server and overwritten.
         var incompatible = try fixture("incompatible")
         incompatible.runner = { _, _ in .init(status: 1, text: "incompatible protocol") }

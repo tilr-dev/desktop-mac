@@ -88,10 +88,9 @@ struct ServerInstallation {
     var installedByApp: Bool {
         (try? String(contentsOf: installationMarker, encoding: .utf8)) == binary.path
     }
-    var client: URL {
-        let sibling = binary.deletingLastPathComponent().appendingPathComponent("tilr")
-        return FileManager.default.isExecutableFile(atPath: sibling.path) ? sibling : (selection.helper ?? source.appendingPathComponent("tilr"))
-    }
+    // The app's bundled CLI carries its supported protocol. An installed CLI could accept a
+    // newer daemon that this app cannot speak to, so it must not validate app compatibility.
+    var client: URL { selection.helper ?? source.appendingPathComponent("tilr") }
 
     func command(_ executable: URL, _ args: [String]) throws -> Output {
         if let runner { return try runner(executable, args) }
@@ -386,9 +385,19 @@ struct ServerInstallation {
     enum Removal { case removed, notInstalled }
     func remove() throws -> Removal {
         guard installedByApp else { return .notInstalled }
-        let result = try command(client, ["service", "uninstall"])
+        let fd = open(root.appendingPathComponent(".tilr-app-install.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw Failure("Cannot lock the tilrd installation") }
+        defer { flock(fd, LOCK_UN); close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { throw Failure("Cannot lock the tilrd installation") }
+        guard installedByApp else { return .notInstalled }
+        let result = try command(root.appendingPathComponent("tilr"), ["service", "uninstall"])
         guard result.status == 0 else { throw Failure("Cannot uninstall tilrd service: \(result.text)") }
-        for file in [binary, root.appendingPathComponent("tilr"), receipt, installationMarker] {
+        let transactionFiles = [root.appendingPathComponent(".tilr-app-pending.json"),
+                                binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"),
+                                root.appendingPathComponent(".tilr.app-new"),
+                                root.appendingPathComponent(".tilr-app-server.previous.json"),
+                                binary.appendingPathExtension("previous")]
+        for file in transactionFiles + [binary, root.appendingPathComponent("tilr"), receipt, installationMarker] {
             if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         }
         return .removed
