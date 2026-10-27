@@ -130,11 +130,12 @@ final class LocalServerHost: NSObject {
     private func uninstall(_ install: ServerInstallation, userInitiated: Bool) {
         guard !busy, !starting else { return }
         busy = true
-        timer?.invalidate()
-        timer = nil
         Task { @MainActor in
             do {
-                let outcome = try await Self.background { try install.remove() }
+                let outcome = try await Self.background { try install.remove(confirmExternal: Self.confirmExternalRemoval) }
+                if outcome == .declined { busy = false; return }
+                timer?.invalidate()
+                timer = nil
                 busy = false
                 removed = true
                 manifest = nil
@@ -333,7 +334,7 @@ final class LocalServerHost: NSObject {
             buttons.append(("Refresh", { [weak self] in self?.showStatus() }))
             if let available, !busy { buttons.append(("Update Server…", { [weak self] in self?.offer(available) })) }
             if pending { buttons.append(("Restart Server…", { [weak self] in self?.confirmRestart() })) }
-            if installation?.installedByApp == true {
+            if installation?.isInstalled == true {
                 buttons.append(("Remove Local Server…", { [weak self] in self?.confirmRemove() }))
             }
         }
@@ -353,12 +354,43 @@ final class LocalServerHost: NSObject {
 
     private func confirmRemove() {
         guard let installation else { return }
-        let alert = NSAlert()
-        alert.messageText = "Remove the local server?"
-        alert.informativeText = "Tilr removes the ordinary service's startup definition and the executables it installed. The running server and its panes remain until it exits. Sessions, tokens and logs in \(installation.state.path) are kept.\n\nThe next launch installs it again unless local_server.enabled is false in config.yml."
-        alert.addButton(withTitle: "Remove").hasDestructiveAction = true
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn { uninstall(installation, userInitiated: true) }
+        uninstall(installation, userInitiated: true)
+    }
+
+    /// Called from the background removal operation; only the consent dialog runs on the UI thread.
+    private static func confirmExternalRemoval() -> Bool {
+        DispatchQueue.main.sync {
+            let alert = NSAlert()
+            alert.messageText = "Remove tilrd?"
+            alert.informativeText = "This tilrd was not installed by Tilr. Removing it unregisters its startup service and deletes its executable. Terminal clients also use this server. Existing sessions, tokens and logs are kept."
+            alert.addButton(withTitle: "No")
+            alert.addButton(withTitle: "Yes").hasDestructiveAction = true
+            return alert.runModal() == .alertSecondButtonReturn
+        }
+    }
+
+    func removeForAppUninstall(settings: Config.LocalServer) async throws {
+        guard !starting, !busy else { throw ServerInstallation.Failure("Wait for the local server operation to finish, then try uninstalling again.") }
+        busy = true
+        defer { busy = false }
+        timer?.invalidate()
+        timer = nil
+        let install: ServerInstallation
+        if let installation { install = installation }
+        else {
+            guard let bundle = Bundle.main.resourceURL?.deletingLastPathComponent() else {
+                throw ServerInstallation.Failure("Cannot locate the application helpers.")
+            }
+            install = makeInstallation(bundle: bundle, settings: settings, origins: [], appBuild: 0, protocolVersion: 1)
+            try await Self.background { try install.locateForRemoval() }
+        }
+        _ = try await Self.background { try install.remove(confirmExternal: Self.confirmExternalRemoval) }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        didUpdate = nil
     }
 
     private func notice(_ message: String) {

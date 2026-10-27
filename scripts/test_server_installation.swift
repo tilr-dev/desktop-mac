@@ -71,7 +71,10 @@ import Darwin
         expect(!commands(running).contains("service install"))
         expect(!fm.fileExists(atPath: running.root.path))
         expect(try running.credentials() == ["url": "ws://127.0.0.1:7890", "token": "shared-token"])
-        expect(try running.remove() == .notInstalled)
+        let beforeUnknownRemoval = commands(running)
+        var unknownQuestions = 0
+        rejects { _ = try running.remove(confirmExternal: { unknownQuestions += 1; return true }) }
+        expect(unknownQuestions == 0 && commands(running) == beforeUnknownRemoval)
         // Login PATH wins over ~/.local/bin, including a tilrd without a sibling client.
         let path = try fixture("path")
         let external = base(path).appendingPathComponent("external/tilrd")
@@ -85,6 +88,25 @@ import Darwin
         expect(try Data(contentsOf: path.root.appendingPathComponent("tilrd")) == original)
         expect(!path.installedByApp)
         expect(!fm.fileExists(atPath: path.receipt.path))
+        let beforeDecline = commands(path)
+        var questions = 0
+        expect(try path.remove(confirmExternal: { questions += 1; return false }) == .declined)
+        expect(questions == 1 && commands(path) == beforeDecline)
+        expect(fm.fileExists(atPath: external.path))
+        expect(!fm.fileExists(atPath: path.root.appendingPathComponent(".tilr-app-install.lock").path))
+        expect(try path.remove(confirmExternal: { questions += 1; return true }) == .removed)
+        expect(questions == 2 && !fm.fileExists(atPath: external.path))
+        expect(try Data(contentsOf: path.root.appendingPathComponent("tilrd")) == original)
+        expect(commands(path).contains("service uninstall"))
+        // A selected external executable can disappear before the user requests removal.
+        let missing = try fixture("missing-removal")
+        try executable(missing.root.appendingPathComponent("tilrd"), "echo 'tilrd 1.0.0-abc (macos-aarch64)'\n")
+        try missing.locateForRemoval()
+        try fm.removeItem(at: missing.binary)
+        let beforeMissingRemoval = commands(missing)
+        var missingQuestions = 0
+        rejects { _ = try missing.remove(confirmExternal: { missingQuestions += 1; return true }) }
+        expect(missingQuestions == 0 && commands(missing) == beforeMissingRemoval)
         // Local-bin fallback preserves the pre-existing pair and does not claim ownership.
         let local = try fixture("local")
         try fm.createDirectory(at: local.root, withIntermediateDirectories: true)
@@ -188,6 +210,44 @@ import Darwin
         try fm.removeItem(at: base(absent).appendingPathComponent("running"))
         expect(try absent.install().build == 1)
         expect(absent.installedByApp)
+        // A daemon discovered via proc_pidpath uses a canonical path after relaunch.
+        let linked = try fixture("linked-marker")
+        let realBin = base(linked).appendingPathComponent("real-bin")
+        try fm.createDirectory(at: realBin, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: linked.root, withDestinationURL: realBin)
+        _ = try linked.install()
+        linked.selection.binary = linked.binary.resolvingSymlinksInPath()
+        expect(linked.installedByApp)
+        let staleLock = linked.root.appendingPathComponent(".tilr-app-install.lock")
+        try Data().write(to: staleLock)
+        expect(try linked.remove(confirmExternal: { fatalError("Owned pair must not ask") }) == .removed)
+        expect(!fm.fileExists(atPath: staleLock.path))
+        expect(!fm.fileExists(atPath: linked.root.appendingPathComponent("tilr").path))
+        expect(!fm.fileExists(atPath: linked.installationMarker.path))
+        expect(fm.fileExists(atPath: base(linked).appendingPathComponent("running").path))
+        // Reusing the same selection after removal must not offer or confirm removal again.
+        expect(!linked.isInstalled)
+        expect(linked.selection.binary == nil)
+        let afterRemoval = commands(linked)
+        expect(try linked.remove(confirmExternal: { fatalError("Removed pair must not ask") }) == .notInstalled)
+        expect(commands(linked) == afterRemoval)
+        // Discovery for uninstall with disabled integration never starts a service.
+        let disabled = try fixture("disabled-removal")
+        try executable(disabled.root.appendingPathComponent("tilrd"), "echo 'tilrd 1.0.0-abc (macos-aarch64)'\n")
+        try disabled.locateForRemoval()
+        expect(disabled.isInstalled && !commands(disabled).contains("service install"))
+        // A marker for an unrelated executable cannot authorize removal.
+        try Data(external.path.utf8).write(to: disabled.installationMarker)
+        expect(!disabled.installedByApp)
+        expect(try disabled.remove(confirmExternal: { false }) == .declined)
+        // Resume a partial removal: daemon deletion succeeded but client/metadata remain.
+        let partialRemoval = try fixture("partial-removal")
+        _ = try partialRemoval.install()
+        try fm.removeItem(at: partialRemoval.binary)
+        expect(fm.fileExists(atPath: partialRemoval.root.appendingPathComponent("tilr").path))
+        expect(try partialRemoval.remove() == .removed)
+        expect(!fm.fileExists(atPath: partialRemoval.installationMarker.path))
+        expect(!fm.fileExists(atPath: partialRemoval.root.appendingPathComponent("tilr").path))
         // Failed signatures and mismatched clients cannot expose a partial pair.
         var unsigned = try fixture("unsigned")
         let previousRunner = unsigned.runner!
