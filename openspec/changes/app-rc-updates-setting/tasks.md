@@ -4,4 +4,4 @@
 - [x] Remove publication channel from signed metadata and update artifact validation.
 - [x] Cover runtime feed selection, persistence and channel-neutral packaging with integration tests.
 - [x] Update production and release instructions.
-- [ ] Handle switching feeds when Sparkle has already prepared an automatic installation.
+- [x] Describe preserving a prepared automatic installation while applying feed changes to fresh appcast checks.

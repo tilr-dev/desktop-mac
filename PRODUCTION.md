@@ -213,7 +213,9 @@ python3 scripts/release_server.py --version 0.1.0 --build 2 --channel beta --pub
 
 App update selection is controlled in Tilr → Update Settings → Receive RC versions.
 It defaults to off (stable), persists between launches, and takes effect on the next
-check. Enabling it selects beta for the app’s compiled architecture. This does not
+fresh appcast check. An automatic RC installation already prepared by Sparkle is
+kept and can still be installed after disabling RC versions. Enabling the setting
+selects beta for the app’s compiled architecture. This does not
 change server update settings; testing server beta uses `local_server.update_channel: beta`.
 
 Verification so far: local tests cover both Sparkle architectures and ad-hoc

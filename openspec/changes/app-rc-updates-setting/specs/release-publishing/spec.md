@@ -39,3 +39,8 @@ Release apps SHALL use Sparkle pinned to 2.10.0 in Package.swift/Package.resolve
 - **WHEN** Sparkle has retained an update offer from the previous feed and the user changes Receive RC versions
 - **THEN** the next check uses the newly selected feed instead of resuming the previous feed’s cached offer
 - **AND** an active session completes before the updater is replaced, preserving automatic-check/download preferences and functional menu, About and settings controls
+
+#### Scenario: Switch after an automatic installation is prepared
+- **WHEN** Sparkle has already prepared an automatic RC installation and the user disables Receive RC versions
+- **THEN** the prepared installation is kept and can be installed
+- **AND** subsequent fresh appcast checks use the stable feed; switching the preference does not cancel the prepared installer
