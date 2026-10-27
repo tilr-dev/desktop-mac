@@ -65,9 +65,9 @@ upstream tilrd release for the DMG. Assign a new feed build when changing bytes;
 never replace the contents of an already published build.
 
 ```sh
-python3 scripts/release_server.py --version 0.2.0 --build 4 --protocol-version 1
+python3 scripts/release_server.py --version 0.2.1 --build 4 --protocol-version 1
 # Inspect/test both imported artifacts, then publish the server feed:
-python3 scripts/release_server.py --version 0.2.0 --build 4 --publish-only
+python3 scripts/release_server.py --version 0.2.1 --build 4 --publish-only
 ```
 
 Use `--channel beta` for beta feed publication. Local app publication does not
@@ -117,7 +117,7 @@ build must exceed every published build on that channel. Missing feeds count as 
 other HTTP/network errors and malformed feeds stop the run. Local release numbering
 and reservations are unchanged.
 
-The pinned server is tilrd **0.2.0, build 4, protocol 1**. For its first CI release, set
+The pinned server is tilrd **0.2.1, build 4, protocol 1**. For its first CI release, set
 `server_min_app_build=17` (Actions input, or `-f server_min_app_build=17` with `gh workflow run`).
 This sets the server feed's minimum app build; the app must also support protocol 1.
 
@@ -166,13 +166,13 @@ are arm64 or x86_64; universal packaging is no longer an option. Release receipt
 with `packaging: 1` trigger the same audit during publication and DMG verification.
 Existing releases remain byte-for-byte unchanged.
 
-Our Swift executable and newly built server executable are stripped with `strip -x`
-**before signing**. Originals are kept in each release's `symbols/` directory outside
+Our Swift executable is stripped with `strip -x`
+**before signing**. Its original is kept in each release's `symbols/` directory outside
 the shipped app. An existing SwiftPM `Tilr.dSYM` is also copied there. Keep these
 files for diagnostics: an unstripped executable alone does not supply source-level
 debug information when the compiler did not generate it. Sparkle exports are not
 stripped. Server artifacts are never stripped or re-signed when bundled into an app.
-The current server pin is **0.2.0 build 4, protocol 1**, independently of app numbers.
+The current server pin is **0.2.1 build 4, protocol 1**, independently of app numbers.
 
 Each app release writes `sizes.json` with logical file bytes (excluding duplicate
 symlink targets), DMG bytes and all Mach-O architectures. Server releases write their
@@ -255,9 +255,9 @@ of the binary version. The signed clap version/platform string is inspected for
 both architectures; the native executable's `--version` is checked as well.
 
 ```sh
-python3 scripts/release_server_all.py --version 0.2.0 --build 4 --min-app-build 17 --protocol-version 1
+python3 scripts/release_server_all.py --version 0.2.1 --build 4 --min-app-build 17 --protocol-version 1
 # Show the plan without credentials, downloads or publication:
-python3 scripts/release_server_all.py --version 0.2.0 --build 4 --min-app-build 17 --protocol-version 1 --preview
+python3 scripts/release_server_all.py --version 0.2.1 --build 4 --min-app-build 17 --protocol-version 1 --preview
 ```
 
 The command checks publication access without Apple credentials, acquires both
@@ -270,8 +270,8 @@ public update key; publication additionally needs the existing feed/CDN credenti
 Lower-level commands:
 
 ```sh
-python3 scripts/release_server.py --version 0.2.0 --build 4 --protocol-version 1 --min-app-build 17
-python3 scripts/release_server.py --version 0.2.0 --build 4 --publish-only
+python3 scripts/release_server.py --version 0.2.1 --build 4 --protocol-version 1 --min-app-build 17
+python3 scripts/release_server.py --version 0.2.1 --build 4 --publish-only
 ```
 
 `--arch arm64` or `--arch x86_64` selects one architecture; default is both.
