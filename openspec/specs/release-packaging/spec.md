@@ -81,19 +81,19 @@ Signing SHALL retry timestamp-service failures on the same file according to rel
 - **AND** certificate/Keychain failures are not retried and exhaustion leaves incomplete artifacts for diagnosis/resume rather than weakening signing
 
 ### Requirement: Independently built server artifacts
-release_server.py SHALL acquire signed and notarized macOS servers from the pinned tilrd GitHub Release independently from application releases, writing completion receipts only after verification.
+release_server.py SHALL acquire signed and notarized macOS tilrd and tilr from the same pinned upstream GitHub Release independently from application releases, writing completion receipts only after verification of both executables.
 
 #### Scenario: Build a server
 - **WHEN** the pinned version is requested
 - **THEN** both architectures are acquired by default, --arch selects one, --channel beta selects the independent beta feed and --min-app-build/--max-app-build constrain compatibility
-- **AND** the archive is tilr-v<version>-<target>.tar.gz from tilr-dev/tilrd and its published SHA-256 is verified before extracting executable bytes
-- **AND** each server's architecture and Developer ID signature are verified, including the expected Apple team, before its embedded release version/platform is inspected; the native binary is also executed to check its version
-- **AND** a missing release, bad checksum, unsafe archive, unexpected architecture, signature or version stops acquisition without a completed receipt or a source-build fallback
-- **AND** no Rust, Zig, protoc, source checkout or Apple signing/notarization credentials are required to acquire the server
-- **AND** fetch_server.py exits with code 1 on missing or invalid upstream assets, replacing its former exit code 3 for an unpublished feed build
-- **AND** server-release.json pins the upstream version and protocol; completion metadata retains an independent feed build number for compatibility with the existing app updater
+- **AND** tilr-v<version>-<target>.tar.gz from tilr-dev/tilrd has its published SHA-256 verified before extracting either executable
+- **AND** both binaries have their architecture, Developer ID signature, expected Apple team, secure timestamp and matching version verified before completion
+- **AND** a missing client, bad checksum, unsafe archive, unexpected architecture, signature or version stops acquisition without a completed receipt or source-build fallback
+- **AND** no Rust, Zig, protoc, source checkout or Apple signing/notarization credentials are required
+- **AND** fetch_server.py exits with code 1 on missing or invalid upstream assets
+- **AND** server-release.json pins the upstream version and protocol; completion metadata retains an independent feed build number
 - **AND** TILR_SERVER_RELEASE_ROOT may supply completed artifacts, which are verified before use
-- **AND** application packaging copies exact server bytes/signature/manifest, without compiling, stripping or re-signing them
+- **AND** application packaging copies both executables and exact server manifest without compiling, stripping or re-signing either executable
 
 ### Requirement: One-command independent server release
 The desktop repository SHALL provide a command to acquire an upstream server release and optionally publish its independent app-managed feed. It SHALL retain the upstream signatures and show artifacts before requiring explicit publication confirmation. Failures SHALL stop later steps.
