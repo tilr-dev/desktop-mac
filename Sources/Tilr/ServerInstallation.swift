@@ -50,7 +50,7 @@ struct ServerInstallation {
     /// Each launchd step, for the status the app shows while it works.
     var progress: ((String) -> Void)? = nil
 
-    var binary: URL { root.appendingPathComponent("tilr-server") }
+    var binary: URL { root.appendingPathComponent("tilrd") }
     var receipt: URL { root.appendingPathComponent("app-managed.json") }
     var plist: URL { agents.appendingPathComponent(label + ".plist") }
     var endpoint: String { "ws://127.0.0.1:\(port)" }
@@ -100,6 +100,30 @@ struct ServerInstallation {
         return Output(status: process.terminationStatus, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Authenticate the running supervisor and wait for the installed release, without stopping it.
+    func waitReady(version: String?, startupTimeout: TimeInterval, retryInterval: TimeInterval,
+                   now: () -> Date = Date.init,
+                   wait: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)) throws -> [String: String] {
+        progress?("Waiting for the local server on port \(port)…")
+        let deadline = now().addingTimeInterval(startupTimeout)
+        var runningVersion: String?
+        repeat {
+            if let check = try? command(binary, ["ps", "--url", endpoint, "--server-version"]),
+               check.status == 0, !check.text.isEmpty {
+                runningVersion = check.text
+                if version == nil || check.text == version { return try credentials() }
+            }
+            wait(retryInterval)
+        } while now() < deadline
+        let mismatch: String
+        if let version, let runningVersion {
+            mismatch = " Reload did not complete: running version \(runningVersion), expected \(version)."
+        } else {
+            mismatch = ""
+        }
+        throw Failure("The local server did not become ready.\(mismatch) See \(root.appendingPathComponent("server.log").path). Existing processes were not stopped.")
+    }
+
     func launchctl(_ args: [String]) throws -> Output {
         try command(URL(fileURLWithPath: "/bin/launchctl"), args)
     }
@@ -132,13 +156,13 @@ struct ServerInstallation {
             }
         }
         for file in try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            where file.lastPathComponent.hasPrefix("tilr-server.new.") {
+            where file.lastPathComponent.hasPrefix("tilrd.new.") {
             try fm.removeItem(at: file)
         }
 
         var data = try Data(contentsOf: sourceManifest ?? source.appendingPathComponent("app-managed.json"))
         var wanted = try JSONDecoder().decode(Manifest.self, from: data)
-        var payload = source.appendingPathComponent("tilr-server")
+        var payload = source.appendingPathComponent("tilrd")
         let existing: Manifest?
         if fm.fileExists(atPath: receipt.path) {
             existing = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: receipt))
@@ -165,7 +189,7 @@ struct ServerInstallation {
         let signature = try command(URL(fileURLWithPath: "/usr/bin/codesign"), ["--verify", "--strict", payload.path])
         guard signature.status == 0 else { throw Failure("Server signature verification failed") }
         let version = try command(payload, ["--version"])
-        guard version.status == 0, version.text.hasPrefix("tilr-server \(wanted.serverVersion) (") else {
+        guard version.status == 0, version.text.hasPrefix("tilrd \(wanted.serverVersion) (") else {
             throw Failure("Server cannot run or has an unexpected version")
         }
 
@@ -209,18 +233,11 @@ struct ServerInstallation {
         let configData = Data(("# Managed by Tilr.app; regenerated at launch.\nallow_origins = " + encodedOrigins + "\n").utf8)
         let configChanged = (try? Data(contentsOf: configFile)) != configData
         if needsCopy {
-            if loaded && jobState.text.contains("state = running"), existing != nil && fm.fileExists(atPath: binary.path) {
-                let old = try command(binary, ["state-formats"])
-                let new = try command(payload, ["state-formats"])
-                guard old.status == 0, new.status == 0, !old.text.isEmpty, old.text == new.text else {
-                    throw Failure("This server update needs a session migration. Existing terminals were left running.")
-                }
-            }
-            let staged = root.appendingPathComponent("tilr-server.new.\(UUID().uuidString)")
+            let staged = root.appendingPathComponent("tilrd.new.\(UUID().uuidString)")
             defer { try? fm.removeItem(at: staged) }
             try fm.copyItem(at: payload, to: staged)
             if fm.fileExists(atPath: binary.path) {
-                let previous = root.appendingPathComponent("tilr-server.previous")
+                let previous = root.appendingPathComponent("tilrd.previous")
                 try? fm.removeItem(at: previous)
                 try fm.copyItem(at: binary, to: previous)
                 if fm.fileExists(atPath: receipt.path) {
@@ -376,7 +393,7 @@ struct ServerInstallation {
         return old
     }
 
-    /// The live panes of the running server: `tilr-server ps` sends ListPanes over the server's
+    /// The live panes of the running server: `tilrd ps` sends ListPanes over the server's
     /// WebSocket with the stored token and prints a header and one line per pane. nil when the
     /// server does not answer; callers treat that as busy.
     func livePanes() -> Int? {
@@ -450,11 +467,11 @@ struct ServerInstallation {
         }
         progress?("Removing the local server…")
         if ours { try fm.removeItem(at: plist) }
-        let names = ["tilr-server", "tilr-server.previous", "app-managed.json", "app-managed.previous.json",
+        let names = ["tilrd", "tilrd.previous", "app-managed.json", "app-managed.previous.json",
                      "pending-server.json", "origins.toml", "runtime", "restart-pending"]
         for name in names { try? fm.removeItem(at: root.appendingPathComponent(name)) }
         for file in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-            where file.lastPathComponent.hasPrefix("tilr-server.new.") {
+            where file.lastPathComponent.hasPrefix("tilrd.new.") {
             try? fm.removeItem(at: file)
         }
         guard !fm.fileExists(atPath: binary.path), !fm.fileExists(atPath: receipt.path) else {

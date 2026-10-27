@@ -13,28 +13,29 @@ import Darwin
         var loaded = false
         let runningState = "state = running\n\tpid = 4242"
         var jobState = runningState
-        // Live panes the running server reports (`tilr-server ps`); nil = it does not answer.
+        // Live panes the running server reports (`tilrd ps`); nil = it does not answer.
         var panes: Int? = 1
         // Whether launchd starts the job on bootstrap; false leaves it loaded with no process.
         var startsOnBootstrap = true
-        var formats = "supervisor-state 1\npane-state 1"
-        let installedFormats = formats
         var version = "1.0-build1-test"
         var signed = true
+        var versionIdentity = "tilrd"
         var expectedReloadBytes: String?
         var reloadStatus: Int32 = 0
         var reloadThrows = false
+        var runningVersion = "1.0-build1-test"
+        var acceptsReload = true
         func expect(_ value: Bool, line: UInt = #line) { precondition(value, "line \(line)") }
         func payload(_ build: Int, _ bytes: String) throws {
             version = "1.0-build\(build)-test"
             let data = Data(bytes.utf8)
-            try data.write(to: source.appendingPathComponent("tilr-server"))
+            try data.write(to: source.appendingPathComponent("tilrd"))
             let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-            let manifest = ServerInstallation.Manifest(version: "1.0", build: build, arch: "arm64", serverVersion: version, sha256: sha, protocolVersion: 2, minAppBuild: 1, maxAppBuild: nil)
+            let manifest = ServerInstallation.Manifest(version: "1.0", build: build, arch: "arm64", serverVersion: version, sha256: sha, protocolVersion: 1, minAppBuild: 1, maxAppBuild: nil)
             try JSONEncoder().encode(manifest).write(to: source.appendingPathComponent("app-managed.json"))
         }
         let install = ServerInstallation(source: source, root: temp.appendingPathComponent("installed"),
-            agents: temp.appendingPathComponent("agents"), label: "dev.tilr.test", port: 0, timeout: 5, origins: ["tilr://test"], appBuild: 20, protocolVersion: 2, architecture: "arm64",
+            agents: temp.appendingPathComponent("agents"), label: "dev.tilr.test", port: 0, timeout: 5, origins: ["tilr://test"], appBuild: 20, protocolVersion: 1, architecture: "arm64",
             runner: { executable, args in
                 commands.append([executable.lastPathComponent] + args)
                 if executable.lastPathComponent == "codesign" { return .init(status: signed ? 0 : 1, text: "") }
@@ -42,12 +43,13 @@ import Darwin
                     if args == ["kill", "SIGUSR1", "gui/\(getuid())/dev.tilr.test"] {
                         if let expectedReloadBytes {
                             let root = temp.appendingPathComponent("installed")
-                            expect(try String(contentsOf: root.appendingPathComponent("tilr-server"), encoding: .utf8) == expectedReloadBytes)
+                            expect(try String(contentsOf: root.appendingPathComponent("tilrd"), encoding: .utf8) == expectedReloadBytes)
                             let receipt = try JSONDecoder().decode(ServerInstallation.Manifest.self, from: Data(contentsOf: root.appendingPathComponent("app-managed.json")))
                             expect(receipt.serverVersion == version)
                             expect(fm.fileExists(atPath: root.appendingPathComponent("pending-server.json").path))
                         }
                         if reloadThrows { throw ServerInstallation.Failure("launchctl could not run") }
+                        if reloadStatus == 0 && acceptsReload { runningVersion = version }
                         return .init(status: reloadStatus, text: reloadStatus == 0 ? "" : "no such process")
                     }
                     if args[0] == "print" { return .init(status: loaded ? 0 : 1, text: loaded ? jobState : "") }
@@ -58,12 +60,15 @@ import Darwin
                 }
                 if args == ["--version"] {
                     let meta = try JSONDecoder().decode(ServerInstallation.Manifest.self, from: Data(contentsOf: executable.deletingLastPathComponent().appendingPathComponent("app-managed.json")))
-                    return .init(status: 0, text: "tilr-server \(meta.serverVersion) (macos-aarch64)")
+                    return .init(status: 0, text: "\(versionIdentity) \(meta.serverVersion) (macos-aarch64)")
                 }
                 if args == ["state-formats"] {
-                    return .init(status: 0, text: executable.deletingLastPathComponent().path == source.path ? formats : installedFormats)
+                    fatalError("The app must delegate reload-state compatibility to tilrd")
                 }
                 if args == ["token"] { return .init(status: 0, text: "test-token") }
+                if args == ["ps", "--url", "ws://127.0.0.1:0", "--server-version"] {
+                    return .init(status: 0, text: runningVersion)
+                }
                 if args.first == "ps" {
                     guard let panes else { return .init(status: 1, text: "did not answer") }
                     let rows = (0..<panes).map { "pane-\($0)  100  80x24  0  ~  (shell)" }
@@ -75,6 +80,12 @@ import Darwin
             do { try body(); fatalError("Expected refusal") } catch { }
         }
         try payload(1, "one")
+        for identity in ["tilr-server", "other"] {
+            versionIdentity = identity
+            rejects { _ = try install.install() }
+            expect(!fm.fileExists(atPath: install.binary.path))
+        }
+        versionIdentity = "tilrd"
         _ = try install.install()
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "one")
         expect(commands.filter { $0.contains("bootstrap") }.count == 1)
@@ -92,8 +103,9 @@ import Darwin
         expectedReloadBytes = "two"
         _ = try install.install()
         expectedReloadBytes = nil
+        expect(!commands.contains { $0.contains("state-formats") })
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
-        expect(try String(contentsOf: install.root.appendingPathComponent("tilr-server.previous"), encoding: .utf8) == "one")
+        expect(try String(contentsOf: install.root.appendingPathComponent("tilrd.previous"), encoding: .utf8) == "one")
         expect(!commands.contains { $0.contains("bootout") || $0.contains("kickstart") })
         expect(commands.filter { $0.first == "launchctl" && $0[1] != "print" } == [["launchctl", "kill", "SIGUSR1", install.service]])
         commands.removeAll()
@@ -105,10 +117,12 @@ import Darwin
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
         let validReceipt = try Data(contentsOf: install.receipt)
         var incompatible = try JSONSerialization.jsonObject(with: validReceipt) as! [String: Any]
-        incompatible["protocolVersion"] = 99
-        try JSONSerialization.data(withJSONObject: incompatible).write(to: install.receipt)
-        rejects { _ = try install.install() }
-        expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
+        for protocolVersion in [0, 2, 99] {
+            incompatible["protocolVersion"] = protocolVersion
+            try JSONSerialization.data(withJSONObject: incompatible).write(to: install.receipt)
+            rejects { _ = try install.install() }
+            expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
+        }
         try validReceipt.write(to: install.receipt)
         try payload(2, "altered same build")
         rejects { _ = try install.install() }
@@ -116,19 +130,14 @@ import Darwin
         signed = false
         rejects { _ = try install.install() }
         signed = true
-        formats = "supervisor-state 2\npane-state 1"
-        rejects { _ = try install.install() }
-        expect(try String(contentsOf: install.binary, encoding: .utf8) == "two")
-        formats = installedFormats
-        try Data(contentsOf: source.appendingPathComponent("app-managed.json")).write(to: install.receipt)
         _ = try install.install()
         expect(try String(contentsOf: install.binary, encoding: .utf8) == "three")
         let originsChanged = ServerInstallation(source: source, root: install.root, agents: install.agents,
-            label: install.label, port: 0, timeout: 5, origins: ["tilr://notes"], appBuild: 20, protocolVersion: 2, architecture: "arm64", runner: install.runner, portCheck: {})
+            label: install.label, port: 0, timeout: 5, origins: ["tilr://notes"], appBuild: 20, protocolVersion: 1, architecture: "arm64", runner: install.runner, portCheck: {})
         _ = try originsChanged.install()
         expect(commands.contains { $0 == ["launchctl", "kill", "SIGUSR1", install.service] })
         expect(try String(contentsOf: install.root.appendingPathComponent("origins.toml"), encoding: .utf8).contains("tilr://notes"))
-        try Data("corrupted".utf8).write(to: source.appendingPathComponent("tilr-server"))
+        try Data("corrupted".utf8).write(to: source.appendingPathComponent("tilrd"))
         rejects { _ = try install.install() }
         try payload(4, "four")
         var conflict = install
@@ -163,8 +172,19 @@ import Darwin
             return job["ProgramArguments"] as! [String]
         }
         expect(try programArguments() == [install.binary.path, "--listen", "127.0.0.1:0", "--config", install.root.appendingPathComponent("origins.toml").path])
+        // Old-name installations require manual reinstall, even under our label.
+        let currentPlist = try Data(contentsOf: install.plist)
+        var oldJob = try PropertyListSerialization.propertyList(from: currentPlist, format: nil) as! [String: Any]
+        oldJob["ProgramArguments"] = [install.root.appendingPathComponent("tilr-server").path]
+        let oldPlist = try PropertyListSerialization.data(fromPropertyList: oldJob, format: .xml, options: 0)
+        try oldPlist.write(to: install.plist)
+        commands.removeAll()
+        rejects { _ = try install.install() }
+        expect(try Data(contentsOf: install.plist) == oldPlist)
+        expect(!commands.contains { ["bootout", "bootstrap", "kickstart", "kill"].contains($0.dropFirst().first ?? "") })
+        try currentPlist.write(to: install.plist)
         var wrapped = try PropertyListSerialization.propertyList(from: Data(contentsOf: install.plist), format: nil) as! [String: Any]
-        wrapped["ProgramArguments"] = ["/bin/zsh", "-lc", "exec \"$1\" --listen \"$2\" --config \"$3\"", "tilr-server",
+        wrapped["ProgramArguments"] = ["/bin/zsh", "-lc", "exec \"$1\" --listen \"$2\" --config \"$3\"", "tilrd",
                                        install.binary.path, "127.0.0.1:0", install.root.appendingPathComponent("origins.toml").path]
         let wrappedPlist = try PropertyListSerialization.data(fromPropertyList: wrapped, format: .xml, options: 0)
         try wrappedPlist.write(to: install.plist)
@@ -320,7 +340,7 @@ import Darwin
         expect(launchdCalls() == ["bootout"] && !loaded)
         for gone in [install.plist, install.binary, install.receipt, install.restartMarker,
                      install.root.appendingPathComponent("origins.toml"), install.root.appendingPathComponent("runtime"),
-                     install.root.appendingPathComponent("tilr-server.previous"), install.root.appendingPathComponent("app-managed.previous.json")] {
+                     install.root.appendingPathComponent("tilrd.previous"), install.root.appendingPathComponent("app-managed.previous.json")] {
             expect(!fm.fileExists(atPath: gone.path))
         }
         expect(fm.fileExists(atPath: install.state.appendingPathComponent("sessions.json").path))
@@ -360,7 +380,7 @@ import Darwin
             expect(launchdCalls() == ["kill"])
             expect(try String(contentsOf: install.binary, encoding: .utf8) == "release-\(build)")
             expect(try Data(contentsOf: install.receipt) == Data(contentsOf: source.appendingPathComponent("app-managed.json")))
-            expect(try Data(contentsOf: install.root.appendingPathComponent("tilr-server.previous")) == previousBytes)
+            expect(try Data(contentsOf: install.root.appendingPathComponent("tilrd.previous")) == previousBytes)
             expect(try Data(contentsOf: install.root.appendingPathComponent("app-managed.previous.json")) == previousReceipt)
             expect(fm.fileExists(atPath: pending.path))
             reloadStatus = 0
@@ -390,11 +410,54 @@ import Darwin
         expect(launchdCalls() == ["kill"])
         expect(try String(contentsOf: install.root.appendingPathComponent("origins.toml"), encoding: .utf8).contains("tilr://notes"))
         expectedReloadBytes = nil
-        print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped and unassociated job migration, app association, changed definition applied without panes / pending with panes, kickstart of a held-back job, pending read from launchd (match clears a stale marker, mismatch pending, marker fallback), restart, removal (ours / foreign / not installed) and reinstall: passed")
+        // The daemon owns format compatibility: successful signal delivery can still leave
+        // the old supervisor serving its terminals. Readiness must observe the live version.
+        try payload(12, "twelve")
+        acceptsReload = false
+        let oldVersion = runningVersion
+        commands.removeAll()
+        let refused = try install.install()
+        expect(refused.build == 12)
+        expect(try String(contentsOf: install.binary, encoding: .utf8) == "twelve")
+        var clock = Date(timeIntervalSince1970: 0)
+        var waits = 0
+        func waitForReadiness(_ expected: String) throws -> [String: String] {
+            try install.waitReady(version: expected, startupTimeout: 2, retryInterval: 1,
+                                  now: { clock }, wait: { interval in
+                                      waits += 1
+                                      clock = clock.addingTimeInterval(interval)
+                                  })
+        }
+        do {
+            _ = try waitForReadiness(refused.serverVersion)
+            fatalError("An old supervisor must not complete the update")
+        } catch {
+            expect(error.localizedDescription.contains("Reload did not complete"))
+            expect(error.localizedDescription.contains("running version \(oldVersion)"))
+            expect(error.localizedDescription.contains("expected \(refused.serverVersion)"))
+            expect(error.localizedDescription.contains("Existing processes were not stopped"))
+        }
+        expect(waits == 2 && loaded && jobState == runningState && panes == 1)
+        expect(launchdCalls() == ["kill"])
+        expect(commands.filter { $0 == ["tilrd", "ps", "--url", install.endpoint, "--server-version"] }.count == 2)
+        expect(!commands.contains { $0.contains("state-formats") })
+        // The next update is accepted: readiness returns credentials only for the new version.
+        try payload(13, "thirteen")
+        acceptsReload = true
+        commands.removeAll()
+        let accepted = try install.install()
+        waits = 0
+        expect(try waitForReadiness(accepted.serverVersion)["token"] == "test-token")
+        expect(waits == 0 && runningVersion == accepted.serverVersion)
+        expect(loaded && jobState == runningState && panes == 1)
+        expect(launchdCalls() == ["kill"])
+        expect(commands.contains { $0 == ["tilrd", "ps", "--url", install.endpoint, "--server-version"] })
+        expect(!commands.contains { $0.contains("state-formats") })
+        print("server installation: first install, idempotence, live upgrade, downgrade prevention, signatures, daemon-owned format compatibility, crash recovery, checksum, service/port conflicts, zsh-wrapped and unassociated job migration, app association, changed definition applied without panes / pending with panes, kickstart of a held-back job, pending read from launchd (match clears a stale marker, mismatch pending, marker fallback), restart, removal (ours / foreign / not installed) and reinstall: passed")
         if let payload = CommandLine.arguments.dropFirst().first {
             var real = ServerInstallation(source: URL(fileURLWithPath: payload),
                 root: temp.appendingPathComponent("real"), agents: temp.appendingPathComponent("real-agents"),
-                label: "dev.tilr.test-real", port: 0, timeout: 15, origins: ["tilr://test"], appBuild: 20, protocolVersion: 2, architecture: "arm64")
+                label: "dev.tilr.test-real", port: 0, timeout: 15, origins: ["tilr://test"], appBuild: 20, protocolVersion: 1, architecture: "arm64")
             let processes = real
             real.runner = { executable, args in
                 if executable.lastPathComponent == "launchctl" {
@@ -404,7 +467,7 @@ import Darwin
             }
             real.portCheck = {}
             _ = try real.install()
-            expect(try real.hash(real.binary) == real.hash(real.source.appendingPathComponent("tilr-server")))
+            expect(try real.hash(real.binary) == real.hash(real.source.appendingPathComponent("tilrd")))
             let credentials = try real.credentials()
             expect(credentials["token"]?.count == 64)
             let update = try real.command(real.binary, ["update", "--cdn", "http://127.0.0.1:1"])

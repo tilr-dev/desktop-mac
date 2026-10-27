@@ -8,14 +8,13 @@ from release_console import ArgumentParser, success, failure
 import base64
 import fcntl
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 
-from bundle_server import ROOT, TARGETS, build_server, digest
-from publish import ACCOUNT, BUCKET, CDN, fetch, run
+from bundle_server import ROOT, TARGETS, TILRD, build_server, digest
+from publish import CDN, fetch, put as put_object, run, sparkle_key, sparkle_public_key
 from release import sign
 from release_all import settings
 
@@ -31,12 +30,12 @@ def feed_url(arch, channel):
 
 
 def release_url(manifest):
-    return f"{CDN}/server/macos/{manifest['arch']}/releases/{manifest['version']}-{manifest['build']}/tilr-server"
+    return f"{CDN}/server/macos/{manifest['arch']}/releases/{manifest['version']}-{manifest['build']}/tilrd"
 
 
 def next_feed(previous, manifest, size, channel):
     arch = manifest["arch"]
-    header = dict(schema=1, component="tilr-server", arch=arch, channel=channel)
+    header = dict(schema=1, component="tilrd", arch=arch, channel=channel)
     if previous is not None and any(previous.get(k) != v for k, v in header.items()):
         raise ValueError("Existing feed is for another server track")
     releases = list(previous["releases"]) if previous else []
@@ -61,7 +60,7 @@ def verify_envelope(data, directory):
         raise ValueError("Invalid server feed signature length")
     file = directory / "verify-payload.json"
     file.write_bytes(payload)
-    run(TOOLS / "sign_update", "--account", "tilr-rexuni", "--verify", file, signature)
+    run(TOOLS / "sign_update", *sparkle_key(), "--verify", file, signature)
     return json.loads(payload)
 
 
@@ -69,7 +68,7 @@ def signed_feed(feed, directory):
     payload = canonical(feed)
     file = directory / "payload.json"
     file.write_bytes(payload)
-    signature = subprocess.check_output([str(TOOLS / "sign_update"), "--account", "tilr-rexuni", "-p", str(file)], text=True).strip()
+    signature = subprocess.check_output([str(TOOLS / "sign_update"), *sparkle_key(), "-p", str(file)], text=True).strip()
     if file.read_bytes() != payload:
         raise ValueError("Signing unexpectedly modified the feed payload")
     envelope = canonical(dict(payload=base64.b64encode(payload).decode(), signature=signature))
@@ -79,15 +78,15 @@ def signed_feed(feed, directory):
     return envelope
 
 
-def build_release(directory, arch, version, build, config, preview, min_app_build, max_app_build):
+def build_release(directory, arch, version, build, config, preview, min_app_build, max_app_build, source=TILRD):
     directory.mkdir(parents=True, exist_ok=False)
     manifest = build_server(directory, arch, version, build,
                             lambda binary: sign(binary, "-" if preview else config["TILR_SIGN_IDENTITY"]),
-                            min_app_build, max_app_build)
-    run("codesign", "--verify", "--strict", directory / "tilr-server")
+                            min_app_build, max_app_build, core=source)
+    run("codesign", "--verify", "--strict", directory / "tilrd")
     if not preview:
         archive = directory / "notarization.zip"
-        run("ditto", "-c", "-k", directory / "tilr-server", archive)
+        run("ditto", "-c", "-k", directory / "tilrd", archive)
         response = subprocess.check_output(["xcrun", "notarytool", "submit", str(archive), "--keychain-profile",
                                             config["TILR_NOTARY_PROFILE"], "--wait", "--output-format", "json"], text=True)
         notarization = json.loads(response)
@@ -96,8 +95,8 @@ def build_release(directory, arch, version, build, config, preview, min_app_buil
             raise ValueError("Apple did not accept the server notarization; nothing can be published")
         archive.unlink()
     (directory / "sizes.json").write_text(json.dumps(dict(
-        architecture=arch, binary_bytes=(directory / "tilr-server").stat().st_size,
-        unstripped_bytes=(directory / "symbols/tilr-server.unstripped").stat().st_size), indent=2) + "\n")
+        architecture=arch, binary_bytes=(directory / "tilrd").stat().st_size,
+        unstripped_bytes=(directory / "symbols/tilrd.unstripped").stat().st_size), indent=2) + "\n")
     receipt = dict(preview=preview, manifest=manifest, public_key=config.get("TILR_UPDATE_PUBLIC_KEY", ""))
     (directory / "release.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return manifest
@@ -110,14 +109,14 @@ def validated(directory, version, build, arch, key):
         raise ValueError("Only the completed signed server release can be published")
     if any(manifest.get(k) != v for k, v in dict(version=version, build=build, arch=arch).items()):
         raise ValueError("Server release differs from the requested version/build/architecture")
-    if digest(directory / "tilr-server") != manifest["sha256"]:
+    if digest(directory / "tilrd") != manifest["sha256"]:
         raise ValueError("Server changed after release completion")
-    run("codesign", "--verify", "--strict", directory / "tilr-server")
+    run("codesign", "--verify", "--strict", directory / "tilrd")
     return manifest
 
 
 def publish_release(directory, manifest, channel):
-    binary = directory / "tilr-server"
+    binary = directory / "tilrd"
     with tempfile.TemporaryDirectory(prefix="publish-", dir=directory) as temp:
         temp = Path(temp)
         url = feed_url(manifest["arch"], channel)
@@ -127,14 +126,11 @@ def publish_release(directory, manifest, channel):
         envelope = signed_feed(feed, temp)
         artifact_url = release_url(manifest)
         remote = temp / "remote-server"
-        env = dict(os.environ, CLOUDFLARE_ACCOUNT_ID=ACCOUNT)
         def put(url, path, cache):
             key = url.removeprefix(CDN + "/")
             if key == url:
                 raise ValueError("Refusing a publication outside the configured CDN")
-            run("wrangler", "r2", "object", "put", f"{BUCKET}/{key}", "--file", path,
-                "--content-type", "application/json" if path.suffix == ".json" else "application/octet-stream",
-                "--cache-control", cache, "--remote", env=env)
+            put_object(path, key, "application/json" if path.suffix == ".json" else "application/octet-stream", cache)
         # Never overwrite an immutable artifact with a different release, across either channel.
         if fetch(artifact_url, remote):
             if digest(remote) != manifest["sha256"]:
@@ -169,6 +165,7 @@ def main():
     parser.add_argument("--max-app-build", type=int)
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--publish-only", action="store_true")
+    parser.add_argument("--source", type=Path, default=TILRD, help="Explicit tilrd source checkout")
     args = parser.parse_args()
     if not re.fullmatch(r"\d+(?:\.\d+){0,2}", args.version) or args.build < 1:
         parser.error("Use a numeric version and positive server build")
@@ -183,7 +180,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         outputs = [(arch, ROOT / "build/server-releases" / f"{args.version}-{args.build}-{arch}{'-preview' if args.preview else ''}") for arch in arches]
         if args.publish_only:
-            key = subprocess.check_output([str(TOOLS / "generate_keys"), "--account", "tilr-rexuni", "-p"], text=True).strip()
+            key = sparkle_public_key(TOOLS)
             if key != config["TILR_UPDATE_PUBLIC_KEY"]:
                 raise ValueError("Configured server signing key differs from the release key")
             # Validate all local artifacts before exposing any architecture.
@@ -196,7 +193,7 @@ def main():
             if missing:
                 raise ValueError("Run on the build machine: rustup target add " + " ".join(missing))
             for arch, path in outputs:
-                build_release(path, arch, args.version, args.build, config, args.preview, args.min_app_build, args.max_app_build)
+                build_release(path, arch, args.version, args.build, config, args.preview, args.min_app_build, args.max_app_build, args.source.resolve())
                 success(f"Server artifact ready: {path}")
             if args.preview:
                 print("Local preview only; it cannot be published. Build again without --preview for a public release.")

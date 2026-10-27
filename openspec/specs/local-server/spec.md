@@ -33,7 +33,7 @@ Tilr SHALL migrate owned legacy or changed service definitions without silently 
 - **THEN** a stopped job or authenticated server reporting no live panes is booted out and bootstrapped immediately, with a loaded pidless job kickstarted and port readiness awaited
 - **AND** a server with panes or unknown status gets a rewritten file and restart-pending marker; Local Server offers a confirmed restart warning that panes close
 - **AND** pending state compares launchctl's loaded program/arguments/environment to the plist, ignoring OSLogRateLimit and XPC_* additions, using the marker only if parsing fails; a later login applying the file clears pending
-- **AND** live-pane checks use authenticated `tilr-server ps --url ws://127.0.0.1:<port>`; connection failure does not prove process exit
+- **AND** live-pane checks use authenticated `tilrd ps --url ws://127.0.0.1:<port>`; connection failure does not prove process exit
 
 ### Requirement: Explicit server update controls
 Tilr SHALL distinguish Check for Updates for the app from Check for Server Updates and require explicit Update Server approval to install a discovered server update.
@@ -49,11 +49,11 @@ Tilr SHALL authenticate signed server feed metadata and downloaded bytes before 
 
 #### Scenario: Install an update
 - **WHEN** a server update is chosen
-- **THEN** CryptoKit verifies server-feed Ed25519 signatures with the existing app release public key embedded in the signed app bundle (currently shared between app and server feeds); verification covers explicit component/architecture/channel metadata; protocol, app-build range, architecture, size limits, SHA-256 and reload-state compatibility are checked before replacement
+- **THEN** CryptoKit verifies server-feed Ed25519 signatures with the existing app release public key embedded in the signed app bundle (currently shared between app and server feeds); verification covers explicit component/architecture/channel metadata; protocol, app-build range, architecture, size limits and SHA-256 are checked before replacement
 - **AND** the binary is staged privately and its size/hash verified before executable use; malformed feeds and same-build changed manifests are rejected
 - **AND** fixed-path replacement is atomic, explicitly requests session-preserving reload of the running supervisor after the rename, and waits for an authenticated expected-version response without stopping the running supervisor; sessions survive reload
-- **AND** an incompatible live-state migration leaves the old service running until the user stops it
-- **AND** tilr-server.previous and app-managed.previous.json remain for manual recovery, not automatic live rollback; a transaction journal reconciles interrupted replacement on next launch even from an app with an older bundle
+- **AND** the app does not invoke `tilrd state-formats`; tilrd checks reload-state compatibility before handing over, and an incompatible live-state migration leaves the old supervisor and its terminals running
+- **AND** tilrd.previous and app-managed.previous.json remain for manual recovery, not automatic live rollback; a transaction journal reconciles interrupted replacement on next launch even from an app with an older bundle
 - **AND** closing Tilr leaves terminals running until logout; the managed server update command points to this updater without changing standalone/Linux updating
 
 #### Scenario: Reload request fails after installation
@@ -72,6 +72,20 @@ Tilr SHALL authenticate signed server feed metadata and downloaded bytes before 
 - **THEN** the app bootstraps or starts the job with the installed binary and waits for an authenticated expected-version response
 - **AND** it does not send a reload request to an absent supervisor
 
+#### Scenario: Validate daemon identity
+- **WHEN** an installation candidate is validated or a signed server feed is read
+- **THEN** the executable version starts with `tilrd <version> (` and the feed component is `tilrd`
+- **AND** other executable identities or feed components are rejected before installation
+
+#### Scenario: Supervisor refuses reload
+- **WHEN** the app requests reload after installing an update and authenticated `tilrd ps --server-version` continues to report the previous running version until the readiness deadline
+- **THEN** Local Server reports that the installed update did not become ready and includes the running and expected versions
+- **AND** the app leaves the running supervisor and its terminals untouched and does not report the update as complete
+
+#### Scenario: Supervisor accepts reload
+- **WHEN** the app requests reload and authenticated `tilrd ps --server-version` reports the expected new version
+- **THEN** the update completes without stopping the supervisor or its terminals
+
 ### Requirement: Removal preserves user state
 Tilr SHALL remove only its owned service and installed runtime artifacts, preserving state, sessions, token and logs.
 
@@ -88,3 +102,17 @@ Tilr SHALL provide managed-server credentials only to its trusted top-level app 
 - **WHEN** an embedded browser page, subframe or wrong origin requests local-server access
 - **THEN** access is rejected with the app-page restriction; only the owning main app web view receives credentials
 - **AND** external site folders require their rebuilt server plugin; no web-site updater is introduced
+
+### Requirement: Protocol one application distribution
+The application distribution SHALL support server protocol 1 using the protocol metadata of its completed bundled server in signed Info.plist, and SHALL reject servers with other protocol versions.
+
+#### Scenario: Install and update a protocol one server
+- **WHEN** the app bundles a completed protocol 1 server and reads a signed feed containing newer servers of protocols 1 and 2
+- **THEN** the bundled server installs and only the compatible protocol 1 release is selected
+- **AND** protocol 2 candidates are skipped without replacing the working server
+- **AND** a signed feed with invalid protocol 0 metadata is rejected
+
+#### Scenario: Validate packaged protocol metadata
+- **WHEN** a protocol 1 app release is validated for publication
+- **THEN** its bundled server protocol matches TilrServerProtocolVersion in signed Info.plist
+- **AND** a bundled server of protocol 0 or 2 is rejected when app metadata specifies protocol 1

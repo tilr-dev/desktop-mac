@@ -17,6 +17,10 @@ The release workflow SHALL separate credential setup, building, local verificati
 - **THEN** it selects the last successful pair from build/latest-app-release.json, prints version/build/channel and publishes without changing or rebuilding files; absent history requires explicit version/build
 - **AND** a failed subsequent build does not change the pointer; explicit release_all.py --publish remains an opt-in combined shortcut
 
+#### Scenario: CI release
+- **WHEN** the Release workflow runs
+- **THEN** its build jobs produce the server and both DMGs, and its publish job publishes those same files after approval without rebuilding them
+
 ### Requirement: Persistent release numbering
 The release coordinator SHALL reserve monotonically increasing local builds under a lock without resetting on marketing-version changes.
 
@@ -28,6 +32,16 @@ The release coordinator SHALL reserve monotonically increasing local builds unde
 - **AND** rerunning after failure chooses a new number; explicit --resume reuses only matching completed verified artifacts, and incomplete output must be preserved/moved aside before retry
 - **AND** build history must be retained and CDN numbers checked when changing machines; local numbering does not assert installed or public versions
 
+#### Scenario: No release version in the template
+- **WHEN** the source Info.plist contains `0.0.0-dev`
+- **THEN** it is ignored as a release version; numeric release history or an explicit --version supplies the version
+- **AND** without either, selection fails with `No release version yet; pass --version` without reserving a build
+- **AND** --status and the automatic build preamble display the missing version without reserving or failing, so an explicit --version can initialize the first release
+
+#### Scenario: CI release numbers
+- **WHEN** the Release workflow runs on a runner without local history
+- **THEN** it takes the explicit version and build, and publication refuses a build not newer than the published feed
+
 ### Requirement: Architecture-specific signed artifacts
 Public app releases SHALL contain two DMGs, arm64 and x86_64, sharing marketing version/build, with no universal packaging option.
 
@@ -36,7 +50,7 @@ Public app releases SHALL contain two DMGs, arm64 and x86_64, sharing marketing 
 - **THEN** each Mach-O, including all five Sparkle executables, is audited/thinned to that architecture, embedded code is signed inside-out with hardened runtime and secure timestamp, signatures are verified and app/DMG notarized and stapled
 - **AND** public DMGs are named Tilr-<version>-<build>-<arch>.dmg and published at https://cdn.tilr.dev/mac/<arch>/Tilr-<version>-<build>-<arch>.dmg
 - **AND** the DMG contains Tilr.app and an Applications link; user configuration and installed applications are untouched; there is no unsigned production fallback or App Sandbox requirement
-- **AND** build-time stable/beta feed and public key are embedded in the signed bundle; changing channel requires a new build/test
+- **AND** the verification public key and runtime-feed-selection marker are embedded in the signed bundle without a channel or SUFeedURL; for the same architecture/version/build/key, stable and beta packaging produce identical Info.plist bytes
 - **AND** release.json is written only after completion and records identity/metadata and archive SHA-256; existing completed output is never overwritten
 - **AND** AppIcon includes standard/retina sizes and Info.plist identifies it through CFBundleIconFile
 
@@ -76,3 +90,41 @@ release_server.py SHALL build/sign/notarize servers independently from applicati
 - **AND** building servers requires Rust, Zig 0.15.2, protoc, Apple signing/notarization credentials and aarch64-apple-darwin/x86_64-apple-darwin Rust targets
 - **AND** server-release.json pins the completed version/build/protocol; TILR_SERVER_RELEASE_ROOT may supply downloaded completed artifacts; public apps require public servers, preview apps may use matching preview artifacts if no public artifact exists
 - **AND** application packaging copies exact server bytes/signature/manifest, without recompiling, renumbering or using universal server artifacts
+
+### Requirement: One-command independent server release
+The desktop repository SHALL provide a tagged-source server release command with credential-free preview. It SHALL validate the tagged protocol, preflight access, and build both signed and notarized macOS architectures. It SHALL show artifacts and require explicit confirmation before publishing, verify both channel feeds, and print the app pin. Failures SHALL stop later steps.
+
+#### Scenario: Release tagged sources
+- **WHEN** the command receives --version, --build, --min-app-build, and an exact existing --tag
+- **THEN** it builds the detached tagged sources even when the source clone HEAD differs
+- **AND** it runs release_all.py --check --publish with Homebrew first in PATH before building both architectures
+
+#### Scenario: Select sources for a lower-level build
+- **WHEN** the operator runs release_server.py with --source PATH
+- **THEN** it builds the checkout at PATH and reads the protocol version from that checkout
+- **AND** it uses that checkout's current sources without selecting a tag automatically
+
+#### Scenario: Default sources for a lower-level build
+- **WHEN** the operator runs release_server.py without --source
+- **THEN** it builds the current sources in ../tilrd relative to the desktop repository
+- **AND** it does not select a tag automatically
+
+#### Scenario: Inspect before publishing
+- **WHEN** the signed artifacts are ready
+- **THEN** the command displays release.json and the built server version
+- **AND** no publication occurs unless the operator explicitly confirms
+- **AND** refusal or end of input leaves the artifacts available for inspection
+
+#### Scenario: Confirm publication
+- **WHEN** the operator confirms publication
+- **THEN** the command publishes the prepared artifacts and verifies both channel feeds
+- **AND** it prints the version, build, and tagged protocolVersion as a JSON app pin
+
+#### Scenario: Credential-free preview
+- **WHEN** the operator selects --preview
+- **THEN** the command validates the tag and protocol and shows the planned commands and pin
+- **AND** it does not require credentials, build, sign, notarize, or publish
+
+#### Scenario: Invalid input or failed step
+- **WHEN** the tag, protocol, preflight, build, or feed verification is invalid or fails
+- **THEN** the command exits unsuccessfully without proceeding to later release steps

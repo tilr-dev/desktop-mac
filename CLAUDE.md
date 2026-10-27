@@ -33,8 +33,11 @@ thread (async, errors as `PluginManagerFailure` kind + message), `PluginManagerH
 `plugin_manager.workspace` (default `<config folder>/plugins`) and `plugin_manager.catalog`
 (`https://pkg.tilr.dev`), both on reload. No UI or page bridge yet; `tilr ctl` raw command
 `{"cmd":"plugin-manager"}` reads the state, `--probe` exercises it on a temporary workspace.
+Launch runs `syncDist` once to migrate the configured workspace's legacy dist contents to active
+plugins only; failures are logged and do not abort startup. Missing/empty workspaces are not
+created, unmanaged files are preserved, and probes use temporary workspaces.
 CI generates bindings from the full commit SHA in `gitpm.pin`; its first field is a
-revision label (a tag or `dev`). Local and release builds use `../git/gitpm` or
+revision label (a tag or `main`). Local and release builds use `../git/gitpm` or
 `GITPM_DIR`, so that checkout must expose the same API as the pin. The service uses
 `PackageManager`/`InstalledPackage`; `replace(original:replacement:)` has no confirmation
 parameter and refuses incompatible consumers. Restore the original with
@@ -48,7 +51,9 @@ with kind `git` and a message saying to install the Command Line Tools, instead 
 Swift Package, AppKit, no Xcode project. `./run.sh` builds and starts the app; `./run.sh --probe`
 runs the self-check (page, page plumbing — scheme handler, native events, console relay,
 snapshot PNG —, palette, app switching and slide, lazy tabs, Space move) and quits — run it after changes,
-as `./run.sh --test --probe`. The config folder (`~/Library/Application Support/dev.tilr.mac`, or `--config DIR` / `TILR_CONFIG`)
+as `./run.sh --test --probe`. Development bundles use `<last reachable v-tag>-dev.<commit>[.dirty]`
+(base `0.0.0` without tags), build 1; tracked changes add `.dirty`. The source `Info.plist` keeps
+`0.0.0-dev`; release scripts stamp real versions. The config folder (`~/Library/Application Support/dev.tilr.mac`, or `--config DIR` / `TILR_CONFIG`)
 names an instance (`Sources/Tilr/Instance.swift`): another folder is another app running beside
 the user's, with its own config, control socket, web storage, pid file and window title.
 

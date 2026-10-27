@@ -8,7 +8,7 @@ import plistlib
 import subprocess
 import tempfile
 
-from publish import validate_manifest, digest
+from publish import validate_manifest, validate_app_metadata, digest
 from release import ROOT
 from bundle_server import verify_server
 
@@ -37,18 +37,14 @@ def verify(directory, launch=False):
             run("spctl", "--assess", "--type", "execute", "--verbose=2", app)
             with (app / "Contents/Info.plist").open("rb") as file:
                 info = plistlib.load(file)
-            expected = {"CFBundleIdentifier": "dev.tilr.mac", "CFBundleVersion": str(meta["build"]),
-                        "CFBundleShortVersionString": meta["version"], "SUFeedURL": meta["feed"],
-                        "SUPublicEDKey": meta["public_key"]}
-            if any(info.get(key) != value for key, value in expected.items()):
-                raise ValueError("DMG's embedded application differs from release metadata")
+            validate_app_metadata(info, meta)
             if meta.get("packaging") == 1:
                 from release_packaging import audit
                 audit(app, meta["arch"])
             binary = app / "Contents/MacOS/Tilr"
             run("lipo", binary, "-verify_arch", meta["arch"])
             verify_server(app, meta["version"], meta["build"], meta["arch"])
-            server = app / "Contents/Helpers/tilr-server"
+            server = app / "Contents/Helpers/tilrd"
             run("lipo", server, "-verify_arch", meta["arch"])
             run("codesign", "--verify", "--strict", server)
             if digest(binary) != digest(directory / "Tilr.app/Contents/MacOS/Tilr"):

@@ -89,7 +89,7 @@ python3 scripts/release_server.py --version 0.1.1 --build 2 --publish-only
 При `Developer ID identity is unavailable` используйте обычный Terminal релизного
 Mac с существующим сертификатом и приватным ключом. Не создавайте новый ключ из-за
 ограничений агента. `release.command` и `upload.command` добавляют Homebrew в PATH.
-Разовая настройка — `setup-release.command`, доступ к Cloudflare — `wrangler login`.
+One-time setup: `setup-release.command`; CDN access: R2 keys for the AWS CLI (section 1).
 Процесс сборки не останавливает development-сервер. Если он занимает порт 7890,
 остановите именно его в терминале запуска (Ctrl+C) перед запуском новой версии.
 
@@ -102,6 +102,64 @@ Sparkle, серверному бинарнику и проверке подпи�
 Если все попытки исчерпаны, проверьте доступ к `timestamp.apple.com` из релизного
 процесса и повторите сборку через описанный выше `--resume`, сохранив завершённую
 архитектуру и переместив незавершённый каталог в архив.
+
+## Release from CI
+
+The `Release` workflow (`.github/workflows/release.yml`) does the same on GitHub-hosted macOS,
+without the release Mac. Run it by hand from a release branch `release/X.Y` (it fixes the set
+of features; `main` moves with every merge and is never released): Actions → Release → Run
+workflow with that branch, or
+`gh workflow run release.yml --ref release/0.3 -f version=0.3.0 -f channel=stable`.
+From any other ref (`main`, a task branch, a tag) the first job, `branch`, fails before any
+job with keys starts; the `apple-signing` and `release` environments accept only `release/*`
+as well.
+Leave `build` empty to select the highest build in both architecture appcasts of that
+channel plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
+`https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml`). One number is logged and used for
+both architectures and publication. To override it, add `-f build=21`; an explicit
+build must exceed every published build on that channel. Missing feeds count as empty;
+other HTTP/network errors and malformed feeds stop the run. Local release numbering
+and reservations are unchanged.
+
+The pinned server is tilrd **0.2.0, build 3, protocol 1**. For its first CI release, set
+`server_min_app_build=17` (Actions input, or `-f server_min_app_build=17` with `gh workflow run`).
+This sets the server feed's minimum app build; the app must also support protocol 1.
+
+1. `server`: the server pinned in `server-release.json`. Already published: `fetch_server.py`
+   downloads it from its feed and checks the checksum and the Developer ID signature; it is not
+   rebuilt (a published number keeps its bytes). Not yet published: tilrd from the tag
+   `v<version>` is compiled without keys, then `release_server.py` signs and notarizes it
+   (`server_min_app_build` is the oldest supported app build).
+2. `app`: both architectures are compiled without keys, then `release_all.py` signs, notarizes
+   and packages the DMGs. No Sparkle key or Cloudflare token here.
+3. `publish`: waits for approval in the `release` environment, then `release_server.py
+   --publish-only` and `release_all.py --publish-only` publish the same artifacts. No delta
+   patches: the runner has no DMG history, so the full DMG is published. After the CDN
+   upload succeeds, it creates tag `v<version>` on the workflow commit (`github.sha`)
+   and GitHub Release `Tilr <version> (<build>)`, attaching both unchanged DMGs from
+   the `app` artifact and using `notes` for the release body as well as Sparkle.
+   Only this job has `contents: write`; no commit is made to any branch. An existing tag
+   causes a clear failure without updating/deleting it or changing a GitHub Release.
+   If GitHub publication fails after CDN upload or tag creation, those completed
+   steps remain published; inspect the failure before releasing again.
+
+`scripts/ci-apple-keychain.sh` imports the Apple keys into a temporary keychain (notarytool
+profile `tilr-ci` from an App Store Connect API key) and removes it at the end of the job.
+In `publish` the Sparkle key is a file, `TILR_SPARKLE_KEY_FILE`, instead of a Keychain item,
+so there is no access prompt; its public half is checked against `TILR_UPDATE_PUBLIC_KEY`
+(`scripts/sparkle_public_key.swift`). No deploy key is needed: tilrd and gitpm are public.
+
+Secrets (Settings → Environments), provisioned by Dan:
+
+| Environment | Secret | What it is |
+|---|---|---|
+| `apple-signing` (branches `release/*` only) | `APPLE_CERTIFICATE_P12_BASE64` | Developer ID Application `.p12` with its key, base64 |
+| | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password |
+| | `APPLE_SIGN_IDENTITY` | `Developer ID Application: Rexuni LLC (V57FF3MX26)` |
+| | `APPLE_API_KEY_P8_BASE64` | App Store Connect API key (`.p8`, role Developer), base64 |
+| | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` | that key's Key ID and Issuer ID |
+| `release` (required reviewer Dan, `release/*` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
+| | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | R2 API token (S3) with object read and write on the bucket `tilr-cdn` |
 
 ## Compact packaging and delta updates (implemented)
 
@@ -118,7 +176,7 @@ the shipped app. An existing SwiftPM `Tilr.dSYM` is also copied there. Keep thes
 files for diagnostics: an unstripped executable alone does not supply source-level
 debug information when the compiler did not generate it. Sparkle exports are not
 stripped. Server artifacts are never stripped or re-signed when bundled into an app.
-The first compact server is pinned as **0.1.0 build 2**, independently of app numbers.
+The current server pin is **0.2.0 build 3, protocol 1**, independently of app numbers.
 
 Each app release writes `sizes.json` with logical file bytes (excluding duplicate
 symlink targets), DMG bytes and all Mach-O architectures. Server releases write their
@@ -158,9 +216,12 @@ update, publish the completed server separately, on the desired server channel:
 python3 scripts/release_server.py --version 0.1.0 --build 2 --channel beta --publish-only
 ```
 
-For stable app distribution build another new app build with `--channel stable`;
-the channel is embedded in the signed bundle. Server beta and app beta are separate
-settings: testing server beta requires `local_server.update_channel: beta`.
+App update selection is controlled in Tilr → Update Settings → Receive RC versions.
+It defaults to off (stable), persists between launches, and takes effect on the next
+fresh appcast check. An automatic RC installation already prepared by Sparkle is
+kept and can still be installed after disabling RC versions. Enabling the setting
+selects beta for the app’s compiled architecture. This does not
+change server update settings; testing server beta uses `local_server.update_channel: beta`.
 
 Verification so far: local tests cover both Sparkle architectures and ad-hoc
 signatures, real BinaryDelta create/apply and the reconstructed bundle signature,
@@ -189,15 +250,48 @@ No JavaScript `tilr` CLI, Node, npm or Git is shipped.
 
 ### Build and publish a server independently
 
+For the complete tagged-source workflow, run on the signing Mac:
+
+```sh
+python3 scripts/release_server_all.py --version 0.2.0 --build 3 --min-app-build 17 --tag v0.2.0
+# Inspect the plan without keys, signing, notarization or publication:
+python3 scripts/release_server_all.py --version 0.2.0 --build 3 --min-app-build 17 --tag v0.2.0 --preview
+```
+
+The command uses a temporary detached worktree of the local tag in
+`~/projects/tilr/git/tilrd`; override the clone with `--tilrd-repo PATH`.
+It validates the tagged protocol, prepends Homebrew to PATH (AWS CLI), runs
+`release_all.py --check --publish`, then builds both architectures from that
+worktree. It shows both `release.json` receipts and runs the native `tilrd --version`.
+Inspect/test both artifacts, then type exactly `publish` to publish. Refusal or
+EOF leaves artifacts available without publication. After publication, both signed
+CDN feeds are checked and the JSON pin for `server-release.json` is printed;
+copy it into that file separately. `--channel beta` selects the beta feeds.
+The worktree is removed on exit; the original clone checkout is preserved.
+No credentials are created and no login is initiated. If a step fails, later
+steps stop. After declining publication, use the lower-level `--publish-only`
+command below with the same version/build and channel to publish inspected artifacts.
+
+The lower-level commands remain available:
+
 The server build machine needs Rust, Zig 0.15.2, protoc, Apple signing/notarization
 credentials from `release.local.json`, and the Rust targets:
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 python3 scripts/release_server.py --version 0.1.0 --build 1
+# Rebuild from a checkout you have prepared at the intended tag:
+python3 scripts/release_server.py --version 0.1.0 --build 2 --source /path/to/tagged-tilrd
 # Test both completed artifacts, then publish without rebuilding:
 python3 scripts/release_server.py --version 0.1.0 --build 1 --publish-only
 ```
+
+`--source PATH` selects the tilrd source checkout for a lower-level build, including
+the protocol version read at build time. It defaults to `../tilrd` relative to
+the desktop repository. This command builds that checkout's current sources; it
+does not select a tag automatically. Prepare the intended tag yourself before
+rebuilding, or use the complete tagged-source workflow above. `--publish-only`
+uses completed artifacts without reading or rebuilding the source checkout.
 
 `--arch arm64` or `--arch x86_64` selects one architecture; the default is both.
 `--channel beta` selects the server beta feed independently of the app channel.
@@ -234,9 +328,15 @@ separate architecture DMGs; universal server artifacts are not used.
 The app records its supported server protocol, bundled server identity, server
 feed base URL and public verification key in its signed Info.plist. Downloads
 are selected by server build within the supported protocol, architecture and app
-build range; hashes/signatures and reload-state compatibility are verified before
-replacement. A server whose state cannot migrate live is left running; after a
-user stops that service, installation can proceed without a live-state migration.
+build range; hashes/signatures are verified before replacement. The app installs
+the replacement binary and requests reload; tilrd checks reload-state compatibility
+before handing over. The app confirms the update through `ps --server-version`.
+If reload is refused and the running version stays unchanged, the app reports
+"The local server did not become ready. Reload did not complete: running version
+X, expected Y" with the server log path and confirmation that existing processes
+were not stopped. The supervisor and terminals keep running, and the replacement
+binary remains installed. To use that binary after a refused reload, stop the
+service, then start it again; this ends the existing terminal sessions.
 The next application build can still bundle an older compatible server; it will
 not undo an independent server update.
 
@@ -246,7 +346,7 @@ The default instance installs into
 `~/Library/Application Support/dev.tilr.mac/server/` and creates
 `~/Library/LaunchAgents/dev.tilr.server.plist`. It listens on loopback port 7890,
 with private managed state/token and runtime files. The job runs the signed
-`tilr-server` directly (no shell wrapper); panes get the user's login environment
+`tilrd` directly (no shell wrapper); panes get the user's login environment
 because the server starts their shell as a login shell (server 0.1.0 build 3+).
 The plist's `AssociatedBundleIdentifiers` (the app's bundle id, `dev.tilr.mac`) makes Login
 Items and the "Background Items Added" notice show the job as Tilr rather than the signing team
@@ -255,7 +355,7 @@ a zsh one below.
 A plist of ours with another definition (a job written by an earlier Tilr through
 `/bin/zsh -lc 'exec …'` or without the association, a changed port or environment) is
 rewritten and applied. "Ours" = Label `dev.tilr.server` and `ProgramArguments` running the
-installed `tilr-server`, directly or through `/bin/zsh -lc`; any other plist under that name,
+installed `tilrd`, directly or through `/bin/zsh -lc`; any other plist under that name,
 or a loaded job of that name without the file, is refused with a message naming the file.
 launchd keeps a loaded definition until bootout, so applying it means a restart:
 - the job is stopped, or the server reports no live panes → `bootout` + `bootstrap` at once,
@@ -268,7 +368,7 @@ launchd keeps a loaded definition until bootout, so applying it means a restart:
   (minus `OSLogRateLimit` and `XPC_*`, which launchd adds) against the plist; a login that
   loaded the new file counts as applied and clears the marker. The marker decides only when
   that output cannot be parsed.
-"Live panes" comes from `tilr-server ps --url ws://127.0.0.1:<port>` (the protocol's
+"Live panes" comes from `tilrd ps --url ws://127.0.0.1:<port>` (the protocol's
 ListPanes over the server's WebSocket, with the stored token): a header plus one line per pane.
 After every `bootstrap`, a job that `launchctl print` shows loaded without a `pid` is
 `kickstart`ed. Standalone installations are
@@ -298,7 +398,7 @@ non-200 on the binary download is "Server update download failed (HTTP <status>)
 `local_server.enabled: false` in `config.yml` (at launch, or on save: the config is watched), or
 Remove Local Server… in `Tilr > Local Server…` (confirmation: open panes will close), removes
 what the app installed when the plist is ours (see above): `launchctl bootout
-gui/<uid>/dev.tilr.server`, the plist, and in `server/` the binary, `tilr-server.previous`,
+gui/<uid>/dev.tilr.server`, the plist, and in `server/` the binary, `tilrd.previous`,
 `app-managed*.json`, `origins.toml`, `runtime/` and a pending-restart marker. `server/state/`
 (sessions, token, logs) and `server.log` stay. A foreign plist is left alone with a notice.
 Only release builds (with a bundled server) remove, as only they install. The dialog then
@@ -323,7 +423,7 @@ The separate Linux/standalone server updater is unchanged.
 Installation replaces the binary atomically at a fixed path and waits for an
 authenticated response with the expected running version. It never stops a
 running supervisor to upgrade. The server's reload preserves sessions; the old
-binary and its receipt remain as `tilr-server.previous` and
+binary and its receipt remain as `tilrd.previous` and
 `app-managed.previous.json` for manual recovery, not automatic live rollback. A
 transaction journal reconciles interruptions before/after binary replacement on
 the next launch, even when that app bundles an older server. Closing the app leaves terminals running until logout.
@@ -336,10 +436,10 @@ introduced. Test/probe/custom-config instances never manage the production serve
 
 ```sh
 python3 -m unittest discover -s scripts -p 'test_*.py'
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilr-server-installation-tests
-/tmp/tilr-server-installation-tests
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o /tmp/tilr-server-update-tests
-/tmp/tilr-server-update-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
+/tmp/tilrd-installation-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o /tmp/tilrd-update-tests
+/tmp/tilrd-update-tests
 ```
 
 Before public handoff, test first install, a server-only upgrade with an open
@@ -368,22 +468,24 @@ be created at account.apple.com → Sign-In and Security → App-Specific Passwo
 The Rexuni Team ID is the code in the certificate's name. Do not create/revoke the
 existing certificate because an agent sandbox cannot see it.
 
-Publication access is configured separately. With Node >=22 and Wrangler installed:
+Publication access is configured separately: the AWS CLI (`brew install awscli`) with an
+R2 API token for the bucket (Cloudflare → R2 → Manage API tokens, Object Read & Write on
+`tilr-cdn`; the same kind of keys as tilrd's CDN upload). Keep them in their own profile so
+the default AWS credentials stay untouched:
 
 ```sh
-wrangler login
+aws configure --profile tilr-r2      # Access Key ID and Secret of the R2 token, region auto
+export AWS_PROFILE=tilr-r2
 python3 scripts/release_all.py --check --publish-only
 ```
 
-That check uses the existing Sparkle key and Cloudflare account's `tilr-cdn` bucket.
+That check uses the existing Sparkle key and `aws s3api head-bucket` on `tilr-cdn` through
+the R2 endpoint.
 It needs no Apple signing private key or notarization login, and does not compile or
 create disk images. Publishing still needs macOS signature/stapling verification,
 Sparkle tools and disk-image mounting when generating the appcast. An automated
-publisher may use an authorized Cloudflare token from its secret store instead of
-interactive login.
-
-For this development Mac, if `node --version` selects old Node 18, use
-`export PATH="/opt/homebrew/bin:$PATH"` in this Terminal; the Homebrew Node is newer.
+publisher takes the R2 keys as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from its
+secret store.
 For agent execution, provision these same accesses for the actual agent process or
 an explicitly configured macOS release runner. Scripts cannot grant OS/tool
 permissions. See [AGENT_RELEASE.md](AGENT_RELEASE.md).
@@ -411,9 +513,20 @@ Keep each entire release directory: the publisher also needs `Tilr.app` and the
 if the source changes after building. Changed source does not change what will be
 published. Do not edit the signed app or DMG.
 
-Choose `stable` at build time when these exact files will become the production
-release. The feed URL is embedded inside the signed application. A beta-built app
-cannot be promoted to stable by moving its DMG: that requires a new build and test.
+`--channel stable|beta` selects publication routing in `release.json`; it is absent
+from the signed application’s Info.plist. Stable and beta builds with the same
+architecture/version/build/key have identical Info.plist bytes. The same tested DMG
+can therefore be published on either channel without changing the bundle. The
+current upload commands still validate their receipt’s publication channel; this
+change does not add a promotion command.
+
+The signed bundle contains the verification public key and a runtime-selection
+marker, with no `SUFeedURL`. Tilr → Update Settings exposes Receive RC versions
+(initially off, saved between launches), automatic checks and automatic downloads.
+The next Sparkle check uses `https://cdn.tilr.dev/mac/<arch>/appcast.xml` when RC
+versions are off, or `https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml` when on, for
+the app’s compiled `arm64` or `x86_64` architecture. Changing the setting leaves an
+active check unchanged. A leftover `TILR_UPDATE_FEED` does not affect app selection.
 
 ## 3. Test the exact artifacts locally
 
@@ -431,7 +544,8 @@ python3 scripts/verify_release.py build/releases/0.1.0-1-x86_64
 
 The verifier checks the archive hash, DMG integrity/signature/stapling, mounts it
 read-only, and verifies the app inside it: signature, stapling, Gatekeeper assessment,
-version, architecture, feed and public key. It always detaches the image after checks.
+version, architecture, runtime-feed-selection marker and public key (or the matching
+feed for completed legacy artifacts). It always detaches the image after checks.
 `verification.json` records artifact checks, **not a GUI test pass**.
 
 `--launch` copies the app out of the verified DMG to `build/local-tests/`, then launches
