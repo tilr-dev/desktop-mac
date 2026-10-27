@@ -73,6 +73,18 @@ def sign(path, identity, entitlements=None):
             return
 
 
+def app_info(template, version, build, public_key):
+    """Channel-neutral signed metadata; the receipt alone routes publication."""
+    info = dict(template)
+    info.pop("SUFeedURL", None)
+    info.pop("SUPublicEDKey", None)
+    info.pop("TilrUpdateFeedSelection", None)
+    info.update(CFBundleShortVersionString=version, CFBundleVersion=str(build))
+    if public_key:
+        info.update(SUPublicEDKey=public_key, TilrUpdateFeedSelection="preferences")
+    return info
+
+
 def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
@@ -154,9 +166,7 @@ def main():
         run("ditto", ROOT / "Resources/AppIcon.icns", contents / "Resources/AppIcon.icns")
         with (ROOT / "Info.plist").open("rb") as file:
             info = plistlib.load(file)
-        info.update(CFBundleShortVersionString=args.version, CFBundleVersion=str(args.build))
-        if feed and key:
-            info.update(SUFeedURL=feed, SUPublicEDKey=key)
+        info = app_info(info, args.version, args.build, key)
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump(info, file)
         symbols = output / "symbols"

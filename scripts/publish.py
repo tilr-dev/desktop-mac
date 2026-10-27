@@ -88,6 +88,19 @@ def check_newer(data, build):
         raise ValueError(f"Build {build} is not newer than the published feed; increase --build")
 
 
+def validate_app_metadata(info, meta):
+    """Accept runtime routing or unchanged completed legacy channel-bound apps."""
+    expected = {"CFBundleIdentifier": "dev.tilr.mac", "CFBundleVersion": str(meta["build"]),
+                "CFBundleShortVersionString": meta["version"], "SUPublicEDKey": meta["public_key"]}
+    if "TilrUpdateFeedSelection" in info:
+        if info["TilrUpdateFeedSelection"] != "preferences" or "SUFeedURL" in info:
+            raise ValueError("Invalid runtime update feed metadata")
+    else:
+        expected["SUFeedURL"] = meta["feed"]
+    if any(info.get(key) != value for key, value in expected.items()):
+        raise ValueError("Release metadata differs from the application bundle")
+
+
 def validate_manifest(directory):
     meta = json.loads((directory / "release.json").read_text())
     if meta.get("preview") is not False:
@@ -108,11 +121,7 @@ def validate_manifest(directory):
         raise ValueError("DMG changed since successful release completion")
     with (directory / "Tilr.app/Contents/Info.plist").open("rb") as file:
         info = plistlib.load(file)
-    expected = {"CFBundleIdentifier": "dev.tilr.mac", "CFBundleVersion": str(meta["build"]),
-                "CFBundleShortVersionString": meta["version"], "SUFeedURL": meta["feed"],
-                "SUPublicEDKey": meta["public_key"]}
-    if any(info.get(key) != value for key, value in expected.items()):
-        raise ValueError("Release metadata differs from the application bundle")
+    validate_app_metadata(info, meta)
     from bundle_plugins import plugin_inventory
     plugins = plugin_inventory(directory / 'Tilr.app')
     if plugins or 'native_plugins' in meta:

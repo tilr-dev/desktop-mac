@@ -12,11 +12,21 @@ public final class AppUpdates: NSObject, SPUStandardUserDriverDelegate, UNUserNo
     private var notificationsAllowed = false
     private var pendingVersion: String?
     private var started = false
+    public let preferences: UpdatePreferences
+    private let feedDelegate: UpdateFeedDelegate
+    private var settings: UpdateSettings?
 
-    public init(updaterDelegate: SPUUpdaterDelegate? = nil) {
+    public init(updaterDelegate: SPUUpdaterDelegate? = nil, preferences: UpdatePreferences = UpdatePreferences()) {
+        self.preferences = preferences
+        feedDelegate = UpdateFeedDelegate(preferences: preferences, host: updaterDelegate)
         super.init()
         controller = SPUStandardUpdaterController(startingUpdater: false,
-                                                  updaterDelegate: updaterDelegate, userDriverDelegate: self)
+                                                  updaterDelegate: feedDelegate, userDriverDelegate: self)
+    }
+
+    public func showSettings() {
+        if settings == nil { settings = UpdateSettings(preferences: preferences, updater: controller.updater) }
+        settings?.show()
     }
 
     public func start() {

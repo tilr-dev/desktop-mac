@@ -41,9 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var current: Tab? { shell.current }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Release packaging supplies both values. Local builds never contact an update feed.
+        // Release packaging enables runtime feed selection. Local builds have no update service.
         if !probing, !CommandLine.arguments.contains("--no-updates"),
-           Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") is String,
+           Bundle.main.object(forInfoDictionaryKey: "TilrUpdateFeedSelection") as? String == "preferences",
            Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") is String {
             // Started once the window is up (below), so the first check does not delay it.
             appUpdates = AppUpdates(updaterDelegate: about)
@@ -265,6 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Menu
 
+    @objc func showUpdateSettings() { appUpdates?.showSettings() }
+
     /// Shortcuts live in the main menu rather than in a key monitor, so every plain key reaches
     /// the terminal. The Edit menu is what makes ⌘C / ⌘V work inside the web view. The
     /// Commands menu mirrors the config's control plane, with each command's key. The Apps menu
@@ -338,7 +340,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             check.isEnabled = false
             check.toolTip = "Updates are available in signed release builds."
         }
-        var appItems: [NSMenuItem] = [item("About Tilr", #selector(showAbout), ""), check,
+        let updateSettings = item("Update Settings…", #selector(showUpdateSettings), "")
+        if appUpdates == nil {
+            updateSettings.action = nil
+            updateSettings.isEnabled = false
+        }
+        var appItems: [NSMenuItem] = [item("About Tilr", #selector(showAbout), ""), check, updateSettings,
                                     item("Native Plugin Settings…", #selector(showNativePluginSettings), ""),
                                     item("Local Server…", #selector(showLocalServer), ""),
                                     item("Check for Server Updates…", #selector(checkServerUpdates), ""), .separator()]
