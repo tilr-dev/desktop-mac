@@ -111,34 +111,45 @@ Release apps SHALL use Sparkle pinned to 2.10.0 in Package.swift/Package.resolve
 - **AND** subsequent fresh appcast checks use the stable feed; switching the preference does not cancel the prepared installer
 
 ### Requirement: Release from CI
-The Release workflow SHALL build, sign, notarize and publish both app architectures and acquire the pinned signed/notarized upstream server on GitHub-hosted macOS, publish only release candidates to beta, run by hand from a release/X.Y branch, each key only in the job that uses it.
+The Release workflow SHALL run automatically on pushes to release/**, use the pinned shared release-please and RC workflow, and build, sign, notarize and publish both app architectures as release candidates to beta on GitHub-hosted macOS. Each key SHALL remain only in the job that uses it. Merging the release PR SHALL be the only release approval.
 
 #### Scenario: Run a CI release
-- **WHEN** Release runs with numeric marketing version X.Y.Z, a positive RC number N and an optional build (without a channel input)
-- **THEN** the app job acquires the pinned tilrd GitHub Release for both architectures, verifies the archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
+- **WHEN** a commit is pushed to release/X.Y and the shared workflow reports is_rc=true
+- **THEN** release-please opens or updates the release PR and the shared workflow provides numeric version X.Y.Z and a fresh tag vX.Y.Z-rc.N, where N increases for successive candidates
+- **AND** the app job acquires the pinned tilrd GitHub Release for both architectures, verifies archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
-- **AND** the publish job waits for approval in the release environment and publishes those artifacts to beta with --publish-only, holding the Sparkle key and the R2 keys but no Apple keys
-- **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one when the build input is empty, or the explicit build after checking it exceeds that maximum
+- **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one
 - **AND** that build is logged and passed explicitly to both architecture builds and publication, without changing local release numbering
-- **AND** after successful CDN publication the publish job creates tag vX.Y.Z-rc.N on the workflow commit and a GitHub pre-release (--prerelease) named Tilr X.Y.Z-rc.N (<build>), with both unchanged DMGs from the app artifact and the notes input
-- **AND** only the publish job has contents: write; the workflow commits no repository changes
+- **AND** the publish job publishes those artifacts to beta with --publish-only without environment approval, holding the Sparkle and R2 keys but no Apple keys
+- **AND** after successful CDN publication it attaches both unchanged DMGs to the shared GitHub prerelease and names it Tilr X.Y.Z-rc.N (<build>), using its existing body as Sparkle notes
+- **AND** the shared workflow uses the release GitHub App token for release PRs and tags; only the publish job has contents: write on GITHUB_TOKEN, while the app job has only contents: read
 
 #### Scenario: Run from a branch other than a release branch
-- **WHEN** Release is started from main, a task branch or a tag
-- **THEN** a first job without keys or environment fails naming the ref, and no job holding keys starts
-- **AND** the apple-signing and release environments accept only release/* branches, so a job with keys cannot run from another ref either
+- **WHEN** a commit is pushed to main or any branch outside release/**, or a tag is pushed
+- **THEN** the Release workflow does not start and there is no workflow_dispatch entry point
+- **AND** the apple-signing and release environments accept only release/* branches, without required reviewers
+
+#### Scenario: Merge the release PR
+- **WHEN** the release-please PR is merged into release/X.Y
+- **THEN** the shared workflow creates the stable tag vX.Y.Z without an environment approval
+- **AND** is_rc=false skips the candidate build and beta publication; stable artifact building and publication use the stable tag in a separate workflow
 
 #### Scenario: Resolve a build from channel appcasts
 - **WHEN** the four stable/beta architecture appcasts contain different builds or multiple historical releases
 - **THEN** numbering uses the highest build across every entry in all four appcasts
 - **AND** a missing appcast contributes no builds, but network, HTTP errors other than missing feeds, malformed XML or invalid build values stop the run rather than guessing a number
-- **AND** an explicit build not greater than the published maximum is rejected
 
 #### Scenario: Protect an existing version tag
-- **WHEN** vX.Y.Z-rc.N already exists during GitHub publication
-- **THEN** the run stops with a clear error without updating or deleting the tag or changing an existing GitHub Release
+- **WHEN** artifacts are attached to the candidate prerelease
+- **THEN** publication verifies that the existing candidate tag points to the workflow commit and that the release is a prerelease before any CDN publication
+- **AND** it never creates, moves or deletes that tag, replaces existing assets, or attaches candidate artifacts to a stable release
 
 #### Scenario: Keep the marketing version numeric
 - **WHEN** an RC is built with version X.Y.Z and RC number N
 - **THEN** CFBundleShortVersionString and both DMG names use X.Y.Z without an RC suffix
 - **AND** the RC suffix appears only in the Git tag and GitHub pre-release metadata
+
+#### Scenario: Serialize candidate runs
+- **WHEN** another release push arrives while an RC build is active
+- **THEN** the active run is not cancelled and the latest push replaces any pending run
+- **AND** multiple pushes arriving faster than an RC build are not supported

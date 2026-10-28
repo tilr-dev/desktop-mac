@@ -19,7 +19,7 @@ The release workflow SHALL separate credential setup, building, local verificati
 
 #### Scenario: CI release
 - **WHEN** the Release workflow runs
-- **THEN** it acquires the pinned upstream server without compilation or signing and builds both DMGs, and its publish job publishes those same files as an RC to beta after approval without rebuilding them
+- **THEN** it acquires the pinned upstream server without compilation or signing and builds both DMGs, and its publish job publishes those same files as an RC to beta automatically after a push to release/X.Y without rebuilding them
 
 #### Scenario: Saved stable upload selection
 - **WHEN** upload.command selects a completed pair whose saved publication channel is stable
@@ -50,7 +50,7 @@ The release coordinator SHALL reserve monotonically increasing local builds unde
 
 #### Scenario: CI release numbers
 - **WHEN** the Release workflow runs on a runner without local history
-- **THEN** it takes the explicit version and build, and publication refuses a build not newer than the published feed
+- **THEN** it takes the numeric version from the shared release-please workflow, resolves build as the highest build in both architecture appcasts across stable and beta plus one, and passes these explicitly to packaging and publication; local reservations are unchanged
 
 ### Requirement: Architecture-specific signed artifacts
 Public app releases SHALL contain two DMGs, arm64 and x86_64, sharing marketing version/build, with no universal packaging option.

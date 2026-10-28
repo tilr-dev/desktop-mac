@@ -1,25 +1,12 @@
-# Releases Tilr from CI by hand from a release/X.Y branch. The branch job refuses
-# other refs before keys are used. The app job verifies the pinned signed upstream
-# tilrd release, then compiles, signs and notarizes both app architectures.
-# The publish job publishes the tested app artifacts after approval.
-# No caches: dependency build scripts run on clean runners. Release runs are serialized.
+# Pushes to release/X.Y create candidates through the shared release workflow.
+# Signing and beta publication use the same completed artifacts, without environment review.
+# Stable release approval is merging the release PR; stable builds run separately from its tag.
+# No caches; candidate runs are serialized across branches for appcast build allocation.
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Marketing version (CFBundleShortVersionString), e.g. 0.3.0
-        required: true
-      build:
-        description: App build (CFBundleVersion); empty selects highest published build + 1
-        required: false
-      rc:
-        description: Positive RC number N for vX.Y.Z-rc.N (use a new number for each candidate)
-        required: true
-      notes:
-        description: Release notes for Sparkle and GitHub (plain text, optional)
-        default: ''
+  push:
+    branches: ['release/**']
 
 permissions:
   contents: read
@@ -38,29 +25,22 @@ env:
   TILR_NOTARY_PROFILE: tilr-ci
 
 jobs:
-  branch:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Refuse a ref other than a release branch
-        env:
-          REF: ${{ github.ref }}
-          VERSION: ${{ inputs.version }}
-          RC: ${{ inputs.rc }}
-        run: |
-          case "$REF" in
-            refs/heads/release/?*) echo "Releasing from ${REF#refs/heads/}" ;;
-            *) echo "::error::Release runs only from a release/X.Y branch, not $REF"; exit 1 ;;
-          esac
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$RC" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::Use numeric version X.Y.Z and a positive RC number without leading zeros"; exit 1
-          fi
-
+  release:
+    permissions:
+      contents: read
+    uses: tilr-dev/.github/.github/workflows/release-branch.yml@aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
+    with:
+      workflow-sha: aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
+      app-client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
+    secrets:
+      app-private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
 
   app:
-    needs: branch
+    needs: release
+    if: needs.release.outputs.is_rc == 'true'
     outputs:
       build: ${{ steps.number.outputs.build }}
+      version: ${{ steps.candidate.outputs.version }}
     runs-on: macos-26
     timeout-minutes: 120
     environment: apple-signing
@@ -86,11 +66,16 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Verify the candidate and read its numeric version
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: python3 scripts/ci_release.py candidate --tag "$TAG" --notes-file "$RUNNER_TEMP/notes.txt"
+
       - name: Resolve the app build
         id: number
-        env:
-          BUILD: ${{ inputs.build }}
-        run: python3 scripts/ci_release.py build --build "$BUILD"
+        run: python3 scripts/ci_release.py build
 
       - name: Toolchain
         run: |
@@ -127,7 +112,7 @@ jobs:
       - name: Sign, notarize and package both architectures
         env:
           TILR_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.candidate.outputs.version }}
           BUILD: ${{ steps.number.outputs.build }}
         run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel beta
 
@@ -138,7 +123,7 @@ jobs:
       # The publish job needs the completed releases and the Sparkle tools resolved here.
       - name: Pack the app
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.candidate.outputs.version }}
           BUILD: ${{ steps.number.outputs.build }}
         run: |
           tar -cf app.tar "build/releases/$VERSION-$BUILD-arm64" "build/releases/$VERSION-$BUILD-x86_64" \
@@ -151,12 +136,12 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: app
+    needs: [release, app]
     permissions:
       contents: write
     runs-on: macos-26
     timeout-minutes: 30
-    # Required reviewer: nothing is published before Dan approves the tested artifacts.
+    # Branch restriction only; merging the release PR is the stable release approval.
     environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -181,6 +166,12 @@ jobs:
           tar -xf app.tar
           rm app.tar
 
+      - name: Verify the candidate and read its notes before CDN publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: python3 scripts/ci_release.py candidate --tag "$TAG" --notes-file "$RUNNER_TEMP/notes.txt"
+
       # A key file instead of a Keychain item: no access prompt on an unattended runner.
       - name: Write the Sparkle key
         env:
@@ -195,27 +186,19 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.app.outputs.version }}
           BUILD: ${{ needs.app.outputs.build }}
-          NOTES: ${{ inputs.notes }}
         run: |
-          notes=()
-          if [ -n "$NOTES" ]; then
-            printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.txt"
-            notes=(--notes "$RUNNER_TEMP/notes.txt")
-          fi
           python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel beta \
-            --publish-only "${notes[@]}"
+            --publish-only --notes "$RUNNER_TEMP/notes.txt"
           cat "build/releases/$VERSION-$BUILD-beta-downloads.json" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create the GitHub pre-release
+      - name: Attach the DMGs to the shared GitHub pre-release
         env:
           GH_TOKEN: ${{ github.token }}
-          RC: ${{ inputs.rc }}
-          VERSION: ${{ inputs.version }}
+          TAG: ${{ needs.release.outputs.tag }}
           BUILD: ${{ needs.app.outputs.build }}
-          NOTES: ${{ inputs.notes }}
-        run: python3 scripts/ci_release.py github --version "$VERSION" --build "$BUILD" --rc "$RC"
+        run: python3 scripts/ci_release.py github --tag "$TAG" --build "$BUILD"
 
       - name: Remove the Sparkle key
         if: always()
