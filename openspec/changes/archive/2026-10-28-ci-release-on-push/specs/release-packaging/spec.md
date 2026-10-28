@@ -46,4 +46,3 @@ The release coordinator SHALL reserve monotonically increasing local builds unde
 #### Scenario: CI release numbers
 - **WHEN** the Release workflow runs on a runner without local history
 - **THEN** it takes the numeric version from the shared release-please workflow, resolves build as the highest build in both architecture appcasts across stable and beta plus one, and passes these explicitly to packaging and publication; local reservations are unchanged
-
