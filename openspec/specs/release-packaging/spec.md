@@ -90,17 +90,6 @@ Signing SHALL retry timestamp-service failures on the same file according to rel
 - **THEN** codesign_attempts and codesign_retry_delay_seconds default to three attempts and five seconds, including Sparkle, server and preflight signing
 - **AND** certificate/Keychain failures are not retried and exhaustion leaves incomplete artifacts for diagnosis/resume rather than weakening signing
 
-### Requirement: Server release version format
-Both server release commands SHALL accept only numeric versions with exactly three dot-separated components (X.Y.Z), validating the version before acquisition or other release work.
-
-#### Scenario: Reject shortened versions before acquisition
-- **WHEN** release_server.py or release_server_all.py receives --version 0.2 or --version 0
-- **THEN** argument validation exits unsuccessfully before creating release directories, acquiring artifacts or printing a preview plan
-
-#### Scenario: Accept a full version
-- **WHEN** either command receives --version 0.2.1 with a positive build and valid protocol version
-- **THEN** version validation permits the acquisition or preview flow
-
 ### Requirement: Verified upstream server artifacts
 release_server.py SHALL acquire signed and notarized macOS tilrd and tilr from the same pinned upstream GitHub Release independently from application releases, writing completion receipts only after verification of both executables.
 
@@ -160,3 +149,14 @@ The desktop repository SHALL provide a command to acquire and verify an upstream
 - **WHEN** Rust stores the upstream version/platform immediately after another string literal
 - **THEN** acquisition recognizes the full version/platform without requiring a delimiter before the version
 - **AND** a different full release number is rejected even when it contains the pinned version as a suffix
+
+### Requirement: Server release version format
+Both server release commands SHALL accept only numeric versions with exactly three dot-separated components (X.Y.Z), validating the version before acquisition or other release work.
+
+#### Scenario: Reject shortened versions before acquisition
+- **WHEN** release_server.py or release_server_all.py receives --version 0.2 or --version 0
+- **THEN** argument validation exits unsuccessfully before creating release directories, acquiring artifacts or printing a preview plan
+
+#### Scenario: Accept a full version
+- **WHEN** either command receives --version 0.2.1 with a positive build and valid protocol version
+- **THEN** version validation permits the acquisition or preview flow
