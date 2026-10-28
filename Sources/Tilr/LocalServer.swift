@@ -178,7 +178,7 @@ final class LocalServerHost: NSObject {
         return lines.joined(separator: "\n\n")
     }
 
-    private func inspectVersions(_ install: ServerInstallation) async {
+    @MainActor private func inspectVersions(_ install: ServerInstallation) async {
         let inspected = await withCheckedContinuation { reply in
             DispatchQueue.global(qos: .utility).async {
                 let installed = try? install.installedVersion()
@@ -194,7 +194,7 @@ final class LocalServerHost: NSObject {
     }
 
     /// Called by the Local Server button; a failed command retains the previous credentials.
-    func updateTilrd() async {
+    @MainActor func updateTilrd() async {
         guard !starting, !busy, let installation, let settings else { return }
         busy = true
         defer { busy = false }
@@ -229,7 +229,9 @@ final class LocalServerHost: NSObject {
         starting = false
         result = outcome
         if case .failure(let error) = outcome {
-            status = [status, error.localizedDescription].joined(separator: "\n\n")
+            if error.localizedDescription != versionError {
+                status = [status, error.localizedDescription].joined(separator: "\n\n")
+            }
             print("local server:", status)
             notice(status)
         }

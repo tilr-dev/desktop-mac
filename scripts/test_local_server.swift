@@ -61,9 +61,18 @@ final class Tab {
         try write("token", "shared-token\n")
         let (home, daemon) = try makeHome("ordinary")
         var notices: [String] = []
-        let host = LocalServerHost(homeDirectory: home, receiveNotice: { notices.append($0) }, resolveRunningExecutable: { daemon })
+        let host = LocalServerHost(homeDirectory: home, receiveNotice: {
+            precondition(Thread.isMainThread, "Local Server notices must run on the main thread")
+            notices.append($0)
+        }, resolveRunningExecutable: { daemon })
+        host.didUpdate = {
+            precondition(Thread.isMainThread, "Local Server UI updates must run on the main thread")
+        }
         var channel = "stable"
-        host.updateChannel = { channel }
+        host.updateChannel = {
+            precondition(Thread.isMainThread, "Local Server update preferences must be read on the main thread")
+            return channel
+        }
         var settings = Config.LocalServer()
         host.start(settings: settings, origins: ["tilr://app"], allowed: true)
         let first = try await credentials(host)
@@ -121,6 +130,7 @@ final class Tab {
             expect(error.localizedDescription.contains("Update tilrd"))
         }
         expect(protocolNotices.last?.contains("incompatible protocol") == true)
+        expect(protocolNotices.last?.components(separatedBy: "incompatible protocol").count == 2)
         expect(oldHost.status.contains("Installed tilrd: 0.8.0"))
         await oldHost.updateTilrd()
         let recovered = try await credentials(oldHost)
