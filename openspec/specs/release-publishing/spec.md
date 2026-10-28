@@ -25,7 +25,7 @@ Release tools SHALL use existing authorized credentials without printing secrets
 - **AND** its public key, derived from the file, must equal the configured public key before publication
 
 ### Requirement: Immutable publication with feed last
-Direct app publication SHALL target beta only; stable SHALL require promotion of a verified CI release candidate, with no emergency flag or environment override. App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
+Local app publication SHALL target beta only; stable SHALL require the CI path from the stable tag created by merging the release PR, with no emergency flag or environment override. App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
 
 #### Scenario: Publish a pair
 - **WHEN** release_all.py publishes or --publish-only is used
@@ -41,7 +41,7 @@ Direct app publication SHALL target beta only; stable SHALL require promotion of
 
 #### Scenario: Reject direct stable publication
 - **WHEN** release_all.py --publish or --publish-only selects stable, explicitly or through build/latest-app-release.json (including upload.command)
-- **THEN** it stops with an error explaining that stable requires promotion of a verified CI RC, before any CDN upload or feed change
+- **THEN** it stops with an error explaining that stable requires the CI release from a merged release PR tag, before any CDN upload or feed change
 - **AND** local beta publication retains its existing behavior
 
 ### Requirement: Verified resume and downloads evidence
@@ -111,7 +111,7 @@ Release apps SHALL use Sparkle pinned to 2.10.0 in Package.swift/Package.resolve
 - **AND** subsequent fresh appcast checks use the stable feed; switching the preference does not cancel the prepared installer
 
 ### Requirement: Release from CI
-The Release workflow SHALL run automatically on pushes to release/**, use the pinned shared release-please and RC workflow, and build, sign, notarize and publish both app architectures as release candidates to beta on GitHub-hosted macOS. Each key SHALL remain only in the job that uses it. Merging the release PR SHALL be the only release approval.
+The Release workflow SHALL run automatically on pushes to release/**, use the pinned shared release-please and RC workflow, and build, sign, notarize and publish both app architectures as release candidates to beta or stable releases from stable tags on GitHub-hosted macOS. Each key SHALL remain only in the job that uses it. Merging the release PR SHALL be the only release approval.
 
 #### Scenario: Run a CI release
 - **WHEN** a commit is pushed to release/X.Y and the shared workflow reports is_rc=true
@@ -120,7 +120,7 @@ The Release workflow SHALL run automatically on pushes to release/**, use the pi
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
 - **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one
 - **AND** that build is logged and passed explicitly to both architecture builds and publication, without changing local release numbering
-- **AND** the publish job publishes those artifacts to beta with --publish-only without environment approval, holding the Sparkle and R2 keys but no Apple keys
+- **AND** the publish job publishes those artifacts to beta through the CI publish command without rebuilding or environment approval, holding the Sparkle and R2 keys but no Apple keys
 - **AND** after successful CDN publication it attaches both unchanged DMGs to the shared GitHub prerelease and names it Tilr X.Y.Z-rc.N (<build>), using its existing body as Sparkle notes
 - **AND** the shared workflow uses the release GitHub App token for release PRs and tags; only the publish job has contents: write on GITHUB_TOKEN, while the app job has only contents: read
 
@@ -132,7 +132,10 @@ The Release workflow SHALL run automatically on pushes to release/**, use the pi
 #### Scenario: Merge the release PR
 - **WHEN** the release-please PR is merged into release/X.Y
 - **THEN** the shared workflow creates the stable tag vX.Y.Z without an environment approval
-- **AND** is_rc=false skips the candidate build and beta publication; stable artifact building and publication use the stable tag in a separate workflow
+- **AND** release_created=true and is_rc=false select stable in the same workflow; both app and publish jobs check out that exact tag and verify its commit rather than building the event commit
+- **AND** both architectures are built, signed and notarized anew with a build greater than every published stable and beta build; the publish job uses those completed artifacts for stable appcasts
+- **AND** after CDN publication both manifest-selected DMGs are attached to the regular GitHub Release titled Tilr X.Y.Z (<build>), preserving the release-please body and tag
+- **AND** no stable publication runs without the shared workflow reporting creation of the stable release
 
 #### Scenario: Resolve a build from channel appcasts
 - **WHEN** the four stable/beta architecture appcasts contain different builds or multiple historical releases
@@ -141,7 +144,7 @@ The Release workflow SHALL run automatically on pushes to release/**, use the pi
 
 #### Scenario: Protect an existing version tag
 - **WHEN** artifacts are attached to the candidate prerelease
-- **THEN** publication verifies that the existing candidate tag points to the workflow commit and that the release is a prerelease before any CDN publication
+- **THEN** publication verifies that the existing candidate tag points to the checked-out commit and that the release is a prerelease before any CDN publication
 - **AND** it never creates, moves or deletes that tag, replaces existing assets, or attaches candidate artifacts to a stable release
 
 #### Scenario: Keep the marketing version numeric
@@ -150,6 +153,23 @@ The Release workflow SHALL run automatically on pushes to release/**, use the pi
 - **AND** the RC suffix appears only in the Git tag and GitHub pre-release metadata
 
 #### Scenario: Serialize candidate runs
-- **WHEN** another release push arrives while an RC build is active
+- **WHEN** another release push arrives while an RC or stable build is active
 - **THEN** the active run is not cancelled and the latest push replaces any pending run
-- **AND** multiple pushes arriving faster than an RC build are not supported
+- **AND** multiple pushes arriving faster than a release build are not supported
+
+### Requirement: Stable publication preflight
+Stable CI publication SHALL stop before any CDN upload, feed change or GitHub Release mutation if the stable release already has assets or the selected build is not newer than published builds. Both completed receipts SHALL be validated before any publication, and GitHub DMG paths SHALL come from their validated manifests.
+
+#### Scenario: Stable release already published
+- **WHEN** the stable GitHub Release already has DMGs or the selected build is not newer than a stable appcast entry
+- **THEN** the run fails without changing CDN objects, appcasts, tags or the GitHub Release
+
+#### Scenario: Invalid completed artifact
+- **WHEN** either architecture has a missing, mismatched or tampered receipt or DMG
+- **THEN** validation fails before any CDN upload or GitHub Release change, including when the second architecture fails
+- **AND** each DMG path is read from release.json through publish.validate_manifest, including SHA-256 verification
+
+#### Scenario: Verified stable pair
+- **WHEN** both completed stable artifacts pass preflight
+- **THEN** both feeds are prepared before publication and immutable downloads are uploaded and publicly verified before appcast.xml is changed and downloaded back for comparison
+- **AND** the regular GitHub Release receives both unchanged DMGs after successful CDN publication, without prerelease conversion, tag creation or replacement assets
