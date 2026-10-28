@@ -116,9 +116,10 @@ Build is the highest published build across both architectures and both channels
 plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
 `https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml`). One number is logged and used for
 both architectures and publication. Missing feeds count as empty; other
-HTTP/network errors and malformed feeds stop the run. Runs use `queue: max` and are serialized across
-release branches so pending pushes are retained (up to GitHub's 100-run limit)
-and appcast build allocation cannot race. Local release numbering
+HTTP/network errors and malformed feeds stop the run. Runs are serialized across
+release branches with `cancel-in-progress: false` so appcast build allocation
+cannot race. The latest push replaces a pending run; multiple pushes arriving
+faster than an RC build are not supported. Local release numbering
 and reservations are unchanged.
 
 The pinned server is tilrd **0.2.1, artifact revision 4, protocol 1**.

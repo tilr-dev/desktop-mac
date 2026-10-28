@@ -3,6 +3,8 @@
 ### Requirement: Release from CI
 The Release workflow SHALL run automatically on pushes to release/**, use the pinned shared release-please and RC workflow, and build, sign, notarize and publish both app architectures as release candidates to beta on GitHub-hosted macOS. Each key SHALL remain only in the job that uses it. Merging the release PR SHALL be the only release approval.
 
+Release runs SHALL be serialized without cancelling the active run. Pending runs MAY be replaced by the latest push; multiple pushes arriving faster than an RC build are not supported.
+
 #### Scenario: Push a release branch
 - **WHEN** a commit is pushed to release/X.Y and the shared workflow reports is_rc=true
 - **THEN** release-please opens or updates the release PR and the shared workflow provides numeric version X.Y.Z and a fresh tag vX.Y.Z-rc.N, where N increases for successive candidates
