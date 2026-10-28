@@ -25,7 +25,7 @@ def validate_payload(directory, arch, protocol, app_build, manifest_path=None):
     return meta
 
 
-def bundle_server(app, arch, app_build, preview=False, root=ROOT):
+def bundle_server(app, arch, app_build, root=ROOT):
     if arch not in TARGETS:
         raise ValueError("Use the separate arm64 and x86_64 app releases for independent server updates")
     pin = json.loads((root / "server-release.json").read_text())
@@ -36,8 +36,6 @@ def bundle_server(app, arch, app_build, preview=False, root=ROOT):
     from fetch_server import validate_completed
     validate_completed(directory, pin["version"], pin["build"], arch, pin["protocolVersion"])
     receipt = json.loads((directory / "release.json").read_text())
-    if not preview and receipt.get("preview") is not False:
-        raise ValueError("A public app cannot bundle a preview server")
     meta = validate_payload(directory, arch, pin["protocolVersion"], app_build)
     if meta["version"] != pin["version"] or meta["build"] != pin["build"] or receipt.get("manifest") != meta:
         raise ValueError("Server artifact differs from the pinned/completed release")
