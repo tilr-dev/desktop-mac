@@ -91,23 +91,33 @@ Sparkle, серверному бинарнику и проверке подпи�
 
 ## Release from CI
 
-The `Release` workflow (`.github/workflows/release.yml`) does the same on GitHub-hosted macOS,
-without the release Mac. Run it by hand from a release branch `release/X.Y` (it fixes the set
-of features; `main` moves with every merge and is never released): Actions → Release → Run
-workflow with that branch, or
-`gh workflow run release.yml --ref release/0.3 -f version=0.3.0 -f rc=1`.
-From any other ref (`main`, a task branch, a tag) the first job, `branch`, fails before any
-job with keys starts; the `apple-signing` and `release` environments accept only `release/*`
-as well.
-The workflow always publishes an RC to beta and has no channel input. Supply a positive
-RC number `N` (without leading zeros) for tag `vX.Y.Z-rc.N`; use a new number for each
-candidate. The app marketing version and DMG filenames remain `X.Y.Z` without `-rc`.
-Leave `build` empty to select the highest build across both architectures and both
-channels plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
+The `Release` workflow (`.github/workflows/release.yml`) runs automatically on each
+push to `release/X.Y`. Push a fix to the release branch to get the next candidate;
+there is no manual workflow dispatch or version, build, channel or RC input.
+Pushes to `main`, other branches and tags do not start this workflow. The shared
+workflow validates canonical `release/X.Y` names before obtaining its App token.
+Both `apple-signing` and `release` environments accept only `release/*` branches
+and have no required reviewers.
+
+The pinned reusable `tilr-dev/.github` release workflow opens or updates the
+release-please PR, chooses `X.Y.Z` for that release line and creates
+`vX.Y.Z-rc.N` and a GitHub prerelease. Each new push increments `N`; reruns reuse
+the candidate for the same commit. `release-please-config.json`,
+`.release-please-manifest.json` and `version.txt` track the release version without
+changing the source `Info.plist` template. The app marketing version and DMG
+filenames remain numeric `X.Y.Z` without `-rc`.
+
+Merging the release PR is the only release approval: the shared workflow creates
+stable tag `vX.Y.Z` without an environment approval. That run skips candidate
+building and beta publication. Stable builds and publication from the tag are a
+separate workflow change; this workflow publishes candidates only.
+
+Build is the highest published build across both architectures and both channels
+plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
 `https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml`). One number is logged and used for
-both architectures and publication. To override it, add `-f build=21`; an explicit
-build must exceed every published build across all four feeds. Missing feeds count as empty;
-other HTTP/network errors and malformed feeds stop the run. Local release numbering
+both architectures and publication. Missing feeds count as empty; other
+HTTP/network errors and malformed feeds stop the run. Runs are serialized across
+release branches so appcast build allocation cannot race. Local release numbering
 and reservations are unchanged.
 
 The pinned server is tilrd **0.2.1, artifact revision 4, protocol 1**.
@@ -119,21 +129,31 @@ The pinned server is tilrd **0.2.1, artifact revision 4, protocol 1**.
    No server compilation, stripping, signing or notarization happens here.
    Both app architectures are compiled without keys, then `release_all.py` signs,
    notarizes and packages the DMGs. No Sparkle key or Cloudflare token here.
-2. `publish`: waits for approval in the `release` environment, then `release_all.py --publish-only` publishes the same app artifacts. No delta
-   patches: the runner has no DMG history, so the full DMG is published. After the CDN
-   upload succeeds, it creates tag `v<version>-rc.<N>` on the workflow commit (`github.sha`)
-   and GitHub pre-release `Tilr <version>-rc.<N> (<build>)` (`--prerelease`), attaching both unchanged DMGs from
-   the `app` artifact and using `notes` for the release body as well as Sparkle.
-   Only this job has `contents: write`; no commit is made to any branch. An existing tag
-   causes a clear failure without updating/deleting it or changing a GitHub Release.
-   If GitHub publication fails after CDN upload or tag creation, those completed
-   steps remain published; inspect the failure before releasing again.
+2. `publish`: verifies that the existing RC tag points to the workflow commit,
+   that its GitHub release is a published prerelease, and that it has no assets.
+   It then uses `release_all.py --publish-only` to publish the same app artifacts to
+   beta without an approval prompt. No delta patches: the runner has no DMG history.
+   The existing prerelease body supplies Sparkle notes. After CDN publication,
+   both unchanged DMGs are attached to that prerelease and its title becomes
+   `Tilr X.Y.Z-rc.N (<build>)`; its body and tag remain unchanged.
+   Only this job has `contents: write` on `GITHUB_TOKEN`; the shared workflow uses
+   a GitHub App token for release PRs and tags. No publication step creates or
+   moves an existing tag, deletes a release, or replaces existing assets.
+   If publication fails partway through, completed CDN uploads or GitHub assets
+   remain published. Inspect the failure before releasing again; a new fix push
+   produces a fresh candidate and build instead of overwriting published files.
 
 `scripts/ci-apple-keychain.sh` imports the Apple keys into a temporary keychain (notarytool
 profile `tilr-ci` from an App Store Connect API key) and removes it at the end of the job.
 In `publish` the Sparkle key is a file, `TILR_SPARKLE_KEY_FILE`, instead of a Keychain item,
 so there is no access prompt; its public half is checked against `TILR_UPDATE_PUBLIC_KEY`
 (`scripts/sparkle_public_key.swift`). No deploy key is needed: tilrd and gitpm are public.
+
+The shared workflow uses organization variable `TILR_BOT_CLIENT_ID` and organization
+secret `TILR_BOT_PRIVATE_KEY` (available to this repository). Its GitHub App needs
+Contents, Pull requests and Issues write permissions and access to desktop-mac.
+Both the workflow reference and its `workflow-sha` input are pinned to the same
+immutable shared commit; update them together.
 
 Secrets (Settings → Environments), provisioned by Dan:
 
@@ -144,7 +164,7 @@ Secrets (Settings → Environments), provisioned by Dan:
 | | `APPLE_SIGN_IDENTITY` | `Developer ID Application: Rexuni LLC (V57FF3MX26)` |
 | | `APPLE_API_KEY_P8_BASE64` | App Store Connect API key (`.p8`, role Developer), base64 |
 | | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` | that key's Key ID and Issuer ID |
-| `release` (required reviewer Dan, `release/*` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
+| `release` (no required reviewer, `release/*` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
 | | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | R2 API token (S3) with object read and write on the bucket `tilr-cdn` |
 
 ## Compact packaging and delta updates (implemented)

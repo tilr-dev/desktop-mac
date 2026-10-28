@@ -1,7 +1,7 @@
 """Contract of .github/workflows/release.yml: only from a release branch, each key only in the job that uses it."""
 from pathlib import Path
 import re
-import subprocess
+import json
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/release.yml"
@@ -32,61 +32,54 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.text = WORKFLOW.read_text()
         self.jobs = jobs(self.text)
 
-    def test_three_jobs_run_only_by_hand(self):
-        self.assertEqual(list(self.jobs), ["branch", "app", "publish"])
+    def test_only_pushes_to_release_branches_start_release(self):
+        self.assertEqual(list(self.jobs), ["release", "app", "publish"])
         triggers = self.text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, flags=re.M), ["workflow_dispatch"])
+        self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, flags=re.M), ["push"])
+        self.assertIn("branches: ['release/**']", triggers)
+        self.assertNotIn('workflow_dispatch', self.text)
+        self.assertNotIn('inputs.', self.text)
+        self.assertIn('group: release\n  cancel-in-progress: false', self.text)
 
-    def test_every_key_job_waits_for_the_branch_check(self):
-        branch = self.jobs["branch"]
-        self.assertNotIn("environment:", branch)
-        self.assertNotIn("secrets.", branch)
-        self.assertIn("needs: branch", self.jobs["app"])
-        self.assertIn("needs: app", self.jobs["publish"])
+    def test_shared_workflow_is_pinned_and_has_only_its_app_secret(self):
+        release = self.jobs['release']
+        pin = re.search(r'release-branch.yml@([0-9a-f]{40})', release)[1]
+        self.assertIn('workflow-sha: ' + pin, release)
+        self.assertIn('app-client-id: ${{ vars.TILR_BOT_CLIENT_ID }}', release)
+        self.assertIn('app-private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}', release)
+        self.assertNotIn('environment:', release)
+        self.assertNotIn('secrets: inherit', release)
+        for secret in APPLE + PUBLISHING:
+            self.assertNotIn(secret, release)
+        root = WORKFLOW.parents[2]
+        config = json.loads((root / 'release-please-config.json').read_text())
+        manifest = json.loads((root / '.release-please-manifest.json').read_text())
+        self.assertEqual(config['release-type'], 'simple')
+        self.assertFalse(config['include-component-in-tag'])
+        self.assertEqual(list(config['packages']), ['.'])
+        self.assertEqual(manifest['.'], (root / 'version.txt').read_text().strip())
 
-    def guard(self, ref, version='0.3.0', rc='1'):
-        """Runs the branch job's script as Actions would, with github.ref in REF."""
-        (step,) = steps(self.jobs["branch"])
-        self.assertIn("REF: ${{ github.ref }}", step)
-        script = step.split("run: |\n", 1)[1]
-        script = "\n".join(line[10:] for line in script.splitlines())
-        return subprocess.run(["bash", "-eo", "pipefail", "-c", script], env={"REF": ref, "VERSION": version, "RC": rc},
-                              capture_output=True, text=True)
-
-    def test_a_release_branch_passes_the_branch_check(self):
-        for ref in ("refs/heads/release/0.1", "refs/heads/release/1.12"):
-            run = self.guard(ref)
-            self.assertEqual(run.returncode, 0, run.stdout)
-            self.assertIn("Releasing from release/", run.stdout)
-
-    def test_main_and_other_refs_are_refused(self):
-        for ref in ("refs/heads/main", "refs/heads/release/", "refs/heads/task/release/0.1",
-                    "refs/tags/v0.3.0", "refs/heads/releases/0.1", ""):
-            run = self.guard(ref)
-            self.assertEqual(run.returncode, 1, ref)
-            self.assertIn("::error::Release runs only from a release/X.Y branch", run.stdout)
-
-    def test_only_beta_rc_publication_is_exposed(self):
-        inputs = self.text.split('    inputs:', 1)[1].split('\npermissions:', 1)[0]
-        self.assertNotRegex(inputs, r'(?m)^      channel:')
-        rc_input = inputs.split('      rc:', 1)[1].split('      notes:', 1)[0]
-        self.assertIn('required: true', rc_input)
-        self.assertNotIn('inputs.channel', self.text)
+    def test_only_candidates_build_and_publish(self):
+        self.assertIn('needs: release', self.jobs['app'])
+        self.assertIn("if: needs.release.outputs.is_rc == 'true'", self.jobs['app'])
+        self.assertIn('needs: [release, app]', self.jobs['publish'])
+        self.assertNotIn('always()', self.jobs['publish'].split('steps:', 1)[0])
         for name in ('app', 'publish'):
             step = steps(self.jobs[name])[index(self.jobs[name], 'scripts/release_all.py')]
             self.assertIn('--channel beta', step)
-        github = steps(self.jobs['publish'])[index(self.jobs['publish'], 'ci_release.py github')]
-        self.assertIn('RC: ${{ inputs.rc }}', github)
-        self.assertIn('--rc "$RC"', github)
+        self.assertNotIn('--channel stable', self.text)
 
-    def test_invalid_rc_or_version_is_rejected_before_key_jobs(self):
-        for rc in ('0', '-1', '01', '1.5', 'abc', ''):
-            with self.subTest(rc=rc):
-                run = self.guard('refs/heads/release/0.3', rc=rc)
-                self.assertEqual(run.returncode, 1)
-                self.assertIn('positive RC number', run.stdout)
-        run = self.guard('refs/heads/release/0.3', version='0.3.0-rc.1')
-        self.assertEqual(run.returncode, 1)
+    def test_candidate_is_verified_before_signing_and_cdn_keys(self):
+        app, publish = self.jobs['app'], self.jobs['publish']
+        self.assertLess(index(app, 'ci_release.py candidate'), index(app, 'ci-apple-keychain.sh import'))
+        self.assertLess(index(publish, 'ci_release.py candidate'), index(publish, 'name: Write the Sparkle key'))
+        for job in (app, publish):
+            step = steps(job)[index(job, 'ci_release.py candidate')]
+            self.assertIn('TAG: ${{ needs.release.outputs.tag }}', step)
+            self.assertIn('GH_TOKEN: ${{ github.token }}', step)
+        self.assertIn('version: ${{ steps.candidate.outputs.version }}', app)
+        self.assertEqual(app.count('VERSION: ${{ steps.candidate.outputs.version }}'), 2)
+        self.assertIn('VERSION: ${{ needs.app.outputs.version }}', publish)
 
     def test_signing_jobs_hold_no_publication_keys(self):
         for name in ("app",):
@@ -94,10 +87,10 @@ class ReleaseWorkflowContract(unittest.TestCase):
                 self.assertNotIn(secret, self.jobs[name], f"{secret} in {name}")
             self.assertIn("environment: apple-signing", self.jobs[name])
 
-    def test_publication_waits_for_approval_and_holds_no_apple_keys(self):
+    def test_publication_uses_restricted_environment_and_holds_no_apple_keys(self):
         publish = self.jobs["publish"]
         self.assertIn("environment: release", publish)
-        self.assertIn("needs: app", publish)
+        self.assertIn("needs: [release, app]", publish)
         for secret in APPLE:
             self.assertNotIn(secret, publish)
         self.assertNotIn("ci-apple-keychain.sh import", publish)
@@ -130,22 +123,21 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertNotIn("cargo", publish)
         self.assertNotIn("wrangler", self.text)
 
-    def test_resolved_number_flows_to_packaging_and_publication(self):
-        build_input = self.text.split('      build:', 1)[1].split('      rc:', 1)[0]
-        self.assertIn('required: false', build_input)
-        app = self.jobs["app"]
-        self.assertIn("build: ${{ steps.number.outputs.build }}", app)
-        self.assertLess(index(app, "scripts/ci_release.py build"), index(app, "name: Compile"))
-        self.assertEqual(app.count("BUILD: ${{ inputs.build }}"), 1)
-        self.assertEqual(app.count("BUILD: ${{ steps.number.outputs.build }}"), 2)
-        publish = self.jobs["publish"]
-        self.assertNotIn("inputs.build", publish)
-        self.assertEqual(publish.count("BUILD: ${{ needs.app.outputs.build }}"), 2)
-        self.assertLess(index(publish, "scripts/release_all.py"), index(publish, "scripts/ci_release.py github"))
-        self.assertIn("NOTES: ${{ inputs.notes }}", steps(publish)[index(publish, "scripts/ci_release.py github")])
-        self.assertEqual(self.text.count("contents: write"), 1)
-        self.assertIn("permissions:\n      contents: write", publish)
-        self.assertIn("GH_TOKEN: ${{ github.token }}", publish)
+    def test_resolved_number_and_shared_tag_flow_to_publication(self):
+        app = self.jobs['app']
+        self.assertIn('build: ${{ steps.number.outputs.build }}', app)
+        self.assertLess(index(app, 'scripts/ci_release.py build'), index(app, 'name: Compile'))
+        self.assertEqual(app.count('BUILD: ${{ steps.number.outputs.build }}'), 2)
+        publish = self.jobs['publish']
+        self.assertEqual(publish.count('BUILD: ${{ needs.app.outputs.build }}'), 2)
+        self.assertLess(index(publish, 'scripts/release_all.py'), index(publish, 'scripts/ci_release.py github'))
+        github = steps(publish)[index(publish, 'scripts/ci_release.py github')]
+        self.assertIn('TAG: ${{ needs.release.outputs.tag }}', github)
+        self.assertIn('--tag "$TAG"', github)
+        self.assertIn('--notes "$RUNNER_TEMP/notes.txt"', publish)
+        self.assertEqual(self.text.count('contents: write'), 1)
+        self.assertIn('permissions:\n      contents: write', publish)
+        self.assertIn('GH_TOKEN: ${{ github.token }}', publish)
 
     def test_no_caches_and_pinned_actions(self):
         self.assertNotIn("actions/cache", self.text)
