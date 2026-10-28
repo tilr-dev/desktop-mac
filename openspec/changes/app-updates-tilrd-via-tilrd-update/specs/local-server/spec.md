@@ -23,6 +23,11 @@ Tilr SHALL bundle unchanged signed/notarized tilrd and tilr executables from the
 ### Requirement: Explicit server update controls
 Tilr SHALL show the installed tilrd version and an Update tilrd button in Local Server and SHALL update the selected ordinary daemon by running its own update command. The application SHALL NOT consume a server update feed or replace installed executables to update them.
 
+#### Scenario: Inspect and check
+- **WHEN** Local Server opens or Refresh is selected
+- **THEN** an authenticated check runs off the UI thread and shows the installed and running tilrd versions or Not running or unreachable
+- **AND** Local Server offers Update tilrd for the selected installation and shows a prompt when its version is older than the bundle pin or its protocol is incompatible
+
 #### Scenario: Select the daemon update channel
 - **WHEN** Update tilrd is selected
 - **THEN** the selected installed tilrd runs update --channel stable when Receive RC versions is off, or update --channel beta when it is on
