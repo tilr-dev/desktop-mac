@@ -60,26 +60,37 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertEqual(list(config['packages']), ['.'])
         self.assertEqual(manifest['.'], (root / 'version.txt').read_text().strip())
 
-    def test_only_candidates_build_and_publish(self):
-        self.assertIn('needs: release', self.jobs['app'])
-        self.assertIn("if: needs.release.outputs.is_rc == 'true'", self.jobs['app'])
+    def test_shared_release_outputs_gate_channel_and_tag_checkout(self):
+        app = self.jobs['app']
+        condition = app.split('if: ', 1)[1].splitlines()[0]
+        self.assertEqual(condition, "needs.release.outputs.is_rc == 'true' || (needs.release.outputs.release_created == 'true' && needs.release.outputs.is_rc == 'false')")
+        # Evaluate the actual gate for candidate, stable merge and absent/partial outputs.
+        expression = condition.replace('needs.release.outputs.', '').replace('||', 'or').replace('&&', 'and')
+        for is_rc, release_created, expected in [('true', 'false', True), ('false', 'true', True),
+                                                ('false', 'false', False), ('', '', False), ('', 'true', False)]:
+            self.assertEqual(eval(expression, {}, dict(is_rc=is_rc, release_created=release_created)), expected)
         self.assertIn('needs: [release, app]', self.jobs['publish'])
-        self.assertNotIn('always()', self.jobs['publish'].split('steps:', 1)[0])
         for name in ('app', 'publish'):
-            step = steps(self.jobs[name])[index(self.jobs[name], 'scripts/release_all.py')]
-            self.assertIn('--channel beta', step)
-        self.assertNotIn('--channel stable', self.text)
+            checkout = steps(self.jobs[name])[0]
+            self.assertIn('ref: ${{ needs.release.outputs.tag }}', checkout)
+            self.assertIn('persist-credentials: false', checkout)
+        packaging = steps(app)[index(app, 'scripts/release_all.py')]
+        self.assertIn('CHANNEL: ${{ steps.metadata.outputs.channel }}', packaging)
+        self.assertIn('--channel "$CHANNEL"', packaging)
+        publication = steps(self.jobs['publish'])[index(self.jobs['publish'], 'ci_release.py publish')]
+        self.assertIn('TAG: ${{ needs.release.outputs.tag }}', publication)
+        self.assertNotIn('scripts/release_all.py', publication)
 
-    def test_candidate_is_verified_before_signing_and_cdn_keys(self):
+    def test_release_is_verified_before_signing_and_cdn_keys(self):
         app, publish = self.jobs['app'], self.jobs['publish']
-        self.assertLess(index(app, 'ci_release.py candidate'), index(app, 'ci-apple-keychain.sh import'))
-        self.assertLess(index(publish, 'ci_release.py candidate'), index(publish, 'name: Write the Sparkle key'))
+        self.assertLess(index(app, 'ci_release.py release'), index(app, 'ci-apple-keychain.sh import'))
+        self.assertLess(index(publish, 'ci_release.py release'), index(publish, 'name: Write the Sparkle key'))
         for job in (app, publish):
-            step = steps(job)[index(job, 'ci_release.py candidate')]
+            step = steps(job)[index(job, 'ci_release.py release')]
             self.assertIn('TAG: ${{ needs.release.outputs.tag }}', step)
             self.assertIn('GH_TOKEN: ${{ github.token }}', step)
-        self.assertIn('version: ${{ steps.candidate.outputs.version }}', app)
-        self.assertEqual(app.count('VERSION: ${{ steps.candidate.outputs.version }}'), 2)
+        self.assertIn('version: ${{ steps.metadata.outputs.version }}', app)
+        self.assertEqual(app.count('VERSION: ${{ steps.metadata.outputs.version }}'), 2)
         self.assertIn('VERSION: ${{ needs.app.outputs.version }}', publish)
 
     def test_signing_jobs_hold_no_publication_keys(self):
@@ -119,7 +130,7 @@ class ReleaseWorkflowContract(unittest.TestCase):
     def test_publication_reuses_the_tested_artifacts(self):
         publish = self.jobs["publish"]
         self.assertNotIn("scripts/release_server.py", publish)
-        self.assertIn("--publish-only", steps(publish)[index(publish, "scripts/release_all.py")])
+        self.assertIn("ci_release.py publish", publish)
         self.assertNotIn("swift build", publish)
         self.assertNotIn("cargo", publish)
         self.assertNotIn("wrangler", self.text)
@@ -131,11 +142,11 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertEqual(app.count('BUILD: ${{ steps.number.outputs.build }}'), 2)
         publish = self.jobs['publish']
         self.assertEqual(publish.count('BUILD: ${{ needs.app.outputs.build }}'), 2)
-        self.assertLess(index(publish, 'scripts/release_all.py'), index(publish, 'scripts/ci_release.py github'))
+        self.assertLess(index(publish, 'scripts/ci_release.py publish'), index(publish, 'scripts/ci_release.py github'))
         github = steps(publish)[index(publish, 'scripts/ci_release.py github')]
         self.assertIn('TAG: ${{ needs.release.outputs.tag }}', github)
         self.assertIn('--tag "$TAG"', github)
-        self.assertIn('--notes "$RUNNER_TEMP/notes.txt"', publish)
+        self.assertIn('--notes-file "$RUNNER_TEMP/notes.txt"', publish)
         self.assertEqual(self.text.count('contents: write'), 1)
         self.assertIn('permissions:\n      contents: write', publish)
         self.assertIn('GH_TOKEN: ${{ github.token }}', publish)

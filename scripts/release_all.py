@@ -126,16 +126,20 @@ def execute(version, build, channel, config, publish=False, resume=False, notes=
     if inventories[0] != inventories[1]:
         raise ValueError('Native plugin versions/ABIs differ between architecture releases')
     if publish:
-        # Prepare/validate both feeds before exposing either update.
-        for should_publish in (False, True):
-            for output in outputs:
-                command = [sys.executable, root / "scripts/publish.py", output]
-                if notes:
-                    command += ["--notes", str(notes)]
-                if should_publish:
-                    command += ["--publish"]
-                runner(command)
+        publish_pair(outputs, notes, root, runner)
     return outputs
+
+
+def publish_pair(outputs, notes=None, root=ROOT, runner=run):
+    """Prepare both feeds before exposing either update; callers validate the pair."""
+    for should_publish in (False, True):
+        for output in outputs:
+            command = [sys.executable, root / "scripts/publish.py", output]
+            if notes:
+                command += ["--notes", str(notes)]
+            if should_publish:
+                command += ["--publish"]
+            runner(command)
 
 
 def release_history(root):
