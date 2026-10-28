@@ -74,8 +74,6 @@ jobs:
 
       - name: Server protocol integration tests
         run: |
-          swiftc Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o "$RUNNER_TEMP/test-server-updates"
-          "$RUNNER_TEMP/test-server-updates"
           swiftc Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
           "$RUNNER_TEMP/test-server-installation"
 

@@ -1,5 +1,6 @@
 """Exercise production host configuration transitions in an isolated app fixture."""
 from pathlib import Path
+import os
 import plistlib
 import subprocess
 import tempfile
@@ -29,25 +30,37 @@ class LocalServerIntegrationTests(unittest.TestCase):
             resources.mkdir(parents=True)
             (resources / "app-managed.json").write_text("{}")
             info = dict(CFBundleIdentifier="dev.tilr.host-fixture", CFBundleExecutable="Fixture",
-                        CFBundleVersion="10", TilrServerProtocolVersion=1)
+                        CFBundleVersion="10", TilrServerProtocolVersion=1, TilrBundledServerVersion="1.0.0")
             (contents / "Info.plist").write_bytes(plistlib.dumps(info))
             cli = helpers / "tilr"
             cli.write_text('''#!/bin/sh
 set -eu
+state="$TILR_HOST_FIXTURE"
 [ "$1" = --socket ] && shift 2
 case "$1" in
-version) echo 'tilr 1.0.0-abc (macos-aarch64)'; echo 'tilrd 1.0.0-abc at local';;
-token) echo shared-token;;
+version)
+    if [ -f "$state/running" ]; then
+        if [ -f "$state/incompatible" ]; then echo 'incompatible protocol: daemon is too old' >&2; exit 2; fi
+        echo "tilrd $(cat "$state/running") at local"
+    else echo 'tilrd is not running at local'; fi;;
+token) test -f "$state/running"; cat "$state/token";;
+service) test "$2" = install; cp "$state/installed" "$state/running";;
 *) exit 1;;
 esac
 ''')
             cli.chmod(0o755)
             subprocess.run(["swiftc", str(ROOT / "Sources/Tilr/ServerInstallation.swift"),
-                            str(ROOT / "Sources/Tilr/ServerUpdates.swift"),
                             str(ROOT / "Sources/Tilr/LocalServer.swift"),
                             str(ROOT / "scripts/test_local_server.swift"), "-o", str(binary)], check=True)
-            result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+            shell = Path(temp) / "empty-shell"
+            shell.write_text("#!/bin/sh\nexit 1\n")
+            shell.chmod(0o755)
+            env = dict(os.environ, TILR_HOST_FIXTURE=temp, SHELL=str(shell),
+                       TILR_SOCKET=str(Path(temp) / "isolated.sock"))
+            result = subprocess.run([str(binary)], capture_output=True, text=True, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("local server enable-disable-enable passed", result.stdout)
+            self.assertIn("local server daemon updates and protocol recovery passed", result.stdout)
 
 
 if __name__ == "__main__":

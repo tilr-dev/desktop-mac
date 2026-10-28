@@ -56,9 +56,6 @@ def bundle_server(app, arch, app_build, preview=False, root=ROOT):
 
 def verify_server(app, version, build, arch):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-    if info.get("SUPublicEDKey") and (info.get("TilrServerPublicKey") != info["SUPublicEDKey"]
-                                     or info.get("TilrServerFeedBaseURL") != "https://cdn.tilr.dev/server/macos"):
-        raise ValueError("App does not configure the independent signed server feed")
     meta = validate_payload(app / "Contents/Helpers", arch, info["TilrServerProtocolVersion"], build,
                             app / "Contents/Resources/server/app-managed.json")
     client = json.loads((app / "Contents/Resources/server/client.json").read_text())

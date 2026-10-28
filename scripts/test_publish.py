@@ -34,8 +34,7 @@ class PublishTests(unittest.TestCase):
             plistlib.dump(dict(CFBundleIdentifier="dev.tilr.mac", CFBundleVersion="2",
                                CFBundleShortVersionString="0.1.1", SUFeedURL=self.meta["feed"],
                                SUPublicEDKey="public", TilrServerProtocolVersion=1, TilrBundledServerBuild=2,
-                               TilrBundledServerVersion="0.1.1", TilrServerPublicKey="public",
-                               TilrServerFeedBaseURL="https://cdn.tilr.dev/server/macos"), file)
+                               TilrBundledServerVersion="0.1.1"), file)
         helpers = self.root / "Tilr.app/Contents/Helpers"
         helpers.mkdir()
         (helpers / "tilrd").write_bytes(b"server")
