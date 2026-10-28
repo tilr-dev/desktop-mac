@@ -44,23 +44,13 @@ struct Config: Decodable {
         var commandTimeout: Double
         var startupTimeout: Double
         var retryInterval: Double
-        var updateChannel: String
-        var autoCheck: Bool
-        var checkInterval: Double
-        var downloadTimeout: Double
-        var maxFeedBytes: Int64
-        var maxDownloadBytes: Int64
+        var updateTimeout: Double
         enum CodingKeys: String, CodingKey {
             case enabled, port
             case commandTimeout = "command_timeout"
             case startupTimeout = "startup_timeout"
             case retryInterval = "retry_interval"
-            case updateChannel = "update_channel"
-            case autoCheck = "auto_check"
-            case checkInterval = "check_interval"
-            case downloadTimeout = "download_timeout"
-            case maxFeedBytes = "max_feed_bytes"
-            case maxDownloadBytes = "max_download_bytes"
+            case updateTimeout = "update_timeout"
         }
     }
 
@@ -383,17 +373,8 @@ struct Config: Decodable {
           startup_timeout: 30
           # Seconds between startup checks.
           retry_interval: 0.25
-          # Independent of the application's Sparkle channel: stable or beta.
-          update_channel: stable
-          # Check at launch and periodically. Installation requires the Update button.
-          auto_check: true
-          # Seconds between server update checks.
-          check_interval: 86400
-          # Seconds allowed for a server feed or binary download.
-          download_timeout: 300
-          # Maximum signed feed size and binary download size, in bytes.
-          max_feed_bytes: 1048576
-          max_download_bytes: 268435456
+          # Seconds allowed for tilrd update (download and daemon-managed replacement).
+          update_timeout: 300
 
         window:
           # fullscreen covers the screen with the Dock and the menu bar hidden; window has a title

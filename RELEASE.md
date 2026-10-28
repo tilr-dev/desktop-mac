@@ -21,7 +21,7 @@ instead of version/build to check the agent's actual release permissions first.
 
 The first release is the native viewer with a bundled welcome page. It requires
 macOS 14 or later, not Node, npm, Homebrew or Xcode on the recipient's machine.
-The app bundles a local terminal server; its subsequent updates use an independent signed feed. No preinstalled web/plugin workspace is included.
+The app bundles a local terminal server; its subsequent updates run `tilrd update --channel stable|beta` from Local Server. No preinstalled web/plugin workspace is included.
 Existing `site:`, `apps:`, `--site` and `--url` configurations still work.
 
 Install by opening the DMG and dragging Tilr into Applications. Launch the copy

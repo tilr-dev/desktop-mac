@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LocalServerHost.shared.didUpdate = { [weak self] in
             self?.tabs.forEach { $0.send(event: "tilr-local-server-ready", detail: [:]) }
         }
+        LocalServerHost.shared.updateChannel = { UpdatePreferences().daemonChannel }
         LocalServerHost.shared.start(settings: config.localServer,
                                     origins: Site.apps(config: config).map { "tilr://\($0.host)" },
                                     allowed: Config.isDefaultDir && !probing)
@@ -337,7 +338,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
-    @objc func checkServerUpdates() { LocalServerHost.shared.checkUpdates(userInitiated: true) }
     @objc func showNativePluginSettings() {
         Config.writeDefaults()
         NSWorkspace.shared.open(Config.file)
@@ -399,7 +399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var appItems: [NSMenuItem] = [item("About Tilr", #selector(showAbout), ""), check, updateSettings,
                                     item("Native Plugin Settings…", #selector(showNativePluginSettings), ""),
                                     item("Local Server…", #selector(showLocalServer), ""),
-                                    item("Check for Server Updates…", #selector(checkServerUpdates), ""), .separator()]
+                                    .separator()]
         let uninstall = item("Uninstall Tilr…", #selector(uninstallTilr), "")
         if !Config.isDefaultDir || probing { uninstall.action = nil; uninstall.isEnabled = false }
         appItems.append(uninstall)

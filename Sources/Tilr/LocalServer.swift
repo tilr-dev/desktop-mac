@@ -1,27 +1,32 @@
 import AppKit
 import WebKit
 
-/// The bundle seeds an offline first install. The server then has its own signed
-/// update feed, version, channel and installation lifecycle, separate from Sparkle.
+/// The bundle seeds an offline first install; the ordinary daemon owns subsequent updates.
 final class LocalServerHost: NSObject {
     static let shared = LocalServerHost()
     private let homeDirectory: URL
 
-    init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    private let resolveRunningExecutable: (() throws -> URL?)?
+    private let receiveNotice: ((String) -> Void)?
+    var updateChannel: () -> String = { "stable" }
+    init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+         receiveNotice: ((String) -> Void)? = nil,
+         resolveRunningExecutable: (() throws -> URL?)? = nil) {
+        self.resolveRunningExecutable = resolveRunningExecutable
         self.homeDirectory = homeDirectory
+        self.receiveNotice = receiveNotice
         super.init()
     }
-    private var status = "Local server is not enabled in this instance."
+    private(set) var status = "Local server is not enabled in this instance."
     private var starting = false
     private var busy = false
     private var result: Result<[String: String]?, Error> = .success(nil)
     private var waiting: [(Result<[String: String]?, Error>) -> Void] = []
     private var installation: ServerInstallation?
     private var settings: Config.LocalServer?
-    private var manifest: ServerInstallation.Manifest?
-    private var updates: ServerUpdates?
-    private var available: ServerUpdates.Release?
-    private var timer: Timer?
+    private var installedVersion: String?
+    private var runningVersion: String?
+    private var versionError: String?
     private var checkingStatus = false
     /// Removed in this run (dialog or config); the dialog then offers nothing.
     private var removed = false
@@ -45,16 +50,13 @@ final class LocalServerHost: NSObject {
             return
         }
         guard settings.enabled else {
-            timer?.invalidate()
-            timer = nil
             self.settings = nil
             result = .success(nil)
             status = "Local server integration is disabled."
             return
         }
         guard settings.port == 7890, settings.commandTimeout > 0, settings.startupTimeout > 0, settings.retryInterval > 0,
-              settings.checkInterval > 0, settings.downloadTimeout > 0, settings.maxFeedBytes > 0, settings.maxDownloadBytes > 0,
-              ["stable", "beta"].contains(settings.updateChannel),
+              settings.updateTimeout > 0,
               let appBuildText = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
               let appBuild = Int(appBuildText),
               let protocolVersion = Bundle.main.object(forInfoDictionaryKey: "TilrServerProtocolVersion") as? Int else {
@@ -68,28 +70,17 @@ final class LocalServerHost: NSObject {
         let install = makeInstallation(bundle: bundle, settings: settings, origins: origins,
                                        appBuild: appBuild, protocolVersion: protocolVersion)
         installation = install
-        if let base = Bundle.main.object(forInfoDictionaryKey: "TilrServerFeedBaseURL") as? String,
-           let keyText = Bundle.main.object(forInfoDictionaryKey: "TilrServerPublicKey") as? String,
-           let key = Data(base64Encoded: keyText), key.count == 32,
-           let url = URL(string: base + "/" + Self.architecture + "/" + settings.updateChannel + ".json"), url.scheme == "https" {
-            updates = ServerUpdates(feedURL: url, publicKey: key, channel: settings.updateChannel,
-                arch: Self.architecture, appBuild: appBuild, protocolVersion: protocolVersion,
-                timeout: settings.downloadTimeout, maxFeedBytes: settings.maxFeedBytes, maxBinaryBytes: settings.maxDownloadBytes)
-        }
         Task { @MainActor in
             do {
-                let (installed, credentials) = try await Self.prepare(install, settings)
-                manifest = installed
-                status = description(installed)
+                let (_, credentials) = try await Self.prepare(install, settings)
+                await inspectVersions(install)
+                status = versionDescription
                 finish(.success(credentials))
-                if settings.autoCheck {
-                    checkUpdates(userInitiated: false)
-                    scheduleChecks(every: settings.checkInterval)
-                }
             } catch {
                 // Allow a server-only recovery update even when the installed server
                 // is incompatible with a newly installed app. Do not stop it.
-                manifest = try? JSONDecoder().decode(ServerInstallation.Manifest.self, from: Data(contentsOf: install.receipt))
+                await inspectVersions(install)
+                status = versionDescription
                 finish(.failure(error))
             }
         }
@@ -112,6 +103,7 @@ final class LocalServerHost: NSObject {
             label: "sh.tilr.tilrd", port: 7890, timeout: settings.commandTimeout,
             origins: Array(Set(origins)), appBuild: appBuild, protocolVersion: protocolVersion, architecture: Self.architecture,
             sourceManifest: bundle.appendingPathComponent("Resources/server/app-managed.json"))
+        install.runningExecutable = resolveRunningExecutable
         install.progress = Self.report
         return install
     }
@@ -134,13 +126,11 @@ final class LocalServerHost: NSObject {
             do {
                 let outcome = try await Self.background { try install.remove(confirmExternal: Self.confirmExternalRemoval) }
                 if outcome == .declined { busy = false; return }
-                timer?.invalidate()
-                timer = nil
                 busy = false
                 removed = true
-                manifest = nil
-                available = nil
-                updates = nil
+                installedVersion = nil
+                runningVersion = nil
+                versionError = nil
                 result = .failure(ServerInstallation.Failure("The local server is not installed."))
                 status = outcome == .removed
                     ? "The local server was removed. Sessions, tokens and logs remain in \(install.state.path)."
@@ -156,39 +146,6 @@ final class LocalServerHost: NSObject {
         }
     }
 
-    private func restartServer() {
-        guard !busy, !starting, let installation, let settings else { return }
-        busy = true
-        status = "Restarting the local server…"
-        let version = manifest?.serverVersion
-        Task { @MainActor in
-            do {
-                let credentials = try await Self.background {
-                    try installation.restart()
-                    return try Self.waitReady(installation, version: version, settings)
-                }
-                result = .success(credentials)
-                didUpdate?()
-                status = (manifest.map(description) ?? "") + "\n\nThe local server restarted with its new service definition."
-                busy = false
-                showStatus()
-            } catch {
-                busy = false
-                status = "The local server did not restart: " + error.localizedDescription
-                notice(status)
-            }
-        }
-    }
-
-    @objc private func checkTimer() { checkUpdates(userInitiated: false) }
-
-    private func scheduleChecks(every interval: TimeInterval) {
-        timer?.invalidate()
-        let next = Timer(timeInterval: interval, target: self, selector: #selector(checkTimer), userInfo: nil, repeats: true)
-        RunLoop.main.add(next, forMode: .common)
-        timer = next
-    }
-
     private static func prepare(_ install: ServerInstallation, _ settings: Config.LocalServer) async throws -> (ServerInstallation.Manifest, [String: String]) {
         try await background {
             let manifest = try install.install()
@@ -202,88 +159,77 @@ final class LocalServerHost: NSObject {
                               retryInterval: settings.retryInterval)
     }
 
-    private func description(_ manifest: ServerInstallation.Manifest) -> String {
-        "Server: \(manifest.serverVersion)\nChannel: \(settings?.updateChannel ?? "stable")\n\(installation?.endpoint ?? "")\n\nUpdates independently of the Mac application. Closing Tilr leaves terminals running until logout."
+    private var bundledVersion: String? {
+        if let version = Bundle.main.object(forInfoDictionaryKey: "TilrBundledServerVersion") as? String { return version }
+        guard let source = installation?.sourceManifest,
+              let data = try? Data(contentsOf: source),
+              let manifest = try? JSONDecoder().decode(ServerInstallation.Manifest.self, from: data) else { return nil }
+        return manifest.serverVersion
     }
 
-    func checkUpdates(userInitiated: Bool) {
-        guard !starting, !busy else { if userInitiated { showStatus() }; return }
-        guard let updates, let manifest else {
-            if userInitiated { notice("Server updates are unavailable in this instance or release.") }
-            return
+    private var versionDescription: String {
+        var lines = ["Installed tilrd: " + (installedVersion ?? "Unknown"),
+                     "Running tilrd: " + (runningVersion ?? "Not running or unreachable")]
+        if let versionError { lines.append(versionError) }
+        if let installedVersion, let pin = bundledVersion, ServerInstallation.isOlder(installedVersion, than: pin) {
+            lines.append("Please update tilrd: this application bundles \(pin).")
         }
-        busy = true
-        available = nil
-        Task { @MainActor in
-            do {
-                available = try await updates.check(installed: manifest)
-                busy = false
-                if let available {
-                    status = description(manifest) + "\n\nAvailable: " + available.manifest.serverVersion
-                    if userInitiated { offer(available) }
-                } else {
-                    status = description(manifest) + "\n\nNo newer compatible server release is available."
-                    if userInitiated { showStatus() }
-                }
-            } catch {
-                busy = false
-                status = description(manifest) + "\n\nCould not check server updates: " + error.localizedDescription
-                // Offline/404 feeds must not prevent local use or invalidate credentials.
-                if let message = ServerUpdates.message(for: error, userInitiated: userInitiated) {
-                    notice(message)
-                } else {
-                    print("local server: update check:", error.localizedDescription)
-                }
+        lines.append("Use Update tilrd to update the shared daemon. Closing Tilr leaves terminals running until logout.")
+        return lines.joined(separator: "\n\n")
+    }
+
+    private func inspectVersions(_ install: ServerInstallation) async {
+        let inspected = await withCheckedContinuation { reply in
+            DispatchQueue.global(qos: .utility).async {
+                let installed = try? install.installedVersion()
+                let running = Result { try install.runningVersion() }
+                reply.resume(returning: (installed, running))
             }
         }
+        installedVersion = inspected.0
+        switch inspected.1 {
+        case .success(let version): runningVersion = version; versionError = nil
+        case .failure(let error): runningVersion = nil; versionError = error.localizedDescription
+        }
     }
 
-    private func offer(_ release: ServerUpdates.Release) {
-        let alert = NSAlert()
-        alert.messageText = "Server update available"
-        alert.informativeText = "Install \(release.manifest.serverVersion)? The Mac application will stay on its current version."
-        alert.addButton(withTitle: "Update Server")
-        alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn { installUpdate(release) }
-    }
-
-    private func installUpdate(_ release: ServerUpdates.Release) {
-        guard !busy, let updates, let installation, let settings else { return }
+    /// Called by the Local Server button; a failed command retains the previous credentials.
+    func updateTilrd() async {
+        guard !starting, !busy, let installation, let settings else { return }
         busy = true
-        status = "Downloading and updating the server…"
-        Task { @MainActor in
+        defer { busy = false }
+        let channel = updateChannel()
+        status = "Updating tilrd (\(channel))…"
+        do {
+            var updater = installation
+            updater.timeout = settings.updateTimeout
+            let version = try await Self.background { try updater.update(channel: channel) }
+            let credentials: [String: String]
             do {
-                let source = try await updates.stage(release)
-                defer { try? FileManager.default.removeItem(at: source) }
-                var staged = ServerInstallation(source: source, root: installation.root, agents: installation.agents,
-                    label: installation.label, port: installation.port, timeout: installation.timeout,
-                    origins: installation.origins, appBuild: installation.appBuild,
-                    protocolVersion: installation.protocolVersion, architecture: installation.architecture)
-                staged.progress = installation.progress
-                staged.selection = installation.selection
-                staged.socketPath = installation.socketPath
-                staged.updateRequested = true
-                let (installed, credentials) = try await Self.prepare(staged, settings)
-                manifest = installed
-                available = nil
-                result = .success(credentials)
+                credentials = try await Self.background {
+                    try Self.waitReady(installation, version: version, settings)
+                }
+            } catch {
+                result = .failure(error)
                 didUpdate?()
-                status = description(installed) + "\n\nServer update completed."
-                busy = false
-                showStatus()
-            } catch {
-                busy = false
-                status = "Server update did not complete: " + error.localizedDescription
-                notice(status)
+                throw error
             }
+            await inspectVersions(installation)
+            result = .success(credentials)
+            didUpdate?()
+            status = versionDescription + "\n\nThe tilrd update command completed."
+        } catch {
+            await inspectVersions(installation)
+            status = versionDescription + "\n\nCould not update tilrd: " + error.localizedDescription
         }
+        notice(status)
     }
 
     private func finish(_ outcome: Result<[String: String]?, Error>) {
         starting = false
         result = outcome
         if case .failure(let error) = outcome {
-            status = error.localizedDescription
+            status = [status, error.localizedDescription].joined(separator: "\n\n")
             print("local server:", status)
             notice(status)
         }
@@ -309,47 +255,28 @@ final class LocalServerHost: NSObject {
         }
         checkingStatus = true
         Task { @MainActor in
-            let (runningVersion, pending): (String?, Bool) = await withCheckedContinuation { reply in
-                DispatchQueue.global(qos: .utility).async {
-                    reply.resume(returning: (try? installation.runningVersion(), installation.restartPending()))
-                }
-            }
+            await inspectVersions(installation)
             checkingStatus = false
-            if let runningVersion, !runningVersion.isEmpty {
-                presentStatus("Running — \(runningVersion)", pending: pending)
-            } else {
-                presentStatus("Not running or unreachable", detail: "The server did not answer the connection check.", pending: pending)
-            }
+            status = versionDescription
+            presentStatus(runningVersion.map { "Running — \($0)" } ?? "Not running or unreachable")
         }
     }
 
-    private func presentStatus(_ state: String, detail: String? = nil, actions: Bool = true, pending: Bool = false) {
+    private func presentStatus(_ state: String, actions: Bool = true) {
         let alert = NSAlert()
         alert.messageText = "Local Tilr Server: " + state
-        let pending = actions && pending
-        alert.informativeText = [detail, status, pending ? "A new service definition is waiting; restart to apply." : nil]
-            .compactMap { $0 }.joined(separator: "\n\n")
+        alert.informativeText = status
         var buttons: [(String, () -> Void)] = [("OK", {})]
         if actions {
             buttons.append(("Refresh", { [weak self] in self?.showStatus() }))
-            if let available, !busy { buttons.append(("Update Server…", { [weak self] in self?.offer(available) })) }
-            if pending { buttons.append(("Restart Server…", { [weak self] in self?.confirmRestart() })) }
             if installation?.isInstalled == true {
+                buttons.append(("Update tilrd", { [weak self] in Task { await self?.updateTilrd() } }))
                 buttons.append(("Remove Local Server…", { [weak self] in self?.confirmRemove() }))
             }
         }
         buttons.forEach { alert.addButton(withTitle: $0.0) }
         let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         if buttons.indices.contains(index) { buttons[index].1() }
-    }
-
-    private func confirmRestart() {
-        let alert = NSAlert()
-        alert.messageText = "Restart the local server?"
-        alert.informativeText = "The server restarts with its new service definition. Open terminal panes will close."
-        alert.addButton(withTitle: "Restart Server").hasDestructiveAction = true
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn { restartServer() }
     }
 
     private func confirmRemove() {
@@ -373,8 +300,6 @@ final class LocalServerHost: NSObject {
         guard !starting, !busy else { throw ServerInstallation.Failure("Wait for the local server operation to finish, then try uninstalling again.") }
         busy = true
         defer { busy = false }
-        timer?.invalidate()
-        timer = nil
         let install: ServerInstallation
         if let installation { install = installation }
         else {
@@ -388,12 +313,11 @@ final class LocalServerHost: NSObject {
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
         didUpdate = nil
     }
 
     private func notice(_ message: String) {
+        if let receiveNotice { receiveNotice(message); return }
         let alert = NSAlert()
         alert.messageText = "Local Tilr Server"
         alert.informativeText = message

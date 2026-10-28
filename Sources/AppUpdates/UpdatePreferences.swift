@@ -33,6 +33,8 @@ public final class UpdatePreferences {
         }
     }
 
+    public var daemonChannel: String { receivesRCVersions ? "beta" : "stable" }
+
     public var feedURL: String {
         let channel = receivesRCVersions ? "beta/" : ""
         return "https://cdn.tilr.dev/mac/\(channel)\(architecture)/appcast.xml"

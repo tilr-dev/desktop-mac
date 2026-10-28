@@ -202,19 +202,15 @@ Use a new app build for the optimized release:
 ./upload.command
 ```
 
-The bundled server starts offline without its public feed; to expose its independent
-update, publish the completed server separately, on the desired server channel:
-
-```sh
-python3 scripts/release_server.py --version 0.1.0 --build 2 --channel beta --publish-only
-```
+The bundled server starts offline. Subsequent daemon updates run the installed
+`tilrd update --channel stable|beta` command from Local Server.
 
 App update selection is controlled in Tilr → Update Settings → Receive RC versions.
 It defaults to off (stable), persists between launches, and takes effect on the next
 fresh appcast check. An automatic RC installation already prepared by Sparkle is
 kept and can still be installed after disabling RC versions. Enabling the setting
-selects beta for the app’s compiled architecture. This does not
-change server update settings; testing server beta uses `local_server.update_channel: beta`.
+selects beta for the app’s compiled architecture and for the next Update tilrd action.
+The daemon channel is read from this preference when the action starts.
 
 Verification so far: local tests cover both Sparkle architectures and ad-hoc
 signatures, real BinaryDelta create/apply and the reconstructed bundle signature,
@@ -228,17 +224,16 @@ production handoff. Source-level changes here publish nothing automatically.
 ## Two independent update tracks, with a bundled server
 
 - **Mac application**: existing Sparkle feeds under `/mac/<arch>/appcast.xml`.
-- **Server**: signed JSON feeds under `/server/macos/<arch>/<stable|beta>.json`.
-  The app downloads and installs server updates itself; Sparkle does not install
-  the server. Server version/build numbers are independent of app version/build.
+- **Server**: the installed `tilrd update` command owns downloads and replacement.
+  Local Server passes `--channel stable|beta` from Receive RC versions. Server
+  versions remain independent of app versions; the app consumes no server feed.
 
 The bundle contains an offline bootstrap server, pinned in `server-release.json`.
 An app build copies that exact completed server artifact unchanged, including its
 signature and manifest; it neither compiles the server nor changes its version.
-A newer compatible installed server wins over an older bundle. Incompatible
-protocols/app-build ranges and reused server numbers with changed contents fail
-without stopping or downgrading the installed server. Installing a fresh app
-therefore never requires a network connection; checking for updates is optional.
+A compatible installed server is reused. A version older than the bundle pin or
+an incompatible protocol produces an Update tilrd prompt without application-side
+binary replacement. Installing a fresh app requires no network connection.
 No JavaScript `tilr` CLI, Node, npm or Git is shipped.
 
 ### Acquire and publish a server independently
@@ -330,26 +325,21 @@ come from `tilr token` over the same local socket used by terminal clients.
 No private application daemon, state directory or `dev.tilr.server` service is
 created. Previous private installations are not migrated; reinstall them.
 
-`Tilr > Check for Updates…` checks the application; `Check for Server Updates…`
-checks the independent server feed and requires explicit Update Server approval.
-Local Server shows the actual running version using the ordinary CLI's authenticated
-socket connection. Refresh repeats that check. Existing installations without app
-feed receipts are offered only releases with a newer upstream semantic version;
-commit suffixes alone do not establish release order.
-Feed errors leave the daemon and credentials usable. A feed HTTP error means
-"No server release is published for <channel>/<arch>"; a binary HTTP error is
-"Server update download failed (HTTP <status>)". Settings for automatic checks,
-channel, intervals, network timeouts and size limits remain in `default.yml`.
+`Tilr > Check for Updates…` checks the application. Local Server shows installed
+and running tilrd versions; Refresh repeats the authenticated connection check.
+Update tilrd runs the selected daemon's `update --channel stable|beta` command off
+the UI thread. Receive RC versions selects its channel at the time of the action.
+The app neither reads a server feed nor downloads or replaces an update itself.
 
-Explicit updates replace the discovered executable atomically and request
-session-preserving reload. `tilrd.previous` stays next to that executable; app
-receipts and the pending transaction are `.tilr-app-server.json`,
-`.tilr-app-server.previous.json` and `.tilr-app-pending.json` in `~/.local/bin`.
-They do not prevent ordinary `tilr update`. If the running executable cannot be
-resolved, replacement is refused. Failed reloads keep the new installed binary,
-the previous copy and a pending transaction for recovery on the next launch;
-they never stop a live supervisor or report readiness before the expected version.
-Closing Tilr leaves terminal sessions running.
+If the command fails (including unavailable CDN or beta pointer), the app reports
+its output, preserves credentials and leaves Update tilrd available for retry.
+After success it checks actual installed and running versions and compatibility.
+If beta selected an older RC after promotion, a version below the bundle pin keeps
+the update prompt. `local_server.update_timeout` bounds the daemon update command;
+command/startup timeouts still govern local connection and readiness checks.
+The `.tilr-app-pending.json` journal remains only for first installation of the
+bundled daemon/client pair. Old update journals are retired without publishing
+staged binaries. Closing Tilr leaves terminal sessions running.
 
 ### Removal
 
@@ -372,8 +362,6 @@ manage the production service.
 python3 -m unittest discover -s scripts -p 'test_*.py'
 swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
 /tmp/tilrd-installation-tests
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift Sources/Tilr/ServerUpdates.swift scripts/test_server_updates.swift -o /tmp/tilrd-update-tests
-/tmp/tilrd-update-tests
 ```
 
 Before public handoff, test first install, a server-only upgrade with an open

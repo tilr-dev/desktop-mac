@@ -37,7 +37,7 @@ struct ServerInstallation {
     let agents: URL
     let label: String
     let port: UInt16
-    let timeout: TimeInterval
+    var timeout: TimeInterval
     let origins: [String]
     let appBuild: Int
     let protocolVersion: Int
@@ -54,7 +54,6 @@ struct ServerInstallation {
         var helper: URL?
     }
     var selection = Selection()
-    var updateRequested = false
     var loginShell: URL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
     var socketPath: String = ServerInstallation.defaultSocket
     var runningExecutable: (() throws -> URL?)? = nil
@@ -136,7 +135,7 @@ struct ServerInstallation {
         let deadline = now().addingTimeInterval(startupTimeout)
         var observedVersion: String?
         repeat {
-            if let current = try? runningVersion() {
+            if let current = try runningVersion() {
                 observedVersion = current
                 if version == nil || current == version { return try credentials() }
             }
@@ -159,7 +158,10 @@ struct ServerInstallation {
     /// performs the ordinary protocol and peer checks before any installation is considered.
     func runningVersion() throws -> String? {
         let response = try command(client, ["--socket", socketPath, "version"])
-        guard response.status == 0 else { throw Failure("Cannot connect to the ordinary tilrd: \(response.text)") }
+        guard response.status == 0 else {
+            let hint = response.text.lowercased().contains("protocol") ? " Update tilrd in Local Server." : ""
+            throw Failure("Cannot connect to the ordinary tilrd: \(response.text)\(hint)")
+        }
         for line in response.text.split(separator: "\n") {
             if line.hasPrefix("tilrd "), !line.hasPrefix("tilrd is not running at "), let end = line.range(of: " at ") {
                 let value = String(line[line.index(line.startIndex, offsetBy: 6)..<end.lowerBound])
@@ -218,7 +220,16 @@ struct ServerInstallation {
 
     private func discover(start: Bool = true) throws -> Manifest? {
         if selection.helper == nil { selection.helper = source.appendingPathComponent("tilr") }
-        if let version = try runningVersion() {
+        let running: String?
+        do { running = try runningVersion() }
+        catch {
+            // Keep the socket peer selected for explicit recovery even when the bundled
+            // client refuses its protocol. Never fall through to installing another daemon.
+            selection.binary = try runningExecutable?() ?? socketExecutable()
+            selection.found = true
+            throw error
+        }
+        if let version = running {
             if selection.binary == nil {
                 selection.binary = try runningExecutable?() ?? socketExecutable()
             }
@@ -263,8 +274,8 @@ struct ServerInstallation {
         guard response.status == 0 else { throw Failure("Cannot start tilrd service: \(response.text)") }
     }
 
-    /// The bundle is used only for an absent installation. Explicit signed updates retain the
-    /// existing atomic replacement and reload transaction at the ordinary executable path.
+    /// The bundle is used only for an absent installation. The durable journal belongs
+    /// solely to offline bootstrap; installed daemons own their updates.
     func install() throws -> Manifest {
         let fm = FileManager.default
         let pending = root.appendingPathComponent(".tilr-app-pending.json")
@@ -274,11 +285,7 @@ struct ServerInstallation {
            let path = object["binaryPath"] as? String {
             selection.binary = URL(fileURLWithPath: path)
         }
-        if !updateRequested, !hasPending, let found = try discover() { return found }
-        if updateRequested, !selection.found { _ = try discover() }
-        if updateRequested, selection.binary == nil {
-            throw Failure("Cannot determine the running tilrd executable; it was left untouched.")
-        }
+        if !hasPending, let found = try discover() { return found }
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // Lock the stable directory inode: removal can clean the old lock file without
         // allowing another installer to acquire a different lock inode concurrently.
@@ -286,12 +293,19 @@ struct ServerInstallation {
         guard fd >= 0 else { throw Failure("Cannot lock the tilrd installation") }
         defer { flock(fd, LOCK_UN); close(fd) }
         guard flock(fd, LOCK_EX) == 0 else { throw Failure("Cannot lock the tilrd installation") }
-        if !updateRequested, !hasPending, let found = try discover() { return found }
+        if !hasPending, let found = try discover() { return found }
         if fm.fileExists(atPath: pending.path) {
             let data = try Data(contentsOf: pending)
             let saved = try JSONDecoder().decode(Manifest.self, from: data)
             let transaction = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-            return try finishTransaction(saved, transaction: transaction, pending: pending)
+            if transaction["bootstrap"] as? Bool == true {
+                return try finishTransaction(saved, transaction: transaction, pending: pending)
+            }
+            // Retire an obsolete app-update journal without publishing its stage or
+            // reloading a live daemon. The installed executable remains authoritative.
+            try fm.removeItem(at: pending)
+            try? fm.removeItem(at: binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"))
+            if let found = try discover() { return found }
         }
         let data = try Data(contentsOf: sourceManifest ?? source.appendingPathComponent("app-managed.json"))
         let wanted = try JSONDecoder().decode(Manifest.self, from: data)
@@ -304,18 +318,14 @@ struct ServerInstallation {
         guard signature.status == 0, try executableVersion(payload) == wanted.serverVersion else {
             throw Failure("Server signature or version verification failed")
         }
-        if !updateRequested {
-            let cli = source.appendingPathComponent("tilr")
-            let check = try command(URL(fileURLWithPath: "/usr/bin/codesign"), ["--verify", "--strict", cli.path])
-            let version = try command(cli, ["--version"])
-            guard check.status == 0, version.status == 0,
-                  version.text.hasPrefix("tilr \(wanted.serverVersion) (") else { throw Failure("Bundled client does not match the daemon") }
-            guard !fm.fileExists(atPath: root.appendingPathComponent("tilr").path),
-                  !fm.fileExists(atPath: binary.path) else { throw Failure("An existing installation was left untouched") }
-            // Both stages and their durable journal precede either executable's publication.
-        } else if let saved = try? JSONDecoder().decode(Manifest.self, from: Data(contentsOf: receipt)) {
-            guard wanted.build > saved.build || wanted == saved else { throw Failure("Server update would downgrade or reuse a release number") }
-        }
+        let cli = source.appendingPathComponent("tilr")
+        let check = try command(URL(fileURLWithPath: "/usr/bin/codesign"), ["--verify", "--strict", cli.path])
+        let version = try command(cli, ["--version"])
+        guard check.status == 0, version.status == 0,
+              version.text.hasPrefix("tilr \(wanted.serverVersion) (") else { throw Failure("Bundled client does not match the daemon") }
+        guard !fm.fileExists(atPath: root.appendingPathComponent("tilr").path),
+              !fm.fileExists(atPath: binary.path) else { throw Failure("An existing installation was left untouched") }
+        // Both stages and their durable journal precede either executable's publication.
         let staged = binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new")
         let stagedClient = root.appendingPathComponent(".tilr.app-new")
         // Stages left before journal creation have never been published and can be replaced.
@@ -327,19 +337,11 @@ struct ServerInstallation {
             }
         }
         try fm.copyItem(at: payload, to: staged)
-        if !updateRequested { try fm.copyItem(at: source.appendingPathComponent("tilr"), to: stagedClient) }
-        if fm.fileExists(atPath: binary.path) {
-            let previous = binary.appendingPathExtension("previous")
-            try? fm.removeItem(at: previous)
-            try fm.copyItem(at: binary, to: previous)
-            if let old = try? Data(contentsOf: receipt) {
-                try old.write(to: root.appendingPathComponent(".tilr-app-server.previous.json"), options: .atomic)
-            }
-        }
+        try fm.copyItem(at: source.appendingPathComponent("tilr"), to: stagedClient)
         var transaction = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         transaction["binaryPath"] = binary.path
-        transaction["bootstrap"] = !updateRequested
-        if !updateRequested { transaction["clientHash"] = try hash(stagedClient) }
+        transaction["bootstrap"] = true
+        transaction["clientHash"] = try hash(stagedClient)
         try JSONSerialization.data(withJSONObject: transaction).write(to: pending, options: .atomic)
         return try finishTransaction(wanted, transaction: transaction, pending: pending)
     }
@@ -348,10 +350,12 @@ struct ServerInstallation {
     /// be replayed after process termination, including a stop between the two pair renames.
     private func finishTransaction(_ wanted: Manifest, transaction: [String: Any], pending: URL) throws -> Manifest {
         let fm = FileManager.default
-        let bootstrap = transaction["bootstrap"] as? Bool == true
+        guard transaction["bootstrap"] as? Bool == true else {
+            throw Failure("An old application update transaction remains. Use tilrd update to recover; the daemon was left untouched.")
+        }
         let staged = binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new")
         let stagedClient = root.appendingPathComponent(".tilr.app-new")
-        if bootstrap {
+        do {
             let installedClient = root.appendingPathComponent("tilr")
             guard let clientHash = transaction["clientHash"] as? String else { throw Failure("Invalid bootstrap transaction") }
             if (try? hash(installedClient)) != clientHash {
@@ -366,29 +370,54 @@ struct ServerInstallation {
                   rename(staged.path, binary.path) == 0 else { throw Failure("Cannot replace installed tilrd") }
         }
         try JSONEncoder().encode(wanted).write(to: receipt, options: .atomic)
-        if bootstrap { try Data(binary.path.utf8).write(to: installationMarker, options: .atomic) }
+        try Data(binary.path.utf8).write(to: installationMarker, options: .atomic)
         selection.binary = binary
         selection.found = true
-        try applyReplacement()
+        if try runningVersion() == nil { try startService() }
         try fm.removeItem(at: pending)
         try? fm.removeItem(at: staged)
         try? fm.removeItem(at: stagedClient)
         return wanted
     }
 
-    private func applyReplacement() throws {
-        if try runningVersion() != nil {
-            let result = try command(binary, ["reload"])
-            guard result.status == 0 else { throw Failure("The server update was installed, but the local server was not reloaded: \(result.text)") }
-        } else {
-            try startService()
+    func installedVersion() throws -> String {
+        guard isInstalled, !selection.found || selection.binary != nil else {
+            throw Failure("Cannot determine the installed tilrd executable; it was left untouched.")
         }
+        return try executableVersion(binary)
     }
 
-    func restartPending() -> Bool { false }
+    /// Delegate all download and publication work to the selected ordinary daemon.
+    func update(channel: String) throws -> String {
+        guard ["stable", "beta"].contains(channel) else { throw Failure("Invalid tilrd update channel") }
+        _ = try installedVersion()
+        progress?("Updating tilrd (\(channel))…")
+        let response = try command(binary, ["update", "--channel", channel])
+        guard response.status == 0 else { throw Failure("tilrd update failed: \(response.text)") }
+        return try installedVersion()
+    }
 
-    func restart() throws {
-        throw Failure("The ordinary tilrd service manages its own service definition.")
+    /// Commit suffixes identify a build, not release order. RC versions sort below
+    /// their stable release; compare numeric RC identifiers numerically.
+    static func isOlder(_ version: String, than pin: String) -> Bool {
+        func parts(_ value: String) -> ([Int], String?) {
+            let clean = value.split(separator: "+", maxSplits: 1)[0]
+            let pieces = clean.split(separator: "-", maxSplits: 1)
+            let numbers = pieces[0].split(separator: ".").compactMap { Int($0) }
+            let suffix = pieces.count > 1 ? String(pieces[1].split(separator: "-")[0]) : ""
+            return (numbers, suffix.hasPrefix("rc") || suffix.hasPrefix("beta") || suffix.hasPrefix("alpha") ? suffix : nil)
+        }
+        let (left, prerelease) = parts(version)
+        let (right, pinnedPrerelease) = parts(pin)
+        for index in 0..<max(left.count, right.count) {
+            let a = index < left.count ? left[index] : 0
+            let b = index < right.count ? right[index] : 0
+            if a != b { return a < b }
+        }
+        if let prerelease, let pinnedPrerelease {
+            return prerelease.compare(pinnedPrerelease, options: .numeric) == .orderedAscending
+        }
+        return prerelease != nil && pinnedPrerelease == nil
     }
 
     enum Removal { case removed, notInstalled, declined }

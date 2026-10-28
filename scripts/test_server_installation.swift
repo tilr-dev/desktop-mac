@@ -132,41 +132,63 @@ import Darwin
         let before = try Data(contentsOf: absent.binary)
         _ = try absent.install()
         expect(try Data(contentsOf: absent.binary) == before)
-        // Explicit updates keep reload transactions pending on failure and recover on launch.
-        let updatedSource = base(absent).appendingPathComponent("update")
-        try fm.createDirectory(at: updatedSource, withIntermediateDirectories: true)
-        let updateBytes = Data("#!/bin/sh\necho 'tilrd 1.1.0-new (macos-aarch64)'\n".utf8)
-        try updateBytes.write(to: updatedSource.appendingPathComponent("tilrd"))
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: updatedSource.appendingPathComponent("tilrd").path)
-        let updateHash = SHA256.hash(data: updateBytes).map { String(format: "%02x", $0) }.joined()
-        let updated = ServerInstallation.Manifest(version: "1.1.0", build: 2, arch: "arm64", serverVersion: "1.1.0-new", sha256: updateHash, protocolVersion: 1, minAppBuild: 1, maxAppBuild: nil)
-        try JSONEncoder().encode(updated).write(to: updatedSource.appendingPathComponent("app-managed.json"))
-        var update = ServerInstallation(source: updatedSource, root: absent.root, agents: absent.agents, label: absent.label, port: 7890, timeout: 5, origins: [], appBuild: 10, protocolVersion: 1, architecture: "arm64")
-        update.selection = absent.selection
-        update.socketPath = absent.socketPath
-        update.updateRequested = true
-        var reloadStatus: Int32 = 1
-        let realRunner = absent.runner!
-        update.runner = { url, args in
-            if args == ["reload"] {
-                expect(url == absent.binary)
-                return .init(status: reloadStatus, text: "reload failed")
-            }
-            return try realRunner(url, args)
+        // The daemon owns updates, including the exact external executable selected at discovery.
+        let updater = try fixture("daemon-update")
+        let updateRoot = base(updater)
+        let externalUpdater = updateRoot.appendingPathComponent("external/tilrd")
+        let updateVersion = updateRoot.appendingPathComponent("installed-version")
+        let updateFailure = updateRoot.appendingPathComponent("fail-update")
+        let updateLog = updateRoot.appendingPathComponent("update-commands")
+        try Data("0.9.0-old\n".utf8).write(to: updateVersion)
+        try executable(externalUpdater, """
+        if [ "$1" = --version ]; then echo "tilrd $(cat '\(updateVersion.path)') (macos-aarch64)"; exit; fi
+        echo "$0 $*" >> '\(updateLog.path)'
+        test "$#" = 3
+        test "$1" = update
+        test "$2" = --channel
+        if [ -f '\(updateFailure.path)' ]; then echo 'download rejected by daemon' >&2; exit 7; fi
+        case "$3" in
+        stable) echo 0.9.1-stable > '\(updateVersion.path)' ;;
+        beta) echo 1.1.0-rc.2 > '\(updateVersion.path)' ;;
+        *) exit 9 ;;
+        esac
+        """)
+        try Data((externalUpdater.path + "\n").utf8).write(to: updateRoot.appendingPathComponent("path"))
+        _ = try updater.install()
+        expect(updater.binary == externalUpdater)
+        expect(try updater.installedVersion() == "0.9.0-old")
+        let externalBytes = try Data(contentsOf: externalUpdater)
+        let updateCredentials = try updater.credentials()
+        try Data().write(to: updateFailure)
+        do {
+            _ = try updater.update(channel: "stable")
+            fatalError("Expected daemon update failure")
+        } catch {
+            expect(error.localizedDescription.contains("download rejected by daemon"))
         }
-        rejects { _ = try update.install() }
-        expect(try Data(contentsOf: absent.binary) == updateBytes)
-        expect(try Data(contentsOf: absent.binary.appendingPathExtension("previous")) == before)
-        let pending = absent.root.appendingPathComponent(".tilr-app-pending.json")
-        expect(fm.fileExists(atPath: pending.path))
-        reloadStatus = 0
-        var resume = absent
-        resume.runner = update.runner
-        expect(try resume.install().build == 2)
-        expect(!fm.fileExists(atPath: pending.path))
-        // A successful reload request is not readiness until the server reports the new version.
-        try Data("1.1.0-new\n".utf8).write(to: base(absent).appendingPathComponent("running"))
-        expect(try absent.waitReady(version: updated.serverVersion, startupTimeout: 1, retryInterval: 1, wait: { _ in fatalError("Already ready") })["token"] == "shared-token")
+        expect(try Data(contentsOf: externalUpdater) == externalBytes)
+        expect(try updater.installedVersion() == "0.9.0-old")
+        expect(try updater.credentials() == updateCredentials)
+        try fm.removeItem(at: updateFailure)
+        let beforeUpdateCommands = commands(updater)
+        // Successful updates may still be below the bundle pin; report the actual installed version.
+        let stableVersion = try updater.update(channel: "stable")
+        expect(stableVersion == "0.9.1-stable")
+        expect(ServerInstallation.isOlder(stableVersion, than: "1.0.0"))
+        expect(try updater.update(channel: "beta") == "1.1.0-rc.2")
+        let updateCommands = try String(contentsOf: updateLog, encoding: .utf8).split(separator: "\n").map(String.init)
+        expect(updateCommands == ["\(externalUpdater.path) update --channel stable", "\(externalUpdater.path) update --channel stable", "\(externalUpdater.path) update --channel beta"])
+        expect(commands(updater) == beforeUpdateCommands)
+        expect(try Data(contentsOf: externalUpdater) == externalBytes)
+        expect(!fm.fileExists(atPath: updater.receipt.path))
+        expect(!fm.fileExists(atPath: updater.installationMarker.path))
+        expect(!fm.fileExists(atPath: updater.root.appendingPathComponent(".tilr-app-pending.json").path))
+        expect(!fm.fileExists(atPath: externalUpdater.appendingPathExtension("previous").path))
+        expect(ServerInstallation.isOlder("1.0.0-rc.1", than: "1.0.0"))
+        expect(ServerInstallation.isOlder("1.0.0-rc.2", than: "1.0.0-rc.10"))
+        expect(!ServerInstallation.isOlder("1.0.0", than: "1.0.0-rc.1"))
+        expect(!ServerInstallation.isOlder("1.0.0+installed", than: "1.0.0+bundled"))
+        expect(!ServerInstallation.isOlder("2.0.0", than: "1.0.0"))
         // Recovery covers bootstrap after the client rename but before the daemon rename.
         let half = try fixture("half-bootstrap")
         try fm.createDirectory(at: half.root, withIntermediateDirectories: true)
@@ -184,29 +206,15 @@ import Darwin
         // Recovery after both renames but before ownership marker creation repairs the marker.
         try fm.removeItem(at: half.installationMarker)
         try JSONSerialization.data(withJSONObject: transaction).write(to: half.root.appendingPathComponent(".tilr-app-pending.json"))
-        var resumedHalf = half
-        let halfRunner = half.runner!
-        resumedHalf.runner = { url, args in
-            if args == ["reload"] { return .init(status: 0, text: "") }
-            return try halfRunner(url, args)
-        }
-        _ = try resumedHalf.install()
+        _ = try half.install()
         expect(half.installedByApp)
-        // Update journal committed before the daemon rename retains and applies its stage.
-        try before.write(to: absent.binary)
-        try updateBytes.write(to: absent.binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"))
-        transaction = try JSONSerialization.jsonObject(with: JSONEncoder().encode(updated)) as! [String: Any]
-        transaction["binaryPath"] = absent.binary.path
-        transaction["bootstrap"] = false
-        try JSONSerialization.data(withJSONObject: transaction).write(to: pending)
-        expect(try resume.install().build == 2)
-        expect(try Data(contentsOf: absent.binary) == updateBytes)
-        // Remove after a failed reload clears its transaction before the next bootstrap.
-        reloadStatus = 1
-        rejects { _ = try update.install() }
-        expect(fm.fileExists(atPath: pending.path))
+        // Owned removal clears stages and metadata left by a previous application version.
+        let pending = absent.root.appendingPathComponent(".tilr-app-pending.json")
+        try Data("legacy transaction".utf8).write(to: pending)
+        try Data("legacy stage".utf8).write(to: absent.binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"))
         expect(try absent.remove() == .removed)
         expect(!fm.fileExists(atPath: pending.path))
+        expect(!fm.fileExists(atPath: absent.binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new").path))
         try fm.removeItem(at: base(absent).appendingPathComponent("running"))
         expect(try absent.install().build == 1)
         expect(absent.installedByApp)
@@ -273,6 +281,20 @@ import Darwin
         incompatible.runner = { _, _ in .init(status: 1, text: "incompatible protocol") }
         rejects { _ = try incompatible.install() }
         expect(!fm.fileExists(atPath: incompatible.root.path))
+        // An authenticated protocol error is immediately actionable, without a startup wait.
+        let incompatibleExecutable = base(incompatible).appendingPathComponent("external/tilrd")
+        try executable(incompatibleExecutable, "echo 'tilrd 2.0.0-new (macos-aarch64)'\n")
+        incompatible.runningExecutable = { incompatibleExecutable }
+        rejects { _ = try incompatible.install() }
+        expect(incompatible.binary == incompatibleExecutable)
+        do {
+            _ = try incompatible.waitReady(version: nil, startupTimeout: 1, retryInterval: 1,
+                                           wait: { _ in fatalError("Protocol failures must not wait") })
+            fatalError("Expected protocol failure")
+        } catch {
+            expect(error.localizedDescription.contains("incompatible protocol"))
+            expect(error.localizedDescription.localizedCaseInsensitiveContains("update tilrd"))
+        }
         // Existing tilr alone is not silently overwritten.
         let clientOnly = try fixture("client-only")
         try executable(clientOnly.root.appendingPathComponent("tilr"), "exit 0\n")

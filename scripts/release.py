@@ -181,8 +181,6 @@ def main():
         server = bundle_server(app, args.arch, args.build, preview=args.preview)
         info.update(TilrServerProtocolVersion=server["protocolVersion"],
                     TilrBundledServerBuild=server["build"], TilrBundledServerVersion=server["version"])
-        if feed and key:
-            info.update(TilrServerFeedBaseURL="https://cdn.tilr.dev/server/macos", TilrServerPublicKey=key)
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump(info, file)
         audit(app, args.arch)
