@@ -115,12 +115,12 @@ class UpstreamServerTests(unittest.TestCase):
         self.assertIn('code object is not signed at all', raised.exception.stderr)
         self.assertNotIn('invalid requirement specification', raised.exception.stderr)
 
-    def test_import_bundle_and_publish_validation_preserve_signed_bytes(self):
+    def test_import_and_bundle_validation_preserve_signed_bytes(self):
         self.assertEqual(self.main(), 0)
         for arch in fetch_server.TARGETS:
             path = self.root / f'build/server-releases/0.2.0-4-{arch}'
             with self.patches():
-                manifest = release_server.validated(path, '0.2.0', 4, arch, 'public')
+                manifest = fetch_server.validate_completed(path, '0.2.0', 4, arch, 1, 'public')
                 bundle_server.bundle_server(self.root / f'{arch}.app', arch, 17, root=self.root)
             self.assertEqual(manifest['serverVersion'], '0.2.0-abcdef0')
             self.assertEqual((path / 'tilrd').read_bytes(), self.binaries[arch])
@@ -138,6 +138,18 @@ class UpstreamServerTests(unittest.TestCase):
                             and '100.6.2.6' in r and fetch_server.TEAM in r for r in requirements))
         self.assertFalse(any('--sign' in c or c[0] in ('cargo', 'xcrun', 'strip') for c in self.commands))
         self.assertEqual(self.main(), 0)  # Reuse validates, never overwrites.
+
+    def test_local_acquisition_needs_no_release_credentials_and_bundles_exact_bytes(self):
+        with self.patches(), patch.object(release_server, 'ROOT', self.root), \
+             patch.dict('os.environ', {}, clear=True), \
+             patch('sys.argv', ['release_server.py', '--version', '0.2.0', '--build', '4',
+                                '--protocol-version', '1']):
+            release_server.main()
+            for arch in fetch_server.TARGETS:
+                bundle_server.bundle_server(self.root / f'{arch}.app', arch, 17, root=self.root)
+                self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilrd').read_bytes(), self.binaries[arch])
+                self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilr').read_bytes(), self.clients[arch])
+        self.assertTrue(all(url.startswith('https://github.com/tilr-dev/tilrd/') for url in self.remote))
 
     def test_release_identity_can_follow_an_adjacent_rust_string(self):
         for arch in fetch_server.TARGETS:

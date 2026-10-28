@@ -54,7 +54,7 @@ def check_binary(binary, arch, version, executable="tilrd"):
     return identity
 
 
-def prepare(temp, arch, version, build, protocol, min_app_build, max_app_build):
+def prepare(temp, arch, version, build, protocol):
     url = release_url(version, arch)
     archive = temp / Path(url).name
     checksum = archive.with_suffix(archive.suffix + ".sha256")
@@ -86,7 +86,7 @@ def prepare(temp, arch, version, build, protocol, min_app_build, max_app_build):
         raise ValueError("Client and server upstream versions differ")
     binary = binaries["tilrd"]
     manifest = dict(version=version, build=build, arch=arch, serverVersion=identity, sha256=digest(binary),
-                    protocolVersion=protocol, minAppBuild=min_app_build, maxAppBuild=max_app_build)
+                    protocolVersion=protocol, minAppBuild=1, maxAppBuild=None)
     provenance = dict(url=url, sha256=expected[1].lower())
     return binaries, manifest, provenance
 
@@ -103,11 +103,11 @@ def install(destination, binaries, manifest, provenance, public_key):
     (destination / "release.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
-def acquire(directory, arch, version, build, protocol, public_key="", min_app_build=1, max_app_build=None):
+def acquire(directory, arch, version, build, protocol, public_key=""):
     if directory.exists():
         raise ValueError(f"Server artifact already exists; inspect it before retrying: {directory}")
     with tempfile.TemporaryDirectory(prefix="fetch-server-") as temp:
-        install(directory, *prepare(Path(temp), arch, version, build, protocol, min_app_build, max_app_build), public_key)
+        install(directory, *prepare(Path(temp), arch, version, build, protocol), public_key)
     return json.loads((directory / "app-managed.json").read_text())
 
 
@@ -138,10 +138,7 @@ def validate_completed(directory, version, build, arch, protocol, public_key=Non
 def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--public-key", default="")
-    parser.add_argument("--min-app-build", type=int, default=1)
     args = parser.parse_args()
-    if args.min_app_build < 1:
-        parser.error("Use a positive minimum app build")
     pin = json.loads((ROOT / "server-release.json").read_text())
     if not re.fullmatch(r"\d+\.\d+\.\d+", pin["version"]):
         raise ValueError("Pin must name an upstream X.Y.Z release")
@@ -153,10 +150,8 @@ def main():
             directory = ROOT / "build/server-releases" / f"{pin['version']}-{pin['build']}-{arch}"
             if directory.exists():
                 manifest = validate_completed(directory, pin["version"], pin["build"], arch, pin["protocolVersion"], args.public_key)
-                if manifest["minAppBuild"] != args.min_app_build:
-                    raise ValueError("Cached server has different app compatibility metadata")
             else:
-                prepared[arch] = (directory, prepare(Path(temp), arch, pin["version"], pin["build"], pin["protocolVersion"], args.min_app_build, None))
+                prepared[arch] = (directory, prepare(Path(temp), arch, pin["version"], pin["build"], pin["protocolVersion"]))
         # Verify both architectures before completing either new artifact.
         for directory, payload in prepared.values():
             install(directory, *payload, args.public_key)

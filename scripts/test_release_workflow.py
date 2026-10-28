@@ -69,7 +69,7 @@ class ReleaseWorkflowContract(unittest.TestCase):
     def test_only_beta_rc_publication_is_exposed(self):
         inputs = self.text.split('    inputs:', 1)[1].split('\npermissions:', 1)[0]
         self.assertNotRegex(inputs, r'(?m)^      channel:')
-        rc_input = inputs.split('      rc:', 1)[1].split('      server_min_app_build:', 1)[0]
+        rc_input = inputs.split('      rc:', 1)[1].split('      notes:', 1)[0]
         self.assertIn('required: true', rc_input)
         self.assertNotIn('inputs.channel', self.text)
         for name in ('app', 'publish'):
@@ -116,16 +116,15 @@ class ReleaseWorkflowContract(unittest.TestCase):
     def test_server_is_imported_before_apple_keys_arrive(self):
         app = self.jobs["app"]
         self.assertLess(index(app, "scripts/fetch_server.py"), index(app, "ci-apple-keychain.sh import"))
-        self.assertIn('--min-app-build "$MIN_APP_BUILD"', app)
-        self.assertIn('MIN_APP_BUILD: ${{ inputs.server_min_app_build }}', app)
-        self.assertIn('tar -cf server.tar -C build server-releases', app)
+        self.assertNotIn("--min-app-build", self.text)
+        self.assertNotIn('server_min_app_build', self.text)
         for forbidden in ("tilrd-src", "Compile the server", "scripts/release_server.py", "notarytool"):
             self.assertNotIn(forbidden, app)
-        self.assertIn('name: server', app)
+        self.assertNotIn('name: server', self.text)
 
     def test_publication_reuses_the_tested_artifacts(self):
         publish = self.jobs["publish"]
-        self.assertIn("release_server.py --version \"$version\" --build \"$build\" --publish-only", publish)
+        self.assertNotIn("scripts/release_server.py", publish)
         self.assertIn("--publish-only", steps(publish)[index(publish, "scripts/release_all.py")])
         self.assertNotIn("swift build", publish)
         self.assertNotIn("cargo", publish)
