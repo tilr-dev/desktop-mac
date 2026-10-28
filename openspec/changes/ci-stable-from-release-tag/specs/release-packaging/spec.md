@@ -18,10 +18,10 @@ The release workflow SHALL separate credential setup, building, local verificati
 
 #### Scenario: Saved stable upload selection
 - **WHEN** upload.command selects a completed pair whose saved publication channel is stable
-- **THEN** it refuses before CDN uploads or feed changes and explains that stable requires promotion of a verified CI RC
+- **THEN** it refuses before CDN uploads or feed changes and explains that stable requires the CI release from a merged release PR tag
 - **AND** neither CLI flags nor environment variables bypass this restriction
 
 #### Scenario: Build-only publication guidance
 - **WHEN** release.command completes a stable build without publication
-- **THEN** it reports the completed artifacts and explains that stable requires promotion of a verified CI RC, without suggesting a direct upload command
+- **THEN** it reports the completed artifacts and explains that stable requires the CI release from a merged release PR tag, without suggesting a direct upload command
 - **AND** a completed beta build still prints the upload command for the unchanged tested pair

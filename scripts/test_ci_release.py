@@ -219,7 +219,10 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     def test_workflow_shell_builds_stable_tag_and_publishes_regular_release(self):
         self.workflow_shell('stable')
 
-    def workflow_shell(self, channel):
+    def test_workflow_shell_resumes_partially_published_beta(self):
+        self.workflow_shell('beta', partial=True)
+
+    def workflow_shell(self, channel, partial=False):
         from test_release_workflow import WORKFLOW, jobs, steps, index
         workflow = jobs(WORKFLOW.read_text())
         tag = 'v0.3.0-rc.2' if channel == 'beta' else 'v0.3.0'
@@ -277,6 +280,8 @@ assert args[args.index('--channel') + 1] == os.environ['EXPECTED_CHANNEL']
             data['SUPublicEDKey'] = meta['public_key']
             info.write_bytes(plistlib.dumps(data))
         run_step('publish', 'ci_release.py release')
+        if partial:
+            self.feed('arm64', [13], channel='beta')
         run_step('publish', 'name: Publish the app')
         run_step('publish', 'ci_release.py github')
         self.assertEqual(json.loads((self.root / 'uploaded').read_text()),

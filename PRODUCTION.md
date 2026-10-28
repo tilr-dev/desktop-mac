@@ -137,8 +137,9 @@ The pinned server is tilrd **0.2.1, artifact revision 4, protocol 1**.
    that its GitHub Release is a published prerelease for RC or a regular release
    for stable, and that it has no assets. `ci_release.py publish` validates both
    completed receipts, manifest-selected DMG paths and SHA-256 values, channel,
-   public key and matching plugin inventories before any CDN writes. It rechecks
-   that the build exceeds all published stable and beta builds, prepares both
+   public key and matching plugin inventories before any CDN writes. For stable it rechecks
+   that the build exceeds all published stable and beta builds; beta retains verified
+   partial-publication resume. It prepares both
    feeds, then uses the existing immutable publisher with appcast last and public
    feed readback. The same app artifacts go to beta for RC or stable for a merged
    release PR, without an approval prompt. No delta patches: the runner has no DMG history.

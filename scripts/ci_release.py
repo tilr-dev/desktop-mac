@@ -65,8 +65,9 @@ def release_assets(version, build, channel, root):
 def publish_cdn(tag, build, root, repository, sha, notes_file):
     version, channel, notes = release_metadata(tag, repository, sha)
     assets = release_assets(version, build, channel, root)
-    # Recheck all feeds immediately before publication, never after uploading an arch.
-    resolve_build(str(build))
+    # Stable cannot be republished; beta retains verified partial-publication resume.
+    if channel == "stable":
+        resolve_build(str(build))
     config = settings(require_build=False)
     inventories = [completed(asset.parent, version, build, arch, feed_for(arch, channel),
                              config["TILR_UPDATE_PUBLIC_KEY"])

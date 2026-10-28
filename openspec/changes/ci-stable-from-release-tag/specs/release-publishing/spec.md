@@ -30,7 +30,7 @@ The Release workflow SHALL run automatically on pushes to release/**, use the pi
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
 - **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one
 - **AND** that build is logged and passed explicitly to both architecture builds and publication, without changing local release numbering
-- **AND** the publish job publishes those artifacts to beta with --publish-only without environment approval, holding the Sparkle and R2 keys but no Apple keys
+- **AND** the publish job publishes those artifacts to beta through the CI publish command without rebuilding or environment approval, holding the Sparkle and R2 keys but no Apple keys
 - **AND** after successful CDN publication it attaches both unchanged DMGs to the shared GitHub prerelease and names it Tilr X.Y.Z-rc.N (<build>), using its existing body as Sparkle notes
 - **AND** the shared workflow uses the release GitHub App token for release PRs and tags; only the publish job has contents: write on GITHUB_TOKEN, while the app job has only contents: read
 
@@ -54,7 +54,7 @@ The Release workflow SHALL run automatically on pushes to release/**, use the pi
 
 #### Scenario: Protect an existing version tag
 - **WHEN** artifacts are attached to the candidate prerelease
-- **THEN** publication verifies that the existing candidate tag points to the workflow commit and that the release is a prerelease before any CDN publication
+- **THEN** publication verifies that the existing candidate tag points to the checked-out commit and that the release is a prerelease before any CDN publication
 - **AND** it never creates, moves or deletes that tag, replaces existing assets, or attaches candidate artifacts to a stable release
 
 #### Scenario: Keep the marketing version numeric
