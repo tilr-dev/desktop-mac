@@ -53,8 +53,8 @@ def main():
     parser.add_argument("--protocol-version", required=True, type=int)
     parser.add_argument("--preview", action="store_true", help="Show the plan without credentials, downloading or publication")
     args = parser.parse_args()
-    if not re.fullmatch(r"\d+(?:\.\d+){0,2}", args.version) or args.build < 1:
-        parser.error("Use a numeric version and positive build numbers")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", args.version) or args.build < 1:
+        parser.error("Use a numeric X.Y.Z version and positive server build")
     (ROOT / "build").mkdir(exist_ok=True)
     with (ROOT / "build/server-release-all.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
