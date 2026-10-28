@@ -107,6 +107,18 @@ class ReleaseWorkflowContract(unittest.TestCase):
         publish = self.jobs["publish"]
         self.assertIn("if: always()", steps(publish)[index(publish, 'rm -f "$RUNNER_TEMP/sparkle.key"')])
 
+    def test_pr_ci_acquires_the_actual_server_pin_without_secrets(self):
+        ci = WORKFLOW.with_name('ci.yml').read_text()
+        self.assertIn("pull_request:", ci)
+        mac = jobs(ci)['mac']
+        acquire = steps(mac)[index(mac, 'python3 scripts/fetch_server.py')]
+        self.assertIn('python3 scripts/fetch_server.py --public-key "$TILR_UPDATE_PUBLIC_KEY"', acquire)
+        self.assertNotIn('if:', acquire)
+        self.assertNotIn('continue-on-error:', acquire)
+        self.assertNotIn('secrets.', acquire)
+        release_key = re.search(r'TILR_UPDATE_PUBLIC_KEY: (\S+)', self.text)[1]
+        self.assertIn('TILR_UPDATE_PUBLIC_KEY: ' + release_key, ci)
+
     def test_server_is_imported_before_apple_keys_arrive(self):
         app = self.jobs["app"]
         self.assertLess(index(app, "scripts/fetch_server.py"), index(app, "ci-apple-keychain.sh import"))
