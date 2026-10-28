@@ -16,7 +16,7 @@ The app publisher SHALL generate at most maximum_deltas previous-source patches 
 ### Requirement: Independent signed server publication
 Desktop release tools SHALL NOT publish an app-managed server feed or server update binaries. Server acquisition SHALL remain independent of Sparkle app publication.
 
-#### Scenario: Publish the application without a server feed
+#### Scenario: Publish a completed server
 - **WHEN** the desktop release publishes application artifacts
 - **THEN** only application downloads and Sparkle appcasts are published
 - **AND** no server/macos feed or server binary is uploaded by desktop release tools
