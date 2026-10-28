@@ -56,7 +56,21 @@ same explicit upload command; never rebuild published bytes under the same numbe
 
 `server-release.json` selects the signed upstream tilrd version, artifact revision
 (`build`) and protocol for the DMG. The revision identifies local completed artifacts;
-it is not a published server feed number. Update the pin to bundle a different release.
+it is not a published server feed number.
+
+After tilrd uploads a newly created stable release's signed GitHub assets, tilr-bot
+opens `chore: bump tilrd to X.Y.Z` into this repository's `main`. It refreshes the
+single `bot/bump-tilrd` branch from current main and updates an existing open PR
+instead of opening another. The pin uses that exact released version and the
+protocol constant from its released source; `build` is retained from main. RCs
+never update the pin. Normal PR CI runs `fetch_server.py` against that exact
+GitHub Release and verifies both architectures; review and merge follow the normal
+process, and the next Tilr release includes the new bootstrap server.
+
+The repository owner must grant the tilr-bot App installation access to desktop-mac
+with Contents and Pull requests read/write permissions. The tilrd release job uses
+its existing App credentials to mint a short-lived token scoped to this repository;
+it does not bypass checks or merge the PR. A manual pin update remains available:
 
 ```sh
 python3 scripts/release_server.py --version 0.2.1 --build 4 --protocol-version 1
@@ -124,7 +138,8 @@ cannot race. The latest push replaces a pending run; multiple pushes arriving
 faster than an RC build are not supported. Local release numbering
 and reservations are unchanged.
 
-The pinned server is tilrd **0.2.1, artifact revision 4, protocol 1**.
+The pinned tilrd version, artifact revision and protocol are defined in
+[`server-release.json`](server-release.json).
 
 1. `app`: `fetch_server.py` acquires both architectures from the exact pinned
    tilrd GitHub Release, verifies archive SHA-256, architecture, expected Developer ID
@@ -195,7 +210,8 @@ the shipped app. An existing SwiftPM `Tilr.dSYM` is also copied there. Keep thes
 files for diagnostics: an unstripped executable alone does not supply source-level
 debug information when the compiler did not generate it. Sparkle exports are not
 stripped. Server artifacts are never stripped or re-signed when bundled into an app.
-The current server pin is **0.2.1 build 4, protocol 1**, independently of app numbers.
+The current server pin is defined in [`server-release.json`](server-release.json),
+independently of app numbers.
 
 Each app release writes `sizes.json` with logical file bytes (excluding duplicate
 symlink targets), DMG bytes and all Mach-O architectures. Server releases write their
