@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--protocol-version", type=int, help="Protocol declared by the pinned upstream release")
     args = parser.parse_args()
     if not re.fullmatch(r"\d+\.\d+\.\d+", args.version) or args.build < 1:
-        parser.error("Use a numeric version and positive server build")
+        parser.error("Use a numeric X.Y.Z version and positive server build")
     if args.protocol_version is None or not 0 < args.protocol_version <= 4294967295:
         parser.error("Acquisition requires a positive u32 --protocol-version")
     arches = list(dict.fromkeys(args.arch or TARGETS))

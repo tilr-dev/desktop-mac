@@ -1,5 +1,5 @@
 import argparse
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import release_server_all as release
+import release_server
 
 
 class ServerReleaseCommandTests(unittest.TestCase):
@@ -99,6 +100,42 @@ for arch in ("arm64", "x86_64"):
 
     def test_homebrew_tools_come_first(self):
         self.assertTrue(release.release_environment()["PATH"].startswith("/opt/homebrew/bin:"))
+
+    def test_invalid_versions_stop_before_release_work(self):
+        for command in (release, release_server):
+            for version in ("0", "0.2", "0.2.1.3", "v0.2.1", "0.2.1-beta"):
+                with self.subTest(command=command.__name__, version=version):
+                    argv = [command.__file__, "--version", version, "--build", "7",
+                            "--protocol-version", "1"]
+                    with tempfile.TemporaryDirectory() as temp, \
+                         patch.object(sys, "argv", argv), patch.object(command, "ROOT", Path(temp)), \
+                         patch.object(release, "execute") as execute, \
+                         patch.object(release_server, "acquire") as acquire, \
+                         redirect_stderr(io.StringIO()):
+                        with self.assertRaises(SystemExit) as stopped:
+                            command.main()
+                        self.assertEqual(stopped.exception.code, 2)
+                        execute.assert_not_called()
+                        acquire.assert_not_called()
+                        self.assertFalse((Path(temp) / "build").exists())
+
+    def test_full_version_reaches_release_work(self):
+        for command in (release, release_server):
+            with self.subTest(command=command.__name__), tempfile.TemporaryDirectory() as temp:
+                argv = [command.__file__, "--version", "0.2.1", "--build", "7",
+                        "--protocol-version", "1"]
+                with patch.object(sys, "argv", argv), patch.object(command, "ROOT", Path(temp)), \
+                     patch.object(release, "execute") as execute, \
+                     patch.object(release_server, "acquire") as acquire, \
+                     redirect_stdout(io.StringIO()):
+                    command.main()
+                if command is release:
+                    execute.assert_called_once()
+                    self.assertEqual(execute.call_args.args[0].version, "0.2.1")
+                else:
+                    self.assertEqual(acquire.call_count, 2)
+                    for call in acquire.call_args_list:
+                        self.assertEqual(call.args[2], "0.2.1")
 
     def test_obsolete_feed_options_are_rejected(self):
         for option in (["--publish"], ["--publish-only"], ["--channel", "beta"],
