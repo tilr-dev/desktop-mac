@@ -27,7 +27,7 @@ cd /Users/dan/projects/tilr/tilr-mac
 - `upload.command` publishes the last completed app pair recorded in
   `build/latest-app-release.json` without rebuilding or changing files. It prints
   version/build/channel and the verified CDN URLs. A saved stable channel is refused:
-  stable is published by CI from the merged release PR tag. There is no direct stable override.
+  stable is published by CI from the pushed stable vX.Y.Z tag. There is no direct stable override.
   Without a saved pair, provide explicit version/build/channel. A failed later build
   leaves the pointer unchanged; inspect `--status` before uploading.
 
@@ -105,28 +105,29 @@ Sparkle, серверному бинарнику и проверке подпи�
 
 ## Release from CI
 
-The `Release` workflow (`.github/workflows/release.yml`) runs automatically on each
-push to `release/X.Y`. Push a fix to the release branch to get the next candidate;
-there is no manual workflow dispatch or version, build, channel or RC input.
-Pushes to `main`, other branches and tags do not start this workflow. The shared
-workflow validates canonical `release/X.Y` names before obtaining its App token.
-Both `apple-signing` and `release` environments accept only `release/*` branches
-and have no required reviewers.
+The `Release` workflow (`.github/workflows/release.yml`) runs automatically on
+pushes to `release/X.Y` and stable tags `vX.Y.Z`. Push a fix to the release branch
+to get the next candidate. Pushes to `main`, other branches and RC tags do not
+start this workflow; there is no manual workflow dispatch or metadata input.
+Configure both `apple-signing` and `release` environments to accept `release/*`
+branches and `v*` tags without required reviewers.
 
-The pinned reusable `tilr-dev/.github` release workflow opens or updates the
-release-please PR, chooses `X.Y.Z` for that release line and creates
-`vX.Y.Z-rc.N` and a GitHub prerelease. Each new push increments `N`; reruns reuse
-the candidate for the same commit. `release-please-config.json`,
-`.release-please-manifest.json` and `version.txt` track the release version without
-changing the source `Info.plist` template. The app marketing version and DMG
-filenames remain numeric `X.Y.Z` without `-rc`.
+The pinned reusable `tilr-dev/.github` release workflow selects the next patch
+version on that release line and creates `vX.Y.Z-rc.N` and a GitHub prerelease.
+Each new candidate increments `N`; reruns reuse the candidate for the same commit.
+Its outputs are `tag`, `version` (tag without `v`) and string `is_rc`. An empty tag
+skips building and publication. Marketing version and DMG filenames use numeric
+`X.Y.Z`, stripping `v` and the RC suffix from the verified tag. There is no
+repository version file or generated changelog; release history is maintained in
+GitHub Release notes. The source `Info.plist` remains a development template.
 
-Merging the release PR is the only release approval: the shared workflow creates
-stable tag `vX.Y.Z` without an environment approval. In that same workflow run,
-`release_created=true` and `is_rc=false` select stable instead of beta. Both jobs
-check out the exact shared tag; verification compares its target with checkout
-HEAD, which can differ from the push event SHA. Both architectures are rebuilt,
-signed and notarized from that tag. There is no manual stable entry point.
+Dan approves stable by running `bin/release desktop-mac` in the workflow tools,
+which pushes `vX.Y.Z`. The shared workflow rejects a tag whose commit does not
+belong to the matching `release/X.Y` branch before creating or reusing its regular
+GitHub Release. A nonempty shared tag/version and `is_rc=false` on a tag push
+select stable. Both app and publish jobs check out that exact tag and verify its
+commit against checkout HEAD. Both architectures are rebuilt, signed and notarized
+from the tag; generated GitHub Release notes are retained.
 
 Build is the highest published build across both architectures and both channels
 plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
@@ -156,8 +157,8 @@ The pinned tilrd version, artifact revision and protocol are defined in
    that the build exceeds all published stable and beta builds; beta retains verified
    partial-publication resume. It prepares both
    feeds, then uses the existing immutable publisher with appcast last and public
-   feed readback. The same app artifacts go to beta for RC or stable for a merged
-   release PR, without an approval prompt. No delta patches: the runner has no DMG history.
+   feed readback. The same app artifacts go to beta for RC or stable for a pushed
+   stable tag, without an approval prompt. No delta patches: the runner has no DMG history.
    The existing release body supplies Sparkle notes. After CDN publication,
    `ci_release.py github` validates both manifests again and attaches their unchanged
    DMGs. The title becomes `Tilr X.Y.Z-rc.N (<build>)` for RC or
@@ -165,7 +166,7 @@ The pinned tilrd version, artifact revision and protocol are defined in
    unchanged. Existing stable assets or a build not newer than a stable feed stop
    before CDN uploads, feed changes or GitHub Release changes.
    Only this job has `contents: write` on `GITHUB_TOKEN`; the shared workflow uses
-   a GitHub App token for release PRs and tags. No publication step creates or
+   a GitHub App token for candidate tags and GitHub Releases. No publication step creates or
    moves an existing tag, deletes a release, or replaces existing assets.
    If publication fails partway through, completed CDN uploads or GitHub assets
    remain published. Inspect the failure before releasing again; a new fix push
@@ -179,7 +180,7 @@ so there is no access prompt; its public half is checked against `TILR_UPDATE_PU
 
 The shared workflow uses organization variable `TILR_BOT_CLIENT_ID` and organization
 secret `TILR_BOT_PRIVATE_KEY` (available to this repository). Its GitHub App needs
-Contents, Pull requests and Issues write permissions and access to desktop-mac.
+Contents read and write permission and access to desktop-mac.
 Both the workflow reference and its `workflow-sha` input are pinned to the same
 immutable shared commit; update them together.
 
@@ -187,12 +188,12 @@ Secrets (Settings → Environments), provisioned by Dan:
 
 | Environment | Secret | What it is |
 |---|---|---|
-| `apple-signing` (branches `release/*` only) | `APPLE_CERTIFICATE_P12_BASE64` | Developer ID Application `.p12` with its key, base64 |
+| `apple-signing` (branches `release/*`, tags `v*`) | `APPLE_CERTIFICATE_P12_BASE64` | Developer ID Application `.p12` with its key, base64 |
 | | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` password |
 | | `APPLE_SIGN_IDENTITY` | `Developer ID Application: Rexuni LLC (V57FF3MX26)` |
 | | `APPLE_API_KEY_P8_BASE64` | App Store Connect API key (`.p8`, role Developer), base64 |
 | | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` | that key's Key ID and Issuer ID |
-| `release` (no required reviewer, `release/*` only) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
+| `release` (no required reviewer, branches `release/*`, tags `v*`) | `SPARKLE_PRIVATE_KEY` | contents of `generate_keys --account tilr-rexuni -x FILE` |
 | | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | R2 API token (S3) with object read and write on the bucket `tilr-cdn` |
 
 ## Compact packaging and delta updates (implemented)
@@ -458,7 +459,7 @@ or saved stable channel stops before CDN uploads or feed changes. No flag or
 environment variable enables direct stable publication.
 
 For production, publish a CI RC to beta, download and check that RC on a Mac (enable
-Receive RC versions when testing updates), then merge the release PR. The Release
+Receive RC versions when testing updates), then run `bin/release desktop-mac` to push the stable tag. The Release
 workflow builds stable from its `vX.Y.Z` tag with a new monotonic build, signs and
 notarizes both architectures, and publishes their stable feeds and regular GitHub
 Release. It does not copy the RC DMGs or reuse the RC build. The local
@@ -558,7 +559,7 @@ another release machine: automatic numbering does not query public feeds.
 Change the marketing version once with `./release.command --version 0.2.0`; it is
 remembered for subsequent builds. The default receipt channel is stable (build-only);
 use `--channel beta` for a locally publishable pair. Stable publication requires
-CI from the merged release PR tag. To resume an existing release, use explicit version/build with
+CI from the pushed stable vX.Y.Z tag. To resume an existing release, use explicit version/build with
 `release_all.py --resume`. Successful builds print artifact paths; beta builds also print the publish-only
 command, while stable builds explain that direct publication is disabled. There are no terminal questions or final Return prompt. macOS Keychain
 access prompts, if any, remain controlled by the key's existing access permissions.

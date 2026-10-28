@@ -1,12 +1,13 @@
 # Pushes to release/X.Y create candidates through the shared release workflow.
 # Signing and publication use the same completed artifacts, without environment review.
-# Merging the release PR creates the stable tag built and published in this workflow.
+# Pushing a stable vX.Y.Z tag approves building and publishing that tag.
 # No caches; release runs are serialized across branches for appcast build allocation.
 name: Release
 
 on:
   push:
     branches: ['release/**']
+    tags: ['v*', '!v*-rc.*']
 
 permissions:
   contents: read
@@ -28,16 +29,16 @@ jobs:
   release:
     permissions:
       contents: read
-    uses: tilr-dev/.github/.github/workflows/release-branch.yml@aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
+    uses: tilr-dev/.github/.github/workflows/release-branch.yml@c31b80fcfd5cb9398a193d422c212326302d0c44
     with:
-      workflow-sha: aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
+      workflow-sha: c31b80fcfd5cb9398a193d422c212326302d0c44
       app-client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
     secrets:
       app-private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
 
   app:
     needs: release
-    if: needs.release.outputs.is_rc == 'true' || (needs.release.outputs.release_created == 'true' && needs.release.outputs.is_rc == 'false')
+    if: needs.release.outputs.tag != '' && needs.release.outputs.version != '' && (needs.release.outputs.is_rc == 'true' || (needs.release.outputs.is_rc == 'false' && github.ref_type == 'tag'))
     outputs:
       build: ${{ steps.number.outputs.build }}
       version: ${{ steps.metadata.outputs.version }}
@@ -145,7 +146,7 @@ jobs:
       contents: write
     runs-on: macos-26
     timeout-minutes: 30
-    # Branch restriction only; merging the release PR is the stable release approval.
+    # Release branches and version tags only; the stable tag push is the approval.
     environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
