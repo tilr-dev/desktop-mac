@@ -32,10 +32,15 @@ The desktop repository SHALL provide a command to acquire and verify an upstream
 - **THEN** it acquires the exact --version from the upstream GitHub Release using the supplied --protocol-version
 - **AND** no local source checkout is read or built
 
-#### Scenario: Inspect verified artifacts and print the pin
+#### Scenario: Inspect before publishing
 - **WHEN** the verified artifacts are ready
 - **THEN** the command displays release.json and the upstream server version
-- **AND** it prints the upstream version and protocolVersion as a JSON app pin without publication or a confirmation prompt
+- **AND** no publication step or confirmation prompt follows inspection
+
+#### Scenario: Confirm publication
+- **WHEN** acquisition and verification of both architectures completes
+- **THEN** the command prints the upstream version and protocolVersion as a JSON app pin
+- **AND** the former publication confirmation is absent and no server feed or binary is uploaded
 
 #### Scenario: Reject obsolete feed options
 - **WHEN** either server release command receives publication, feed channel, app-build range options
