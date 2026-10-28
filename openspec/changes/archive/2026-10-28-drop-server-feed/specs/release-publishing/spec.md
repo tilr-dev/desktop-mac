@@ -26,4 +26,3 @@ Desktop release tools SHALL NOT publish an app-managed server feed or server upd
 - **WHEN** new appcast items are generated
 - **THEN** generate_appcast receives --critical-update-version with an empty value, marking updates critical for every installed version
 - **AND** resume leaves previously published feeds unchanged; dismissing the prompt does not mark the version skipped, and installation still requires consent
-
