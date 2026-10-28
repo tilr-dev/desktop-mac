@@ -1,7 +1,7 @@
 # Pushes to release/X.Y create candidates through the shared release workflow.
-# Signing and beta publication use the same completed artifacts, without environment review.
-# Stable release approval is merging the release PR; stable builds run separately from its tag.
-# No caches; candidate runs are serialized across branches for appcast build allocation.
+# Signing and publication use the same completed artifacts, without environment review.
+# Merging the release PR creates the stable tag built and published in this workflow.
+# No caches; release runs are serialized across branches for appcast build allocation.
 name: Release
 
 on:
@@ -37,10 +37,11 @@ jobs:
 
   app:
     needs: release
-    if: needs.release.outputs.is_rc == 'true'
+    if: needs.release.outputs.is_rc == 'true' || (needs.release.outputs.release_created == 'true' && needs.release.outputs.is_rc == 'false')
     outputs:
       build: ${{ steps.number.outputs.build }}
-      version: ${{ steps.candidate.outputs.version }}
+      version: ${{ steps.metadata.outputs.version }}
+      channel: ${{ steps.metadata.outputs.channel }}
     runs-on: macos-26
     timeout-minutes: 120
     environment: apple-signing
@@ -49,6 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
 
       - name: Read the gitpm pin
@@ -66,12 +68,12 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Verify the candidate and read its numeric version
-        id: candidate
+      - name: Verify the release tag and read its numeric version
+        id: metadata
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}
-        run: python3 scripts/ci_release.py candidate --tag "$TAG" --notes-file "$RUNNER_TEMP/notes.txt"
+        run: python3 scripts/ci_release.py release --tag "$TAG" --notes-file "$RUNNER_TEMP/notes.txt"
 
       - name: Resolve the app build
         id: number
@@ -112,9 +114,10 @@ jobs:
       - name: Sign, notarize and package both architectures
         env:
           TILR_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
-          VERSION: ${{ steps.candidate.outputs.version }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          CHANNEL: ${{ steps.metadata.outputs.channel }}
           BUILD: ${{ steps.number.outputs.build }}
-        run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel beta
+        run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL"
 
       - name: Remove the keychain
         if: always()
@@ -123,7 +126,8 @@ jobs:
       # The publish job needs the completed releases and the Sparkle tools resolved here.
       - name: Pack the app
         env:
-          VERSION: ${{ steps.candidate.outputs.version }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          CHANNEL: ${{ steps.metadata.outputs.channel }}
           BUILD: ${{ steps.number.outputs.build }}
         run: |
           tar -cf app.tar "build/releases/$VERSION-$BUILD-arm64" "build/releases/$VERSION-$BUILD-x86_64" \
@@ -146,6 +150,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -166,11 +171,11 @@ jobs:
           tar -xf app.tar
           rm app.tar
 
-      - name: Verify the candidate and read its notes before CDN publication
+      - name: Verify the release tag before CDN publication
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}
-        run: python3 scripts/ci_release.py candidate --tag "$TAG" --notes-file "$RUNNER_TEMP/notes.txt"
+        run: python3 scripts/ci_release.py release --tag "$TAG" --notes-file "$RUNNER_TEMP/notes.txt"
 
       # A key file instead of a Keychain item: no access prompt on an unattended runner.
       - name: Write the Sparkle key
@@ -184,16 +189,18 @@ jobs:
 
       - name: Publish the app
         env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           VERSION: ${{ needs.app.outputs.version }}
+          CHANNEL: ${{ needs.app.outputs.channel }}
           BUILD: ${{ needs.app.outputs.build }}
         run: |
-          python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel beta \
-            --publish-only --notes "$RUNNER_TEMP/notes.txt"
-          cat "build/releases/$VERSION-$BUILD-beta-downloads.json" >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/ci_release.py publish --tag "$TAG" --build "$BUILD" --notes-file "$RUNNER_TEMP/notes.txt"
+          cat "build/releases/$VERSION-$BUILD-$CHANNEL-downloads.json" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Attach the DMGs to the shared GitHub pre-release
+      - name: Attach the manifest DMGs to the shared GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}

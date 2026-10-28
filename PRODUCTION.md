@@ -27,7 +27,7 @@ cd /Users/dan/projects/tilr/tilr-mac
 - `upload.command` publishes the last completed app pair recorded in
   `build/latest-app-release.json` without rebuilding or changing files. It prints
   version/build/channel and the verified CDN URLs. A saved stable channel is refused:
-  stable requires promotion of a verified CI RC. There is no direct stable override.
+  stable is published by CI from the merged release PR tag. There is no direct stable override.
   Without a saved pair, provide explicit version/build/channel. A failed later build
   leaves the pointer unchanged; inspect `--status` before uploading.
 
@@ -108,9 +108,11 @@ changing the source `Info.plist` template. The app marketing version and DMG
 filenames remain numeric `X.Y.Z` without `-rc`.
 
 Merging the release PR is the only release approval: the shared workflow creates
-stable tag `vX.Y.Z` without an environment approval. That run skips candidate
-building and beta publication. Stable builds and publication from the tag are a
-separate workflow change; this workflow publishes candidates only.
+stable tag `vX.Y.Z` without an environment approval. In that same workflow run,
+`release_created=true` and `is_rc=false` select stable instead of beta. Both jobs
+check out the exact shared tag; verification compares its target with checkout
+HEAD, which can differ from the push event SHA. Both architectures are rebuilt,
+signed and notarized from that tag. There is no manual stable entry point.
 
 Build is the highest published build across both architectures and both channels
 plus one (stable: `https://cdn.tilr.dev/mac/<arch>/appcast.xml`, beta:
@@ -131,13 +133,22 @@ The pinned server is tilrd **0.2.1, artifact revision 4, protocol 1**.
    No server compilation, stripping, signing or notarization happens here.
    Both app architectures are compiled without keys, then `release_all.py` signs,
    notarizes and packages the DMGs. No Sparkle key or Cloudflare token here.
-2. `publish`: verifies that the existing RC tag points to the workflow commit,
-   that its GitHub release is a published prerelease, and that it has no assets.
-   It then uses `release_all.py --publish-only` to publish the same app artifacts to
-   beta without an approval prompt. No delta patches: the runner has no DMG history.
-   The existing prerelease body supplies Sparkle notes. After CDN publication,
-   both unchanged DMGs are attached to that prerelease and its title becomes
-   `Tilr X.Y.Z-rc.N (<build>)`; its body and tag remain unchanged.
+2. `publish`: verifies that the existing release tag points to checkout HEAD,
+   that its GitHub Release is a published prerelease for RC or a regular release
+   for stable, and that it has no assets. `ci_release.py publish` validates both
+   completed receipts, manifest-selected DMG paths and SHA-256 values, channel,
+   public key and matching plugin inventories before any CDN writes. For stable it rechecks
+   that the build exceeds all published stable and beta builds; beta retains verified
+   partial-publication resume. It prepares both
+   feeds, then uses the existing immutable publisher with appcast last and public
+   feed readback. The same app artifacts go to beta for RC or stable for a merged
+   release PR, without an approval prompt. No delta patches: the runner has no DMG history.
+   The existing release body supplies Sparkle notes. After CDN publication,
+   `ci_release.py github` validates both manifests again and attaches their unchanged
+   DMGs. The title becomes `Tilr X.Y.Z-rc.N (<build>)` for RC or
+   `Tilr X.Y.Z (<build>)` for stable; the body, tag and prerelease status remain
+   unchanged. Existing stable assets or a build not newer than a stable feed stop
+   before CDN uploads, feed changes or GitHub Release changes.
    Only this job has `contents: write` on `GITHUB_TOKEN`; the shared workflow uses
    a GitHub App token for release PRs and tags. No publication step creates or
    moves an existing tag, deletes a release, or replaces existing assets.
@@ -431,10 +442,11 @@ or saved stable channel stops before CDN uploads or feed changes. No flag or
 environment variable enables direct stable publication.
 
 For production, publish a CI RC to beta, download and check that RC on a Mac (enable
-Receive RC versions when testing updates), then promote those exact checked artifacts
-to stable. Promotion preserves the DMG bytes, numeric marketing version and build;
-it does not rebuild, re-sign or notarize them. The promotion command is a separate
-workflow; the release/upload commands here do not publish stable.
+Receive RC versions when testing updates), then merge the release PR. The Release
+workflow builds stable from its `vX.Y.Z` tag with a new monotonic build, signs and
+notarizes both architectures, and publishes their stable feeds and regular GitHub
+Release. It does not copy the RC DMGs or reuse the RC build. The local
+release/upload commands here do not publish stable.
 
 The signed bundle contains the verification public key and a runtime-selection
 marker, with no `SUFeedURL`. Tilr → Update Settings exposes Receive RC versions
@@ -530,9 +542,9 @@ another release machine: automatic numbering does not query public feeds.
 Change the marketing version once with `./release.command --version 0.2.0`; it is
 remembered for subsequent builds. The default receipt channel is stable (build-only);
 use `--channel beta` for a locally publishable pair. Stable publication requires
-promotion of a verified CI RC. To resume an existing release, use explicit version/build with
+CI from the merged release PR tag. To resume an existing release, use explicit version/build with
 `release_all.py --resume`. Successful builds print artifact paths; beta builds also print the publish-only
-command, while stable builds explain the CI RC promotion requirement. There are no terminal questions or final Return prompt. macOS Keychain
+command, while stable builds explain that direct publication is disabled. There are no terminal questions or final Return prompt. macOS Keychain
 access prompts, if any, remain controlled by the key's existing access permissions.
 
 
