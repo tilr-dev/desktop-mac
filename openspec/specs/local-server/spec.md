@@ -12,14 +12,18 @@ Tilr SHALL bundle unchanged signed/notarized tilrd and tilr executables from the
 - **WHEN** local_server is enabled at application launch
 - **THEN** discovery checks a running server on the default socket first, tilrd in the login shell PATH second, and ~/.local/bin/tilrd third
 - **AND** an existing installation is used without installing bundled executables or creating an application installation marker
-- **AND** incompatible servers are reported without stopping or replacing them
+- **AND** incompatible servers are reported with an Update tilrd action without stopping or replacing them through application file operations
 
 #### Scenario: Start offline or with a newer installation
 - **WHEN** no ordinary tilrd installation is found
 - **THEN** the bundled matching tilrd and tilr are installed into ~/.local/bin without network access or build tools
 - **AND** tilr service install starts the ordinary service and a persistent marker records that the application installed it
 - **AND** a durable pair-installation journal recovers interruptions before or between executable publication and ownership marker creation
-- **AND** application and server version/build/channel tracks remain independent
+- **AND** application and daemon versions remain independent; daemon updates use the Receive RC versions preference to select stable or beta
+
+#### Scenario: Validate daemon identity
+- **WHEN** an installed daemon candidate is discovered
+- **THEN** its executable identity starts with tilrd <version> ( and other identities are rejected
 
 ### Requirement: Managed service ownership and configuration
 Tilr SHALL connect to the ordinary local tilrd on port 7890 using its default state directory and sh.tilr.tilrd launchd service, without maintaining a private daemon copy, private state directory or dev.tilr.server launchd job.
@@ -35,49 +39,31 @@ Tilr SHALL connect to the ordinary local tilrd on port 7890 using its default st
 - **THEN** no migration of the private service or its state is performed; reinstallation is required
 
 ### Requirement: Explicit server update controls
-Tilr SHALL distinguish Check for Updates for the app from Check for Server Updates and require explicit Update Server approval to install a discovered server update.
+Tilr SHALL show the installed tilrd version and an Update tilrd button in Local Server and SHALL update the selected ordinary daemon by running its own update command. The application SHALL NOT consume a server update feed or replace installed executables to update them.
 
 #### Scenario: Inspect and check
 - **WHEN** Local Server opens or Refresh is selected
-- **THEN** an authenticated check runs off the UI thread and shows the actual running version or Not running or unreachable, installed version/channel, available update, pending restart/removal and current launchd step
-- **AND** automatic checks default to launch and every 24 hours; channel, auto_check, interval, timeouts and limits come from default.yml
-- **AND** feed/network errors preserve the working server and credentials; feed non-200 is No server release is published for the channel/arch (manual notice, automatic log), while binary non-200 is Server update download failed with HTTP status
+- **THEN** an authenticated check runs off the UI thread and shows the installed and running tilrd versions or Not running or unreachable
+- **AND** Local Server offers Update tilrd for the selected installation and shows a prompt when its version is older than the bundle pin or its protocol is incompatible
 
-### Requirement: Authenticated and compatible replacement
-Tilr SHALL authenticate signed server feed metadata and downloaded bytes before replacing an installed binary, selecting only compatible newer builds at the ordinary daemon installation path.
+#### Scenario: Select the daemon update channel
+- **WHEN** Update tilrd is selected
+- **THEN** the selected installed tilrd runs update --channel stable when Receive RC versions is off, or update --channel beta when it is on
+- **AND** the preference is read when the action starts, including changes made during the application session
+- **AND** the command runs off the UI thread and application file operations do not replace the daemon
 
-#### Scenario: Install an update
-- **WHEN** a server update is chosen
-- **THEN** Ed25519 metadata signatures, component, architecture, channel, protocol, app-build range, size and SHA-256 are checked before executable use
-- **AND** replacement is atomic and explicitly requests session-preserving reload through tilrd reload, including for ordinary servers launched outside launchd, waiting for an authenticated expected-version response
-- **AND** tilrd checks reload-state compatibility; the application does not invoke tilrd state-formats
-- **AND** the previous binary and receipt remain for manual recovery and a transaction journal reconciles interrupted replacement
+#### Scenario: Prompt for an older daemon
+- **WHEN** the installed version is older than the bundled server pin or its protocol is incompatible with the application
+- **THEN** Local Server shows the installed version and asks the user to update with the same Update tilrd button
+- **AND** a protocol error from a daemon just started by the application is reported as an update prompt instead of a readiness timeout
+- **AND** a compatible newer daemon remains usable without an update prompt
 
-#### Scenario: Reload request fails after installation
-- **WHEN** replacement succeeded but reload fails
-- **THEN** the new binary and receipt remain installed, the previous artifacts remain available, and the transaction remains pending until reload or ordinary service start succeeds
-- **AND** a running supervisor and its sessions are not stopped or rolled back, and the UI reports failure to become ready
-
-#### Scenario: Resume an interrupted replacement
-- **WHEN** the app resumes after the binary rename but before a successful reload request
-- **THEN** it reconciles the receipt and requests reload of a live daemon before waiting for authenticated expected-version readiness
-- **AND** it retains the transaction until reload or ordinary service start succeeds
-
-#### Scenario: Install with no running supervisor
-- **WHEN** replacement has no running supervisor
-- **THEN** the ordinary service is started and authenticated readiness is awaited without requesting reload of an absent supervisor
-
-#### Scenario: Supervisor refuses reload
-- **WHEN** the running daemon continues to report the previous version after reload until the readiness deadline
-- **THEN** the previous and expected versions are reported as not ready without stopping sessions
-
-#### Scenario: Supervisor accepts reload
-- **WHEN** the running daemon reports the expected new version after reload
-- **THEN** the update completes without stopping the supervisor or its terminals
-
-#### Scenario: Validate daemon identity
-- **WHEN** an installation candidate or server feed is validated
-- **THEN** the executable identity starts with tilrd <version> ( and the feed component is tilrd; other identities are rejected
+#### Scenario: Update fails or selects an older channel release
+- **WHEN** the update command fails, including when the CDN or beta pointer is unavailable
+- **THEN** the application preserves the existing daemon and credentials, reports the command error and leaves Update tilrd available for retry
+- **WHEN** the command succeeds, including selecting an older RC from beta after a stable promotion
+- **THEN** the application rechecks the actual installed and running versions and protocol before reporting readiness
+- **AND** an installed version still older than the bundle pin keeps the update prompt instead of claiming the daemon is current
 
 ### Requirement: Removal preserves user state
 Tilr SHALL preserve ordinary daemon user state, sessions, token and logs when local-server support is disabled or removal is requested, and SHALL use the application installation marker to distinguish an application-installed daemon from a pre-existing installation. A matching marker SHALL authorize daemon removal; an unmarked installation SHALL require explicit user consent.
@@ -114,10 +100,9 @@ Tilr SHALL provide ordinary local-server credentials obtained through tilr token
 The application distribution SHALL support server protocol 1 using the protocol metadata of its completed bundled server in signed Info.plist, and SHALL reject servers with other protocol versions.
 
 #### Scenario: Install and update a protocol one server
-- **WHEN** the app bundles a completed protocol 1 server and reads a signed feed containing newer servers of protocols 1 and 2
-- **THEN** the bundled server installs and only the compatible protocol 1 release is selected
-- **AND** protocol 2 candidates are skipped without replacing the working server
-- **AND** a signed feed with invalid protocol 0 metadata is rejected
+- **WHEN** the app bundles a completed protocol 1 server
+- **THEN** the bundled server installs without reading a server update feed
+- **AND** an installed server of another protocol is rejected for application connections and Local Server offers Update tilrd
 
 #### Scenario: Validate packaged protocol metadata
 - **WHEN** a protocol 1 app release is validated for publication
