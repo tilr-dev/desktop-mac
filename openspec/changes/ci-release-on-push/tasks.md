@@ -8,4 +8,4 @@
 
 ## 3. Validation
 - [x] Exercise workflow wiring and publication with deterministic integration fixtures.
-- [ ] Review the final diff and complete repository checks.
+- [x] Review the final diff and complete repository checks.
