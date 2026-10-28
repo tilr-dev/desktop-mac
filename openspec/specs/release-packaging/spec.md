@@ -19,16 +19,16 @@ The release workflow SHALL separate credential setup, building, local verificati
 
 #### Scenario: CI release
 - **WHEN** the Release workflow runs
-- **THEN** it acquires the pinned upstream server without compilation or signing and builds both DMGs, and its publish job publishes those same files as an RC to beta after a release/X.Y push or to stable from the stable tag created by merging the release PR, without rebuilding them in the publish job
+- **THEN** it acquires the pinned upstream server without compilation or signing and builds both DMGs, and its publish job publishes those same files as an RC to beta after a release/X.Y push or to stable from the stable tag vX.Y.Z pushed by Dan using bin/release, without rebuilding them in the publish job
 
 #### Scenario: Saved stable upload selection
 - **WHEN** upload.command selects a completed pair whose saved publication channel is stable
-- **THEN** it refuses before CDN uploads or feed changes and explains that stable requires the CI release from a merged release PR tag
+- **THEN** it refuses before CDN uploads or feed changes and explains that stable requires the CI release from a pushed stable vX.Y.Z tag
 - **AND** neither CLI flags nor environment variables bypass this restriction
 
 #### Scenario: Build-only publication guidance
 - **WHEN** release.command completes a stable build without publication
-- **THEN** it reports the completed artifacts and explains that stable requires the CI release from a merged release PR tag, without suggesting a direct upload command
+- **THEN** it reports the completed artifacts and explains that stable requires the CI release from a pushed stable vX.Y.Z tag, without suggesting a direct upload command
 - **AND** a completed beta build still prints the upload command for the unchanged tested pair
 
 ### Requirement: Persistent release numbering
@@ -50,7 +50,7 @@ The release coordinator SHALL reserve monotonically increasing local builds unde
 
 #### Scenario: CI release numbers
 - **WHEN** the Release workflow runs on a runner without local history
-- **THEN** it takes the numeric version from the shared release-please workflow, resolves build as the highest build in both architecture appcasts across stable and beta plus one, and passes these explicitly to packaging and publication; local reservations are unchanged
+- **THEN** it takes the numeric version from the selected tag provided by the shared release workflow, stripping v and any RC suffix, resolves build as the highest build in both architecture appcasts across stable and beta plus one, and passes these explicitly to packaging and publication; local reservations are unchanged
 
 ### Requirement: Architecture-specific signed artifacts
 Public app releases SHALL contain two DMGs, arm64 and x86_64, sharing marketing version/build, with no universal packaging option.
