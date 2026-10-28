@@ -295,6 +295,28 @@ import Darwin
             expect(error.localizedDescription.contains("incompatible protocol"))
             expect(error.localizedDescription.localizedCaseInsensitiveContains("update tilrd"))
         }
+        // A reload can reset the handshake before the new daemon answers. Fake time
+        // advances only on the controlled retry, with no real startup delay.
+        var handoff = running
+        let handoffRunner = running.runner!
+        var probes = 0
+        handoff.runner = { url, args in
+            if args.last == "version" {
+                probes += 1
+                if probes == 1 { return .init(status: 1, text: "local.sock does not answer as tilrd does: Connection reset by peer") }
+            }
+            return try handoffRunner(url, args)
+        }
+        var handoffTime = Date(timeIntervalSince1970: 0)
+        let afterHandoff = try handoff.waitReady(version: "2.0.0-new", startupTimeout: 2, retryInterval: 1,
+                                               now: { handoffTime }, wait: { handoffTime.addTimeInterval($0) })
+        expect(probes == 2 && afterHandoff["token"] == "shared-token")
+        // Peer refusal is a security failure, never a transient startup condition.
+        handoff.runner = { _, _ in .init(status: 1, text: "socket peer belongs to a different user") }
+        rejects {
+            _ = try handoff.waitReady(version: nil, startupTimeout: 2, retryInterval: 1,
+                                     wait: { _ in fatalError("Peer failures must not wait") })
+        }
         // Existing tilr alone is not silently overwritten.
         let clientOnly = try fixture("client-only")
         try executable(clientOnly.root.appendingPathComponent("tilr"), "exit 0\n")

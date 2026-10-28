@@ -27,6 +27,11 @@ struct ServerInstallation {
         var errorDescription: String? { message }
         init(_ message: String) { self.message = message }
     }
+    struct ConnectionFailure: LocalizedError {
+        let message: String
+        let transient: Bool
+        var errorDescription: String? { message }
+    }
     struct Output {
         let status: Int32
         let text: String
@@ -134,10 +139,15 @@ struct ServerInstallation {
         progress?("Waiting for the local server on port \(port)…")
         let deadline = now().addingTimeInterval(startupTimeout)
         var observedVersion: String?
+        var connectionError: String?
         repeat {
-            if let current = try runningVersion() {
-                observedVersion = current
-                if version == nil || current == version { return try credentials() }
+            do {
+                if let current = try runningVersion() {
+                    observedVersion = current
+                    if version == nil || current == version { return try credentials() }
+                }
+            } catch let error as ConnectionFailure where error.transient {
+                connectionError = error.localizedDescription
             }
             wait(retryInterval)
         } while now() < deadline
@@ -147,7 +157,7 @@ struct ServerInstallation {
         } else {
             mismatch = ""
         }
-        throw Failure("The local server did not become ready.\(mismatch) See ~/Library/Logs/tilrd.log. Existing processes were not stopped.")
+        throw Failure("The local server did not become ready.\(mismatch)\(connectionError.map { " " + $0 } ?? "") See ~/Library/Logs/tilrd.log. Existing processes were not stopped.")
     }
 
     func hash(_ url: URL) throws -> String {
@@ -159,8 +169,15 @@ struct ServerInstallation {
     func runningVersion() throws -> String? {
         let response = try command(client, ["--socket", socketPath, "version"])
         guard response.status == 0 else {
-            let hint = response.text.lowercased().contains("protocol") ? " Update tilrd in Local Server." : ""
-            throw Failure("Cannot connect to the ordinary tilrd: \(response.text)\(hint)")
+            let text = response.text.lowercased()
+            let protocolFailure = text.contains("protocol")
+            let hint = protocolFailure ? " Update tilrd in Local Server." : ""
+            // The CLI has no machine-readable error kind. Retry only its known
+            // transport diagnostics; protocol, peer and other refusals stay fatal.
+            let transient = !protocolFailure && ["does not answer as tilrd does:", "did not answer",
+                "the server closed the connection", "send to the server", "read from the server"]
+                .contains { text.contains($0) }
+            throw ConnectionFailure(message: "Cannot connect to the ordinary tilrd: \(response.text)\(hint)", transient: transient)
         }
         for line in response.text.split(separator: "\n") {
             if line.hasPrefix("tilrd "), !line.hasPrefix("tilrd is not running at "), let end = line.range(of: " at ") {
