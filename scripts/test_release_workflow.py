@@ -1,7 +1,7 @@
-"""Contract of .github/workflows/release.yml: only from a release branch, each key only in the job that uses it."""
+"""Contract of .github/workflows/release.yml: release branches and stable tags, each key only in the job that uses it."""
 from pathlib import Path
 import re
-import json
+import itertools
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/release.yml"
@@ -32,11 +32,12 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.text = WORKFLOW.read_text()
         self.jobs = jobs(self.text)
 
-    def test_only_pushes_to_release_branches_start_release(self):
+    def test_only_release_branch_and_stable_tag_pushes_start_release(self):
         self.assertEqual(list(self.jobs), ["release", "app", "publish"])
         triggers = self.text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", triggers, flags=re.M), ["push"])
         self.assertIn("branches: ['release/**']", triggers)
+        self.assertIn("tags: ['v*', '!v*-rc.*']", triggers)
         self.assertNotIn('workflow_dispatch', self.text)
         self.assertNotIn('inputs.', self.text)
         self.assertIn('group: release\n  cancel-in-progress: false', self.text)
@@ -53,22 +54,25 @@ class ReleaseWorkflowContract(unittest.TestCase):
         for secret in APPLE + PUBLISHING:
             self.assertNotIn(secret, release)
         root = WORKFLOW.parents[2]
-        config = json.loads((root / 'release-please-config.json').read_text())
-        manifest = json.loads((root / '.release-please-manifest.json').read_text())
-        self.assertEqual(config['release-type'], 'simple')
-        self.assertFalse(config['include-component-in-tag'])
-        self.assertEqual(list(config['packages']), ['.'])
-        self.assertEqual(manifest['.'], (root / 'version.txt').read_text().strip())
+        self.assertEqual(pin, 'c31b80fcfd5cb9398a193d422c212326302d0c44')
+        self.assertNotIn('package-path:', release)
+        self.assertNotIn('release_created', self.text)
+        for filename in ('release-please-config.json', '.release-please-manifest.json', 'version.txt'):
+            self.assertFalse((root / filename).exists())
 
     def test_shared_release_outputs_gate_channel_and_tag_checkout(self):
         app = self.jobs['app']
         condition = app.split('if: ', 1)[1].splitlines()[0]
-        self.assertEqual(condition, "needs.release.outputs.is_rc == 'true' || (needs.release.outputs.release_created == 'true' && needs.release.outputs.is_rc == 'false')")
-        # Evaluate the actual gate for candidate, stable merge and absent/partial outputs.
-        expression = condition.replace('needs.release.outputs.', '').replace('||', 'or').replace('&&', 'and')
-        for is_rc, release_created, expected in [('true', 'false', True), ('false', 'true', True),
-                                                ('false', 'false', False), ('', '', False), ('', 'true', False)]:
-            self.assertEqual(eval(expression, {}, dict(is_rc=is_rc, release_created=release_created)), expected)
+        # Evaluate the actual workflow gate, including missing/partial outputs.
+        expression = condition.replace('needs.release.outputs.', '').replace('github.ref_type', 'ref_type')
+        expression = expression.replace('||', 'or').replace('&&', 'and')
+        for tag, version, is_rc, ref_type in itertools.product(
+                ('', 'v0.3.0'), ('', '0.3.0'), ('', 'true', 'false'), ('branch', 'tag')):
+            with self.subTest(tag=tag, version=version, is_rc=is_rc, ref_type=ref_type):
+                expected = bool(tag and version and (is_rc == 'true' or
+                                (is_rc == 'false' and ref_type == 'tag')))
+                self.assertEqual(bool(eval(expression, {}, dict(tag=tag, version=version,
+                                                               is_rc=is_rc, ref_type=ref_type))), expected)
         self.assertIn('needs: [release, app]', self.jobs['publish'])
         for name in ('app', 'publish'):
             checkout = steps(self.jobs[name])[0]
