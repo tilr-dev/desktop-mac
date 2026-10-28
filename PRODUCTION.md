@@ -56,7 +56,21 @@ same explicit upload command; never rebuild published bytes under the same numbe
 
 `server-release.json` selects the signed upstream tilrd version, artifact revision
 (`build`) and protocol for the DMG. The revision identifies local completed artifacts;
-it is not a published server feed number. Update the pin to bundle a different release.
+it is not a published server feed number.
+
+After tilrd uploads a newly created stable release's signed GitHub assets, tilr-bot
+opens `chore: bump tilrd to X.Y.Z` into this repository's `main`. It refreshes the
+single `bot/bump-tilrd` branch from current main and updates an existing open PR
+instead of opening another. The pin uses that exact released version and the
+protocol constant from its released source; `build` is retained from main. RCs
+never update the pin. Normal PR CI runs `fetch_server.py` against that exact
+GitHub Release and verifies both architectures; review and merge follow the normal
+process, and the next Tilr release includes the new bootstrap server.
+
+The repository owner must grant the tilr-bot App installation access to desktop-mac
+with Contents and Pull requests read/write permissions. The tilrd release job uses
+its existing App credentials to mint a short-lived token scoped to this repository;
+it does not bypass checks or merge the PR. A manual pin update remains available:
 
 ```sh
 python3 scripts/release_server.py --version 0.2.1 --build 4 --protocol-version 1
