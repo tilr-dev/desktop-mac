@@ -286,7 +286,7 @@ releases sign them with the app's identity and include them in notarization.
 The vendor release set is every `manifests/*.json` in this repository. Add the
 manifest and its SwiftPM dynamic product to include a new vendor plugin in future
 app releases automatically (also with `release.py --native-plugins DIR`).
-`release.command` builds plugins for both architectures; `upload.command` publishes
+The CI build job packages plugins for both architectures; the publication job uploads
 those completed DMGs without rebuilding. `release.json` records plugin IDs,
 versions, ABIs and binary checksums. Publishing checks the inventory against the
 bundled packages and refuses architecture pairs with different versions/ABIs.

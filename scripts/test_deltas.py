@@ -12,6 +12,7 @@ from test_publish import feed
 
 class DeltaTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.dict(publish.os.environ, {"TILR_SPARKLE_KEY_FILE": "/fixture/sparkle.key"}))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

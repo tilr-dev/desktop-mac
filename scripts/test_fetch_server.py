@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 import bundle_server
 import fetch_server
-import release_server
 
 
 class UpstreamServerTests(unittest.TestCase):
@@ -153,11 +152,8 @@ class UpstreamServerTests(unittest.TestCase):
                 self.assertFalse(app.exists())
 
     def test_local_acquisition_needs_no_release_credentials_and_bundles_exact_bytes(self):
-        with self.patches(), patch.object(release_server, 'ROOT', self.root), \
-             patch.dict('os.environ', {}, clear=True), \
-             patch('sys.argv', ['release_server.py', '--version', '0.2.0', '--build', '4',
-                                '--protocol-version', '1']):
-            release_server.main()
+        with self.patches(), patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(self.main(), 0)
             for arch in fetch_server.TARGETS:
                 bundle_server.bundle_server(self.root / f'{arch}.app', arch, 17, root=self.root)
                 self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilrd').read_bytes(), self.binaries[arch])

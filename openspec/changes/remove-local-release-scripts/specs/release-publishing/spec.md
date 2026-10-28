@@ -1,0 +1,107 @@
+## MODIFIED Requirements
+
+### Requirement: Credential preflight and secret handling
+Release tools SHALL use existing authorized CI credentials without printing secrets, storing them in Git, creating replacement certificates to bypass restrictions or changing blanket key permissions.
+
+#### Scenario: Check release access
+- **WHEN** release_all.py --check runs in the CI build job
+- **THEN** it verifies required build tools, the configured identity/private key, notarization profile, temporary real signing and disk-image creation without creating a release or requiring the Sparkle private key
+- **AND** the CI publisher uses scoped Sparkle/R2 access without Apple signing private keys, notarization login, compilation or image creation
+- **AND** release configuration comes from the runner environment; no local setup command or local credentials configuration file is required
+- **AND** all app architectures share the Sparkle public key, separate from Developer ID credentials; CDN access uses R2 S3 keys through the AWS CLI
+- **AND** unattended runners must already possess scoped access without interactive prompts or permission bypasses
+
+#### Scenario: Sparkle key on an unattended runner
+- **WHEN** TILR_SPARKLE_KEY_FILE names a Sparkle private key file
+- **THEN** Sparkle signing and verification use that file instead of the Keychain account
+- **AND** its public key, derived from the file, must equal the configured public key before publication
+
+### Requirement: Immutable publication with feed last
+Publication SHALL run only through the CI release coordinator; stable SHALL require the stable tag created by merging the release PR, with no emergency flag or environment override. App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
+
+#### Scenario: Publish a pair
+- **WHEN** ci_release.py publish runs
+- **THEN** version/build/channel/key, hashes, signatures, stapling and feed metadata are checked; both appcasts are prepared/validated before either feed is changed
+- **AND** the public host is https://cdn.tilr.dev; stable feeds are https://cdn.tilr.dev/mac/<arch>/appcast.xml and beta feeds https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml, where <arch> is arm64 or x86_64; each app reads only its compiled architecture’s feed, selecting stable by default or beta when Receive RC versions is enabled; a leftover TILR_UPDATE_FEED cannot override application selection or coordinator routing
+- **AND** only HTTP 404 means an absent previous feed; other failures stop publication, and compatible feed history is retained
+- **AND** immutable DMGs and checksum files are uploaded and fetched from the canonical CDN to verify bytes before appcast.xml is published last with Cache-Control: no-cache, max-age=0, must-revalidate; existence checks use a unique query key and canonical cached-404 retries last at most 200 seconds, while checksum mismatches fail immediately
+- **AND** the published feed is downloaded back and compared byte-for-byte with the prepared feed; a mismatch fails publication, published.json records successful publication, and appcast.xml is saved beside the local release for inspection
+- **AND** normal releases preserve bundle ID, feed URLs and signing keys; key rotation is a separate migration, and correcting/reverting a bad public release requires a higher build
+- **AND** a CDN rule overriding origin cache headers must exclude mac/**/appcast.xml before distribution; signed DMGs/bundles are never edited after appcast generation, and changed contents require rebuilding/signing/notarization
+- **AND** --notes may embed release notes; a changed archive at an existing URL or an attempted downgrade/newer-feed overwrite is rejected
+- **AND** failed builds publish neither architecture; serial feed writes are not atomic, require one release runner and are serialized by workflow concurrency
+
+#### Scenario: Reject direct stable publication
+- **WHEN** packaging is invoked outside the CI publication job
+- **THEN** it exposes no combined publication or publication-only mode, saved upload selection or local publication wrapper
+- **AND** stable publication remains gated by the shared workflow reporting creation of the stable release
+
+### Requirement: Verified resume and downloads evidence
+Publication SHALL resume idempotently only from completed artifacts matching the requested metadata and publicly verified bytes.
+
+#### Scenario: Partial publication
+- **WHEN** the CI publisher retries a partial beta publication
+- **THEN** matching completed artifacts and their hashes are reused without rebuilding/signing/notarizing; already-published builds require matching feed signatures/metadata and an exact downloaded DMG
+- **AND** completion is reported only after both feeds verify and build/releases/<version>-<build>-<channel>-downloads.json contains both immutable URLs
+- **AND** website code/deployment is unchanged; download buttons use verified URLs for both architectures with an About This Mac hint, never proposed URLs presented as live
+
+### Requirement: Independent signed server publication
+Desktop release tools SHALL NOT publish an app-managed server feed or server update binaries. Server acquisition SHALL remain independent of Sparkle app publication.
+
+#### Scenario: Publish a completed server
+- **WHEN** the desktop release publishes application artifacts
+- **THEN** only application downloads and Sparkle appcasts are published
+- **AND** no server/macos feed or server binary is uploaded by desktop release tools
+- **AND** the upstream tilrd release opens the automatic application pin PR; desktop release tools expose no manual server release command
+
+#### Scenario: Generate critical update items
+- **WHEN** new appcast items are generated
+- **THEN** generate_appcast receives --critical-update-version with an empty value, marking updates critical for every installed version
+- **AND** resume leaves previously published feeds unchanged; dismissing the prompt does not mark the version skipped, and installation still requires consent
+
+### Requirement: Release from CI
+The Release workflow SHALL run automatically on pushes to release/**, use the pinned shared release-please and RC workflow, and build, sign, notarize and publish both app architectures as release candidates to beta or stable releases from stable tags on GitHub-hosted macOS. Each key SHALL remain only in the job that uses it. Merging the release PR SHALL be the only release approval.
+
+#### Scenario: Run a CI release
+- **WHEN** a commit is pushed to release/X.Y and the shared workflow reports is_rc=true
+- **THEN** release-please opens or updates the release PR and the shared workflow provides numeric version X.Y.Z and a fresh tag vX.Y.Z-rc.N, where N increases for successive candidates
+- **AND** the app job acquires the pinned tilrd GitHub Release for both architectures, verifies archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
+- **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
+- **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one
+- **AND** that build is logged and passed explicitly to both architecture builds and publication, without local release history or reservations
+- **AND** the publish job publishes those artifacts to beta through the CI publish command without rebuilding or environment approval, holding the Sparkle and R2 keys but no Apple keys
+- **AND** after successful CDN publication it attaches both unchanged DMGs to the shared GitHub prerelease and names it Tilr X.Y.Z-rc.N (<build>), using its existing body as Sparkle notes
+- **AND** the shared workflow uses the release GitHub App token for release PRs and tags; only the publish job has contents: write on GITHUB_TOKEN, while the app job has only contents: read
+
+#### Scenario: Run from a branch other than a release branch
+- **WHEN** a commit is pushed to main or any branch outside release/**, or a tag is pushed
+- **THEN** the Release workflow does not start and there is no workflow_dispatch entry point
+- **AND** the apple-signing and release environments accept only release/* branches, without required reviewers
+
+#### Scenario: Merge the release PR
+- **WHEN** the release-please PR is merged into release/X.Y
+- **THEN** the shared workflow creates the stable tag vX.Y.Z without an environment approval
+- **AND** release_created=true and is_rc=false select stable in the same workflow; both app and publish jobs check out that exact tag and verify its commit rather than building the event commit
+- **AND** both architectures are built, signed and notarized anew with a build greater than every published stable and beta build; the publish job uses those completed artifacts for stable appcasts
+- **AND** after CDN publication both manifest-selected DMGs are attached to the regular GitHub Release titled Tilr X.Y.Z (<build>), preserving the release-please body and tag
+- **AND** no stable publication runs without the shared workflow reporting creation of the stable release
+
+#### Scenario: Resolve a build from channel appcasts
+- **WHEN** the four stable/beta architecture appcasts contain different builds or multiple historical releases
+- **THEN** numbering uses the highest build across every entry in all four appcasts
+- **AND** a missing appcast contributes no builds, but network, HTTP errors other than missing feeds, malformed XML or invalid build values stop the run rather than guessing a number
+
+#### Scenario: Protect an existing version tag
+- **WHEN** artifacts are attached to the candidate prerelease
+- **THEN** publication verifies that the existing candidate tag points to the checked-out commit and that the release is a prerelease before any CDN publication
+- **AND** it never creates, moves or deletes that tag, replaces existing assets, or attaches candidate artifacts to a stable release
+
+#### Scenario: Keep the marketing version numeric
+- **WHEN** an RC is built with version X.Y.Z and RC number N
+- **THEN** CFBundleShortVersionString and both DMG names use X.Y.Z without an RC suffix
+- **AND** the RC suffix appears only in the Git tag and GitHub pre-release metadata
+
+#### Scenario: Serialize candidate runs
+- **WHEN** another release push arrives while an RC or stable build is active
+- **THEN** the active run is not cancelled and the latest push replaces any pending run
+- **AND** multiple pushes arriving faster than a release build are not supported

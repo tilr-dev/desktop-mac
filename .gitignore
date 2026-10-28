@@ -1,7 +1,6 @@
 .build/
 build/
 __pycache__/
-release.local.json
 archives/
 # scripts/build-gitpm.sh
 Vendor/

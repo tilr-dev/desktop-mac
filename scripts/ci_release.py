@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI-only app numbering and GitHub publication; local numbering stays local."""
+"""CI app numbering and publication of completed release artifacts."""
 import argparse
 import json
 import os

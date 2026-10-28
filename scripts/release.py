@@ -91,34 +91,22 @@ def main():
     parser.add_argument("--build", required=True, type=int)
     parser.add_argument("--arch", choices=["arm64", "x86_64"], default="arm64")
     parser.add_argument("--preview", action="store_true", help="Ad-hoc local preview, NOT a public release")
-    parser.add_argument("--publish", action="store_true", help="Publish the notarized DMG and Sparkle feed to Tilr CDN")
-    parser.add_argument("--notes", type=Path, help="Plain-text release notes to embed in the feed")
     parser.add_argument("--skip-build", action="store_true", help="Package an already-built matching binary")
     parser.add_argument("--build-package", type=Path, default=ROOT, help="Swift package directory (default: this repo)")
     parser.add_argument("--framework", type=Path, help="Override the Sparkle.framework artifact path")
     parser.add_argument("--native-plugins", type=Path, help="Prebuilt signed bootstrap packages; default: build from native-plugins")
     parser.add_argument("--swift-disable-sandbox", action="store_true", help="For SwiftPM inside an existing sandbox")
     args = parser.parse_args()
-    if args.preview and args.publish:
-        parser.error("A preview cannot be published")
     if not re.fullmatch(r"\d+(\.\d+){0,2}", args.version) or args.build < 1:
         parser.error("version must be numeric (e.g. 0.1.0); build must be positive")
-    settings_path = ROOT / "release.local.json"
-    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
     def setting(name):
-        return os.environ.get(name, settings.get(name, ""))
+        return os.environ.get(name, "")
     identity = "-" if args.preview else setting("TILR_SIGN_IDENTITY")
     profile = setting("TILR_NOTARY_PROFILE")
     feed = setting("TILR_UPDATE_FEED")
     key = setting("TILR_UPDATE_PUBLIC_KEY")
     if args.preview:
         feed, key = "", ""
-    if args.publish:
-        from publish import CDN
-        if feed not in (f"{CDN}/mac/{args.arch}/appcast.xml", f"{CDN}/mac/beta/{args.arch}/appcast.xml"):
-            parser.error("Saved feed must match --arch and the Tilr stable/beta CDN location")
-        if not shutil.which("aws"):
-            parser.error("Publishing requires the AWS CLI with R2 credentials; install it with brew install awscli")
     if not args.preview and (not identity.startswith("Developer ID Application:") or not profile or not feed or not key):
         parser.error("Public release requires TILR_SIGN_IDENTITY (Developer ID Application), TILR_NOTARY_PROFILE, TILR_UPDATE_FEED, TILR_UPDATE_PUBLIC_KEY. See RELEASE.md.")
     if feed or key:
@@ -220,12 +208,6 @@ def main():
             "feed": feed, "public_key": key,
         }, indent=2) + "\n")
     success(f"\n{'LOCAL PREVIEW — not notarized' if args.preview else 'SIGNED AND NOTARIZED'}: {dmg}")
-    if args.publish:
-        import sys
-        command = [sys.executable, ROOT / "scripts/publish.py", output, "--publish"]
-        if args.notes:
-            command += ["--notes", args.notes.resolve()]
-        run(*command)
 
 
 if __name__ == "__main__":

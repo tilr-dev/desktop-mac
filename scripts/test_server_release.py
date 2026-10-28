@@ -9,7 +9,6 @@ import unittest
 from unittest.mock import patch
 
 import bundle_server
-import release_server
 
 
 class IndependentServerReleaseTests(unittest.TestCase):
@@ -95,18 +94,6 @@ class IndependentServerReleaseTests(unittest.TestCase):
             (root / "tilrd").write_bytes(b"modified")
             with self.assertRaises(ValueError):
                 bundle_server.validate_payload(root, "arm64", 2, 6)
-
-    def test_feed_options_are_rejected_before_acquisition(self):
-        for flag, value in (("--publish", None), ("--publish-only", None),
-                            ("--channel", "beta"), ("--min-app-build", "2"), ("--max-app-build", "9")):
-            command = [sys.executable, str(Path(release_server.__file__)), "--version", "0.1.0",
-                       "--build", "1", "--protocol-version", "2", flag]
-            if value:
-                command.append(value)
-            result = subprocess.run(command, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertIn("unrecognized arguments", result.stderr)
-
 
 
 if __name__ == "__main__":
