@@ -90,10 +90,10 @@ Signing SHALL retry timestamp-service failures on the same file according to rel
 - **THEN** codesign_attempts and codesign_retry_delay_seconds default to three attempts and five seconds, including Sparkle, server and preflight signing
 - **AND** certificate/Keychain failures are not retried and exhaustion leaves incomplete artifacts for diagnosis/resume rather than weakening signing
 
-### Requirement: Independently built server artifacts
+### Requirement: Verified upstream server artifacts
 release_server.py SHALL acquire signed and notarized macOS tilrd and tilr from the same pinned upstream GitHub Release independently from application releases, writing completion receipts only after verification of both executables.
 
-#### Scenario: Build a server
+#### Scenario: Acquire and verify pinned server artifacts
 - **WHEN** the pinned version is requested
 - **THEN** both architectures are acquired by default and --arch selects one
 - **AND** tilr-v<version>-<target>.tar.gz from tilr-dev/tilrd has its published SHA-256 verified before extracting either executable
@@ -105,29 +105,24 @@ release_server.py SHALL acquire signed and notarized macOS tilrd and tilr from t
 - **AND** TILR_SERVER_RELEASE_ROOT may supply completed artifacts, which are verified before use
 - **AND** application packaging copies both executables and exact server manifest without compiling, stripping or re-signing either executable
 
-### Requirement: One-command independent server release
+### Requirement: One-command upstream server acquisition
 The desktop repository SHALL provide a command to acquire and verify an upstream server release, inspect its artifacts and print the application pin. It SHALL retain upstream signatures and SHALL NOT publish an app-managed server feed. Failures SHALL stop later steps.
 
-#### Scenario: Release tagged sources
+#### Scenario: Acquire and verify an exact upstream release
 - **WHEN** the command receives a release version and protocol version
 - **THEN** it acquires and verifies both signed macOS architectures from that exact upstream GitHub Release without selecting or building source checkouts
 
-#### Scenario: Select sources for a lower-level build
-- **WHEN** the operator supplies the former --source PATH option to release_server.py
-- **THEN** argument validation rejects it without building, signing or publishing anything
-- **AND** --version selects the upstream GitHub Release instead
-
-#### Scenario: Default sources for a lower-level build
+#### Scenario: Acquire artifacts without a local checkout
 - **WHEN** the operator runs release_server.py without a source option
 - **THEN** it acquires the exact --version from the upstream GitHub Release using the supplied --protocol-version
 - **AND** no local source checkout is read or built
 
-#### Scenario: Inspect before publishing
+#### Scenario: Inspect verified release artifacts
 - **WHEN** the verified artifacts are ready
 - **THEN** the command displays release.json and the upstream server version
 - **AND** no publication step or confirmation prompt follows inspection
 
-#### Scenario: Confirm publication
+#### Scenario: Print the application pin
 - **WHEN** acquisition and verification of both architectures completes
 - **THEN** the command prints the upstream version and protocolVersion as a JSON app pin
 - **AND** the former publication confirmation is absent and no server feed or binary is uploaded
