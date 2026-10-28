@@ -139,6 +139,19 @@ class UpstreamServerTests(unittest.TestCase):
         self.assertFalse(any('--sign' in c or c[0] in ('cargo', 'xcrun', 'strip') for c in self.commands))
         self.assertEqual(self.main(), 0)  # Reuse validates, never overwrites.
 
+    def test_bundle_rejects_preview_receipts_before_copying(self):
+        self.main()
+        path = self.root / 'build/server-releases/0.2.0-4-arm64/release.json'
+        receipt = json.loads(path.read_text())
+        app = self.root / 'preview.app'
+        for preview in (True, None, 0):
+            with self.subTest(preview=preview):
+                receipt['preview'] = preview
+                path.write_text(json.dumps(receipt))
+                with self.patches(), self.assertRaisesRegex(ValueError, 'not a completed upstream release'):
+                    bundle_server.bundle_server(app, 'arm64', 17, root=self.root)
+                self.assertFalse(app.exists())
+
     def test_local_acquisition_needs_no_release_credentials_and_bundles_exact_bytes(self):
         with self.patches(), patch.object(release_server, 'ROOT', self.root), \
              patch.dict('os.environ', {}, clear=True), \
