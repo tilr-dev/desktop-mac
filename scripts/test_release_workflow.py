@@ -39,7 +39,7 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertIn("branches: ['release/**']", triggers)
         self.assertNotIn('workflow_dispatch', self.text)
         self.assertNotIn('inputs.', self.text)
-        self.assertIn('group: release\n  cancel-in-progress: false', self.text)
+        self.assertIn('group: release\n  cancel-in-progress: false\n  queue: max', self.text)
 
     def test_shared_workflow_is_pinned_and_has_only_its_app_secret(self):
         release = self.jobs['release']
