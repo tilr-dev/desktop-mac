@@ -99,7 +99,7 @@ def completed(directory, version, build, arch, feed, key):
 
 def require_beta_publication(channel, publishing):
     if publishing and channel != "beta":
-        raise ValueError("Stable publication requires promotion of a verified CI RC; direct stable publication is disabled")
+        raise ValueError("Stable publication requires the CI release from a merged release PR tag; direct stable publication is disabled")
 
 
 def execute(version, build, channel, config, publish=False, resume=False, notes=None, root=ROOT, runner=run, publish_only=False):
@@ -126,16 +126,20 @@ def execute(version, build, channel, config, publish=False, resume=False, notes=
     if inventories[0] != inventories[1]:
         raise ValueError('Native plugin versions/ABIs differ between architecture releases')
     if publish:
-        # Prepare/validate both feeds before exposing either update.
-        for should_publish in (False, True):
-            for output in outputs:
-                command = [sys.executable, root / "scripts/publish.py", output]
-                if notes:
-                    command += ["--notes", str(notes)]
-                if should_publish:
-                    command += ["--publish"]
-                runner(command)
+        publish_pair(outputs, notes, root, runner)
     return outputs
+
+
+def publish_pair(outputs, notes=None, root=ROOT, runner=run):
+    """Prepare both feeds before exposing either update; callers validate the pair."""
+    for should_publish in (False, True):
+        for output in outputs:
+            command = [sys.executable, root / "scripts/publish.py", output]
+            if notes:
+                command += ["--notes", str(notes)]
+            if should_publish:
+                command += ["--publish"]
+            runner(command)
 
 
 def release_history(root):
@@ -300,7 +304,7 @@ def main():
                 print("Publish this completed pair after testing: ./upload.command")
                 print(f"Or explicitly: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel beta --publish-only")
             else:
-                print("Stable publication requires promotion of a verified CI RC; direct stable publication is disabled")
+                print("Stable publication requires the CI release from a merged release PR tag; direct stable publication is disabled")
 
 
 if __name__ == "__main__":

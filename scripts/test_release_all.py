@@ -24,7 +24,7 @@ class ReleaseAllTests(unittest.TestCase):
         for channel in ("stable", "STABLE", "", None):
             for options in (dict(publish=True), dict(publish_only=True), dict(publish=True, publish_only=True)):
                 with self.subTest(channel=channel, options=options), patch.object(release_all, "completed") as completed, \
-                     self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
+                     self.assertRaisesRegex(ValueError, "Stable publication requires the CI release from a merged release PR tag"):
                     release_all.execute("0.1.0", 1, channel, self.config, root=self.root,
                                         runner=lambda *a, **kw: self.fail("Must not run a build or publisher"), **options)
                 completed.assert_not_called()
@@ -56,7 +56,7 @@ class ReleaseAllTests(unittest.TestCase):
                      patch.object(release_all.sys, "argv", ["release_all.py", "--latest", "--publish-only"]), \
                      patch.object(release_all, "settings", side_effect=AssertionError("Reached credential preflight")) as settings, \
                      patch.object(release_all, "execute") as execute, \
-                     self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
+                     self.assertRaisesRegex(ValueError, "Stable publication requires the CI release from a merged release PR tag"):
                     release_all.main()
                 settings.assert_not_called()
                 execute.assert_not_called()
@@ -85,7 +85,7 @@ class ReleaseAllTests(unittest.TestCase):
                          patch.object(release_all, "settings") as settings, \
                          patch.object(release_all, "preflight") as preflight, \
                          patch.object(release_all, "execute") as execute, \
-                         self.assertRaisesRegex(ValueError, "Stable publication requires promotion of a verified CI RC"):
+                         self.assertRaisesRegex(ValueError, "Stable publication requires the CI release from a merged release PR tag"):
                         release_all.main()
                     for boundary in (settings, preflight, execute):
                         boundary.assert_not_called()
@@ -359,7 +359,7 @@ class AutomaticReleaseTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "build/release-auto.json").read_text()),
                          {"version": "0.3.0", "build": 2})
 
-        self.assertIn("Stable publication requires promotion of a verified CI RC", output.getvalue())
+        self.assertIn("Stable publication requires the CI release from a merged release PR tag", output.getvalue())
         self.assertNotIn("./upload.command", output.getvalue())
         self.assertNotIn("--publish-only", output.getvalue())
 
