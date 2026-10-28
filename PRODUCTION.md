@@ -136,7 +136,8 @@ cannot race. The latest push replaces a pending run; multiple pushes arriving
 faster than an RC build are not supported. Local release numbering
 and reservations are unchanged.
 
-The pinned server is tilrd **0.2.1, artifact revision 4, protocol 1**.
+The pinned tilrd version, artifact revision and protocol are defined in
+[`server-release.json`](server-release.json).
 
 1. `app`: `fetch_server.py` acquires both architectures from the exact pinned
    tilrd GitHub Release, verifies archive SHA-256, architecture, expected Developer ID
@@ -198,7 +199,8 @@ the shipped app. An existing SwiftPM `Tilr.dSYM` is also copied there. Keep thes
 files for diagnostics: an unstripped executable alone does not supply source-level
 debug information when the compiler did not generate it. Sparkle exports are not
 stripped. Server artifacts are never stripped or re-signed when bundled into an app.
-The current server pin is **0.2.1 build 4, protocol 1**, independently of app numbers.
+The current server pin is defined in [`server-release.json`](server-release.json),
+independently of app numbers.
 
 Each app release writes `sizes.json` with logical file bytes (excluding duplicate
 symlink targets), DMG bytes and all Mach-O architectures. Server releases write their
