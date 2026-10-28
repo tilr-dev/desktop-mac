@@ -61,20 +61,19 @@ The app publisher SHALL generate at most maximum_deltas previous-source patches 
 - **THEN** source checksums and feed EdDSA signatures are verified before Sparkle generates useful patches; absent suitable history produces full-only publication
 - **AND** patches are kept in deltas, measured in delta-sizes.json, signed/verified, uploaded immutably and publicly downloaded/checksummed before feed changes, including resume verification
 - **AND** a missing public patch or changed existing URL stops publication; architecture/channel histories never mix and the full DMG remains for installation/fallback
-- **AND** server updates continue to download full binaries
 
 #### Scenario: Release runner without history
 - **WHEN** the CI release publishes on a runner without retained completed DMGs
 - **THEN** the publication is full-only
 
 ### Requirement: Independent signed server publication
-Server publication SHALL use Ed25519-signed JSON with explicit component/architecture/channel metadata, independently of Sparkle app publication. The current contract shares the existing app release Ed25519 key with server feeds, verified at runtime using CryptoKit and the public key embedded in the signed app bundle.
+Desktop release tools SHALL NOT publish an app-managed server feed or server update binaries. Server acquisition SHALL remain independent of Sparkle app publication.
 
 #### Scenario: Publish a completed server
-- **WHEN** release_server.py --publish-only runs
-- **THEN** server feeds use https://cdn.tilr.dev/server/macos/<arch>/<stable|beta>.json for arm64 or x86_64; receipts/checksums and public immutable binaries are verified before the signed server feed is published last, preserving previous compatible releases
-- **AND** a failed public check requires retrying identical publication rather than replacing a URL; architecture feed writes require one runner and are not atomic
-- **AND** sign_update signs bytes only; no application DMG or Sparkle feed is published, and app publication never implicitly publishes a server feed
+- **WHEN** the desktop release publishes application artifacts
+- **THEN** only application downloads and Sparkle appcasts are published
+- **AND** no server/macos feed or server binary is uploaded by desktop release tools
+- **AND** release_server.py rejects the former --publish and --publish-only options before acquisition or publication
 
 #### Scenario: Generate critical update items
 - **WHEN** new appcast items are generated

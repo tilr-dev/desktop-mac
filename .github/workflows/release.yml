@@ -1,7 +1,7 @@
 # Releases Tilr from CI by hand from a release/X.Y branch. The branch job refuses
 # other refs before keys are used. The app job verifies the pinned signed upstream
 # tilrd release, then compiles, signs and notarizes both app architectures.
-# The publish job publishes the tested server and app artifacts after approval.
+# The publish job publishes the tested app artifacts after approval.
 # No caches: dependency build scripts run on clean runners. Release runs are serialized.
 name: Release
 
@@ -17,9 +17,6 @@ on:
       rc:
         description: Positive RC number N for vX.Y.Z-rc.N (use a new number for each candidate)
         required: true
-      server_min_app_build:
-        description: Oldest app build the pinned server supports
-        default: '1'
       notes:
         description: Release notes for Sparkle and GitHub (plain text, optional)
         default: ''
@@ -36,7 +33,7 @@ defaults:
     shell: bash
 
 env:
-  # Public half of the release key: Sparkle and the server feed (release.local.json locally).
+  # Public half of the release key: application Sparkle updates (release.local.json locally).
   TILR_UPDATE_PUBLIC_KEY: pbumHO+mL+o+BzD0cBPPXxHyxkOJzyGtvUSfwr0IvMg=
   TILR_NOTARY_PROFILE: tilr-ci
 
@@ -115,18 +112,7 @@ jobs:
           done
 
       - name: Fetch the signed upstream server
-        env:
-          MIN_APP_BUILD: ${{ inputs.server_min_app_build }}
-        run: python3 scripts/fetch_server.py --public-key "$TILR_UPDATE_PUBLIC_KEY" --min-app-build "$MIN_APP_BUILD"
-
-      - name: Pack the server
-        run: tar -cf server.tar -C build server-releases
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: server
-          path: server.tar
-          if-no-files-found: error
+        run: python3 scripts/fetch_server.py --public-key "$TILR_UPDATE_PUBLIC_KEY"
 
       - name: Import the Developer ID and notarization key
         env:
@@ -187,18 +173,13 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: server
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
           name: app
 
       - name: Unpack the releases
         run: |
           mkdir -p build
-          tar -xf server.tar -C build
           tar -xf app.tar
-          rm server.tar app.tar
+          rm app.tar
 
       # A key file instead of a Keychain item: no access prompt on an unattended runner.
       - name: Write the Sparkle key
@@ -209,15 +190,6 @@ jobs:
           umask 077
           printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle.key"
           echo "TILR_SPARKLE_KEY_FILE=$RUNNER_TEMP/sparkle.key" >> "$GITHUB_ENV"
-
-      # Publish the imported server bytes to the independent application update feed.
-      - name: Publish the server
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        run: |
-          read -r version build < <(python3 -c 'import json; p = json.load(open("server-release.json")); print(p["version"], p["build"])')
-          python3 scripts/release_server.py --version "$version" --build "$build" --publish-only
 
       - name: Publish the app
         env:

@@ -18,25 +18,18 @@ class ServerReleaseCommandTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.args = argparse.Namespace(version="0.1.0", build=7, min_app_build=2,
-                                       protocol_version=1, channel="beta", preview=False)
+        self.args = argparse.Namespace(version="0.1.0", build=7, protocol_version=1, preview=False)
         scripts = self.root / "scripts"
         scripts.mkdir()
-        (scripts / "release_all.py").write_text('''import os,sys
-assert sys.argv[1:] == ["--check", "--publish-only"]
-with open(os.environ["EVENTS"], "a") as f: f.write("preflight\\n")
-if os.environ.get("FAIL_STEP") == "preflight": sys.exit(1)
-''')
         (scripts / "release_server.py").write_text('''import json,os,pathlib,sys
 args = sys.argv[1:]
 def value(flag): return args[args.index(flag)+1]
 assert value("--protocol-version") == "1"
-assert value("--min-app-build") == "2"
+assert args == ["--version", "0.1.0", "--build", "7", "--protocol-version", "1"]
 assert "--source" not in args
-step = "publish" if "--publish-only" in args else "acquire"
+step = "acquire"
 with open(os.environ["EVENTS"], "a") as f: f.write(step+"\\n")
 if os.environ.get("FAIL_STEP") == step: sys.exit(1)
-if step == "publish": sys.exit(0)
 for arch in ("arm64", "x86_64"):
     path = pathlib.Path(__file__).parents[1] / "build/server-releases" / f"0.1.0-7-{arch}"
     path.mkdir(parents=True, exist_ok=True)
@@ -46,27 +39,20 @@ for arch in ("arm64", "x86_64"):
         self.events = self.root / "events"
         self.env = dict(os.environ, EVENTS=str(self.events))
 
-    def execute(self, answer="publish", fail=None):
-        output = io.StringIO()
+    def execute(self, fail=None, invalid_arch=None, output=None):
+        output = output if output is not None else io.StringIO()
         if fail:
             self.env["FAIL_STEP"] = fail
-        def feed_fetch(url, path):
-            arch = "arm64" if "/arm64/" in url else "x86_64"
-            manifest = json.loads((self.root / f"build/server-releases/0.1.0-7-{arch}/release.json").read_text())["manifest"]
-            path.write_text(json.dumps(dict(schema=1, component="tilrd", arch=arch, channel="beta", releases=[dict(manifest=manifest)])))
-            with self.events.open("a") as file:
-                file.write("feed-" + arch + "\n")
-            return True
         def validate(directory, version, build, arch, protocol):
             self.assertEqual((version, build, protocol), ("0.1.0", 7, 1))
+            if arch == invalid_arch:
+                raise ValueError("Invalid upstream artifact")
             manifest = json.loads((directory / "release.json").read_text())["manifest"]
             self.assertEqual(manifest["arch"], arch)
             return manifest
         with patch.object(release, "release_environment", return_value=self.env) as environment, \
-             patch("builtins.input", side_effect=EOFError if answer is None else None, return_value=answer), \
-             patch.object(release, "fetch", side_effect=feed_fetch), \
+             patch("builtins.input", side_effect=AssertionError("Unexpected publication prompt")), \
              patch.object(release, "validate_completed", side_effect=validate) as validation, \
-             patch.object(release, "verify_envelope", side_effect=lambda data, _: json.loads(data)), \
              redirect_stdout(output):
             release.execute(self.args, self.root)
             if self.args.preview:
@@ -76,19 +62,11 @@ for arch in ("arm64", "x86_64"):
                 self.assertEqual(validation.call_count, 2)
         return output.getvalue()
 
-    def test_import_orders_validation_confirmation_feeds_and_pin(self):
+    def test_import_validates_both_artifacts_and_prints_pin_without_publication(self):
         output = self.execute()
-        self.assertEqual(self.events.read_text().splitlines(), ["preflight", "acquire", "publish", "feed-arm64", "feed-x86_64"])
+        self.assertEqual(self.events.read_text().splitlines(), ["acquire"])
         self.assertIn('server-release.json: {"version": "0.1.0", "build": 7, "protocolVersion": 1}', output)
-        self.assertIn('"serverVersion": "0.1.0-abc123"', output)
-
-    def test_refusal_and_eof_leave_imported_artifacts_unpublished(self):
-        for answer in ("yes", "", None):
-            with self.subTest(answer=answer):
-                self.events.write_text("")
-                self.execute(answer)
-                self.assertNotIn("publish", self.events.read_text())
-                self.assertTrue((self.root / "build/server-releases/0.1.0-7-arm64/release.json").exists())
+        self.assertEqual(output.count('"serverVersion": "0.1.0-abc123"'), 2)
 
     def test_preview_without_credentials_or_checkout(self):
         self.args.preview = True
@@ -100,18 +78,19 @@ for arch in ("arm64", "x86_64"):
         self.assertIn('"protocolVersion": 1', output)
         self.assertFalse(self.events.exists())
 
-    def test_failure_stops_later_steps(self):
-        for step in ("preflight", "acquire", "publish"):
-            with self.subTest(step=step):
-                self.events.write_text("")
-                with self.assertRaises(subprocess.CalledProcessError):
-                    self.execute(fail=step)
-                events = self.events.read_text().splitlines()
-                self.assertNotIn("feed-arm64", events)
-                if step == "preflight":
-                    self.assertNotIn("acquire", events)
+    def test_acquisition_failure_stops_before_validation(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.execute(fail="acquire")
+        self.assertEqual(self.events.read_text().splitlines(), ["acquire"])
 
-    def test_invalid_protocol_stops_before_preflight(self):
+    def test_invalid_artifact_does_not_print_successful_pin(self):
+        for arch in release.TARGETS:
+            output = io.StringIO()
+            with redirect_stdout(output), self.assertRaisesRegex(ValueError, "Invalid upstream"):
+                self.execute(invalid_arch=arch, output=output)
+            self.assertNotIn("server-release.json:", output.getvalue())
+
+    def test_invalid_protocol_stops_before_acquisition(self):
         for protocol in (0, -1, 4294967296):
             self.args.protocol_version = protocol
             with self.assertRaisesRegex(ValueError, "positive u32"):
@@ -121,16 +100,14 @@ for arch in ("arm64", "x86_64"):
     def test_homebrew_tools_come_first(self):
         self.assertTrue(release.release_environment()["PATH"].startswith("/opt/homebrew/bin:"))
 
-    def test_wrong_feed_fails(self):
-        directory = self.root / "artifact"
-        directory.mkdir()
-        def fetch(_, path):
-            path.write_text("{}")
-            return True
-        with patch.object(release, "fetch", side_effect=fetch), \
-             patch.object(release, "verify_envelope", return_value=dict(arch="arm64", releases=[])):
-            with self.assertRaisesRegex(ValueError, "does not contain"):
-                release.verify_feeds([("arm64", directory, {"build": 7})], "stable")
+    def test_obsolete_feed_options_are_rejected(self):
+        for option in (["--publish"], ["--publish-only"], ["--channel", "beta"],
+                       ["--min-app-build", "2"], ["--max-app-build", "9"]):
+            command = [sys.executable, str(Path(release.__file__)), "--version", "0.1.0",
+                       "--build", "7", "--protocol-version", "1", *option]
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("unrecognized arguments", result.stderr)
 
 
 if __name__ == "__main__":

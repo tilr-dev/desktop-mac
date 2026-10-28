@@ -95,21 +95,21 @@ release_server.py SHALL acquire signed and notarized macOS tilrd and tilr from t
 
 #### Scenario: Build a server
 - **WHEN** the pinned version is requested
-- **THEN** both architectures are acquired by default, --arch selects one, --channel beta selects the independent beta feed and --min-app-build/--max-app-build constrain compatibility
+- **THEN** both architectures are acquired by default and --arch selects one
 - **AND** tilr-v<version>-<target>.tar.gz from tilr-dev/tilrd has its published SHA-256 verified before extracting either executable
 - **AND** both binaries have their architecture, Developer ID signature, expected Apple team, secure timestamp and matching version verified before completion
 - **AND** a missing client, bad checksum, unsafe archive, unexpected architecture, signature or version stops acquisition without a completed receipt or source-build fallback
 - **AND** no Rust, Zig, protoc, source checkout or Apple signing/notarization credentials are required
 - **AND** fetch_server.py exits with code 1 on missing or invalid upstream assets
-- **AND** server-release.json pins the upstream version and protocol; completion metadata retains an independent feed build number
+- **AND** server-release.json pins the upstream version and protocol; completion metadata retains the pinned artifact revision for bundling without feed channels or configurable app-build ranges
 - **AND** TILR_SERVER_RELEASE_ROOT may supply completed artifacts, which are verified before use
 - **AND** application packaging copies both executables and exact server manifest without compiling, stripping or re-signing either executable
 
 ### Requirement: One-command independent server release
-The desktop repository SHALL provide a command to acquire an upstream server release and optionally publish its independent app-managed feed. It SHALL retain the upstream signatures and show artifacts before requiring explicit publication confirmation. Failures SHALL stop later steps.
+The desktop repository SHALL provide a command to acquire and verify an upstream server release, inspect its artifacts and print the application pin. It SHALL retain upstream signatures and SHALL NOT publish an app-managed server feed. Failures SHALL stop later steps.
 
 #### Scenario: Release tagged sources
-- **WHEN** the command receives a release version and feed compatibility metadata
+- **WHEN** the command receives a release version and protocol version
 - **THEN** it acquires and verifies both signed macOS architectures from that exact upstream GitHub Release without selecting or building source checkouts
 
 #### Scenario: Select sources for a lower-level build
@@ -125,21 +125,24 @@ The desktop repository SHALL provide a command to acquire an upstream server rel
 #### Scenario: Inspect before publishing
 - **WHEN** the verified artifacts are ready
 - **THEN** the command displays release.json and the upstream server version
-- **AND** no publication occurs unless the operator explicitly confirms
-- **AND** refusal or end of input leaves the artifacts available for inspection
+- **AND** no publication step or confirmation prompt follows inspection
 
 #### Scenario: Confirm publication
-- **WHEN** the operator confirms publication
-- **THEN** the command publishes the prepared artifacts and verifies both channel feeds
-- **AND** it prints the upstream version and protocolVersion as a JSON app pin
+- **WHEN** acquisition and verification of both architectures completes
+- **THEN** the command prints the upstream version and protocolVersion as a JSON app pin
+- **AND** the former publication confirmation is absent and no server feed or binary is uploaded
+
+#### Scenario: Reject obsolete feed options
+- **WHEN** either server release command receives publication, feed channel, app-build range options
+- **THEN** argument validation rejects them before acquisition or publication
 
 #### Scenario: Credential-free preview
 - **WHEN** the operator selects --preview
-- **THEN** the command shows the acquisition and publication plan and pin
+- **THEN** the command shows the acquisition plan and pin
 - **AND** it does not require credentials, download, build, sign, notarize, or publish
 
 #### Scenario: Invalid input or failed step
-- **WHEN** release input, acquisition, verification, or publication fails
+- **WHEN** release input, acquisition, or verification fails
 - **THEN** the command exits unsuccessfully without proceeding to later release steps
 
 #### Scenario: Verify inline code signing requirements

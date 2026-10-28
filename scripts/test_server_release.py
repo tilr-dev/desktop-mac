@@ -49,18 +49,6 @@ class IndependentServerReleaseTests(unittest.TestCase):
         return dict(version="0.1.0", build=build, arch="arm64", serverVersion=f"0.1.0-build{build}-test",
                     sha256="a" * 64, protocolVersion=protocol, minAppBuild=1, maxAppBuild=None)
 
-    def test_tracks_keep_older_protocols_and_ignore_app_build_numbers(self):
-        first = release_server.next_feed(None, self.manifest(1), 100, "stable")
-        self.assertEqual(first["component"], "tilrd")
-        latest = release_server.next_feed(first, self.manifest(2, protocol=3), 100, "stable")
-        self.assertEqual([r["manifest"]["protocolVersion"] for r in latest["releases"]], [3, 2])
-        self.assertEqual(release_server.next_feed(latest, self.manifest(2, protocol=3), 100, "stable"), latest)
-        self.assertNotIn("/mac/arm64/appcast", latest["releases"][0]["url"])
-        with self.assertRaises(ValueError):
-            release_server.next_feed(latest, self.manifest(2), 100, "stable")
-        with self.assertRaises(ValueError):
-            release_server.next_feed(latest, self.manifest(3), 100, "beta")
-
     def test_app_uses_pinned_artifact_without_building_or_resigning_it(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -108,45 +96,17 @@ class IndependentServerReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bundle_server.validate_payload(root, "arm64", 2, 6)
 
-    def publication(self, corrupt=False):
-        with tempfile.TemporaryDirectory() as temp:
-            directory = Path(temp)
-            binary = directory / "tilrd"
-            binary.write_bytes(b"server")
-            manifest = self.manifest(1)
-            manifest["sha256"] = bundle_server.digest(binary)
-            objects, uploads = {}, []
-            def fetch(url, target):
-                if url not in objects:
-                    return False
-                target.write_bytes(objects[url])
-                return True
-            def put(path, key, content_type, cache):
-                url = release_server.CDN + "/" + key
-                uploads.append(url)
-                objects[url] = b"corrupt" if corrupt and url.endswith("tilrd") else Path(path).read_bytes()
-            with patch.object(release_server, "fetch", side_effect=fetch), \
-                 patch.object(release_server, "put_object", side_effect=put), \
-                 patch.object(release_server, "signed_feed", side_effect=lambda feed, _: release_server.canonical(feed)), \
-                 patch.object(release_server, "verify_envelope", side_effect=lambda data, _: json.loads(data)):
-                if corrupt:
-                    with self.assertRaisesRegex(ValueError, "not verified"):
-                        release_server.publish_release(directory, manifest, "stable")
-                else:
-                    release_server.publish_release(directory, manifest, "stable")
-            return uploads
+    def test_feed_options_are_rejected_before_acquisition(self):
+        for flag, value in (("--publish", None), ("--publish-only", None),
+                            ("--channel", "beta"), ("--min-app-build", "2"), ("--max-app-build", "9")):
+            command = [sys.executable, str(Path(release_server.__file__)), "--version", "0.1.0",
+                       "--build", "1", "--protocol-version", "2", flag]
+            if value:
+                command.append(value)
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("unrecognized arguments", result.stderr)
 
-    def test_server_binary_verified_before_feed_and_app_feed_never_touched(self):
-        urls = self.publication()
-        self.assertEqual(len(urls), 2)
-        self.assertTrue(urls[0].endswith("/tilrd"))
-        self.assertTrue(urls[1].endswith("/server/macos/arm64/stable.json"))
-        self.assertFalse(any("appcast" in url or ".dmg" in url for url in urls))
-
-    def test_bad_public_download_leaves_the_server_feed_unchanged(self):
-        urls = self.publication(corrupt=True)
-        self.assertEqual(len(urls), 1)
-        self.assertTrue(urls[0].endswith("/tilrd"))
 
 
 if __name__ == "__main__":

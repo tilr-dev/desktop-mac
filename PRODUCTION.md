@@ -52,22 +52,18 @@ artifacts, pass explicit version/build/channel and `--resume` to release_all.py.
 Inspect and archive incomplete output first. After an upload failure, repeat the
 same explicit upload command; never rebuild published bytes under the same number.
 
-### Independent server release
+### Pinned upstream server
 
-The server has its own version/build. `server-release.json` selects the signed
-upstream tilrd release for the DMG. Assign a new feed build when changing bytes;
-never replace the contents of an already published build.
+`server-release.json` selects the signed upstream tilrd version, artifact revision
+(`build`) and protocol for the DMG. The revision identifies local completed artifacts;
+it is not a published server feed number. Update the pin to bundle a different release.
 
 ```sh
 python3 scripts/release_server.py --version 0.2.1 --build 4 --protocol-version 1
-# Inspect/test both imported artifacts, then publish the server feed:
-python3 scripts/release_server.py --version 0.2.1 --build 4 --publish-only
 ```
 
-Use `--channel beta` for beta feed publication. Local app publication does not
-publish the server feed. Update version/build/protocolVersion in `server-release.json`
-to include a new server in subsequent DMGs. Installed apps receive compatible
-servers through Check for Server Updates without a new DMG.
+Desktop release tools do not publish server feeds or server update binaries.
+Installed apps delegate server updates to `tilrd update`.
 
 ### Проверка и ограничения доступа
 
@@ -114,9 +110,7 @@ build must exceed every published build across all four feeds. Missing feeds cou
 other HTTP/network errors and malformed feeds stop the run. Local release numbering
 and reservations are unchanged.
 
-The pinned server is tilrd **0.2.1, build 4, protocol 1**. For its first CI release, set
-`server_min_app_build=17` (Actions input, or `-f server_min_app_build=17` with `gh workflow run`).
-This sets the server feed's minimum app build; the app must also support protocol 1.
+The pinned server is tilrd **0.2.1, artifact revision 4, protocol 1**.
 
 1. `app`: `fetch_server.py` acquires both architectures from the exact pinned
    tilrd GitHub Release, verifies archive SHA-256, architecture, expected Developer ID
@@ -125,8 +119,7 @@ This sets the server feed's minimum app build; the app must also support protoco
    No server compilation, stripping, signing or notarization happens here.
    Both app architectures are compiled without keys, then `release_all.py` signs,
    notarizes and packages the DMGs. No Sparkle key or Cloudflare token here.
-2. `publish`: waits for approval in the `release` environment, then `release_server.py
-   --publish-only` and `release_all.py --publish-only` publish the same artifacts. No delta
+2. `publish`: waits for approval in the `release` environment, then `release_all.py --publish-only` publishes the same app artifacts. No delta
    patches: the runner has no DMG history, so the full DMG is published. After the CDN
    upload succeeds, it creates tag `v<version>-rc.<N>` on the workflow commit (`github.sha`)
    and GitHub pre-release `Tilr <version>-rc.<N> (<build>)` (`--prerelease`), attaching both unchanged DMGs from
@@ -236,55 +229,37 @@ an incompatible protocol produces an Update tilrd prompt without application-sid
 binary replacement. Installing a fresh app requires no network connection.
 No JavaScript `tilr` CLI, Node, npm or Git is shipped.
 
-### Acquire and publish a server independently
+### Acquire a signed upstream server
 
-The server must already be signed and notarized in the tilr-dev/tilrd GitHub Release.
-The desktop tools download `tilr-v<version>-<target>.tar.gz` and its `.sha256` file,
-verify the archive before reading executable bytes, then check architecture and the
-Developer ID Application signature, team V57FF3MX26, and secure timestamp.
-The exact upstream version is `X.Y.Z-<commit>`; the desktop feed build is not part
-of the binary version. The signed clap version/platform string is inspected for
-both architectures; the native executable's `--version` is checked as well.
-
-```sh
-python3 scripts/release_server_all.py --version 0.2.1 --build 4 --min-app-build 17 --protocol-version 1
-# Show the plan without credentials, downloads or publication:
-python3 scripts/release_server_all.py --version 0.2.1 --build 4 --min-app-build 17 --protocol-version 1 --preview
-```
-
-The command checks publication access without Apple credentials, acquires both
-architectures and shows both completion receipts. Type exactly `publish` after
-inspection to publish the server feeds. Refusal or EOF leaves artifacts available.
-After publication, both signed feeds are checked and the JSON app pin is printed.
-No source checkout or Rust/Zig/protoc installation is required. Import needs the
-public update key; publication additionally needs the existing feed/CDN credentials.
-
-Lower-level commands:
+The server and client must already be signed and notarized in the tilr-dev/tilrd
+GitHub Release. Desktop tools download `tilr-v<version>-<target>.tar.gz` and its
+`.sha256` file, verify the archive before extraction, then check both executables'
+architecture, matching upstream version, Developer ID Application signature,
+team V57FF3MX26 and secure timestamp. The exact upstream version is `X.Y.Z-<commit>`.
+Both architectures' signed version/platform strings are inspected; native executables'
+`--version` output is checked as well.
 
 ```sh
-python3 scripts/release_server.py --version 0.2.1 --build 4 --protocol-version 1 --min-app-build 17
-python3 scripts/release_server.py --version 0.2.1 --build 4 --publish-only
+python3 scripts/release_server_all.py --version 0.2.1 --build 4 --protocol-version 1
+# Show the plan without credentials or downloads:
+python3 scripts/release_server_all.py --version 0.2.1 --build 4 --protocol-version 1 --preview
 ```
 
-`--arch arm64` or `--arch x86_64` selects one architecture; default is both.
-`--channel beta` selects the server beta feed independently of the app channel.
-`--min-app-build` / `--max-app-build` constrain app compatibility. Supply the
-protocol declared by the selected upstream release with `--protocol-version`.
-Output is `build/server-releases/<version>-<build>-<arch>`. Existing directories
-are never overwritten; inspect and move aside incomplete output before retrying.
+The wrapper acquires both architectures, verifies completed artifacts, displays
+both receipts and prints a JSON application pin. It does not prompt for publication
+or use Sparkle/CDN credentials. No source checkout or Rust/Zig/protoc is required.
 
-The upstream server and client executables are already Developer ID signed and notarized;
-acquisition verifies both signatures, matching versions and archive checksum before writing the completion receipt. Publication checks the receipt/checksum, preserves immutable
-binary URLs, verifies the public download, then publishes the signed feed last.
-It retains previous compatible releases instead of making older clients download
-an incompatible latest server. Feed signatures use Ed25519 (CryptoKit at runtime),
-with the existing release key initially shared with the app. The build-time
-`sign_update` utility only signs bytes; the server updater is not a Sparkle updater.
-All feeds are signed with explicit component/architecture/channel metadata.
-Publish from one release runner: the local lock does not serialize different Macs,
-and publishing the two architecture feeds is not atomic. A failed public check
-requires retrying the same `--publish-only`, not replacing a binary at its URL.
-No app DMG or Sparkle feed is published by this command.
+The lower-level command accepts `--arch arm64` or `--arch x86_64` (default: both):
+
+```sh
+python3 scripts/release_server.py --version 0.2.1 --build 4 --protocol-version 1
+```
+
+Supply the protocol declared by the selected upstream release with `--protocol-version`.
+The `--build` artifact revision must match the application pin. Output is
+`build/server-releases/<version>-<build>-<arch>`. Existing directories are never
+overwritten; inspect and move aside incomplete output before retrying.
+No server feed channel, app-build range, publication or signing options are supported.
 
 ### Bundle a server in an application release
 
@@ -294,20 +269,11 @@ completed artifacts from `build/server-releases/`; `TILR_SERVER_RELEASE_ROOT` ma
 point to the same downloaded artifacts on another build machine. App builds require verified upstream server artifacts, including preview apps. App releases remain two
 separate architecture DMGs; universal server artifacts are not used.
 
-The app records its supported server protocol, bundled server identity, server
-feed base URL and public verification key in its signed Info.plist. Downloads
-are selected by server build within the supported protocol, architecture and app
-build range; hashes/signatures are verified before replacement. The app installs
-the replacement binary and requests reload; tilrd checks reload-state compatibility
-before handing over. The app confirms the update through `tilr version` on the default socket.
-If reload is refused and the running version stays unchanged, the app reports
-"The local server did not become ready. Reload did not complete: running version
-X, expected Y" with the server log path and confirmation that existing processes
-were not stopped. The supervisor and terminals keep running, and the replacement
-binary remains installed. To use that binary after a refused reload, stop the
-service, then start it again; this ends the existing terminal sessions.
-The next application build can still bundle an older compatible server; it will
-not undo an independent server update.
+The signed app records its supported server protocol and bundled server identity
+in Info.plist. Packaging verifies both pinned executables and copies them unchanged.
+The app uses the bundled binaries for offline installation; later updates run through
+`tilrd update` and are confirmed through the shared daemon's normal reload path.
+A newer installed server is not downgraded to the bundled version.
 
 ### Runtime and controls
 
