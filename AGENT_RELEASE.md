@@ -1,9 +1,10 @@
 # Releases operated by an agent
 
 Use [PRODUCTION.md](PRODUCTION.md) for the CI release workflow. Release publication
-runs only in CI: a push to `release/X.Y` builds an RC for beta, and merging the
-release-please PR builds stable from its tag. Follow the repository's authorization
-rules for branch pushes and PR merges.
+runs only in CI: a push to `release/X.Y` builds an RC for beta. Dan runs
+`bin/release desktop-mac` in the workflow tools to push the stable `vX.Y.Z` tag,
+which builds and publishes stable. Follow the repository's authorization rules
+for branch and tag pushes.
 
 For local development use `run.sh`. To inspect completed CI artifacts, download the
 release directories and run `scripts/verify_release.py`; report exact version,

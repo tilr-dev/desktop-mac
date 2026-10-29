@@ -2,8 +2,9 @@
 
 The [production release guide](PRODUCTION.md) describes the CI release workflow,
 credentials, automatic server pins and artifact verification. Push a fix to
-`release/X.Y` to build an RC for beta; merge the release-please PR to build and
-publish stable from its tag. CI allocates builds from all published appcasts.
+`release/X.Y` to build an RC for beta. Dan runs `bin/release desktop-mac` in the
+workflow tools to push the stable `vX.Y.Z` tag, which builds and publishes stable.
+CI allocates builds from all published appcasts.
 
 For local development and tests use `run.sh`. Completed CI artifacts can be checked
 with `scripts/verify_release.py`; GUI and Sparkle tests still require a matching Mac.
