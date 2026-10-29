@@ -37,7 +37,16 @@ def release_metadata(tag, repository, sha):
     channel = "beta" if match[2] else "stable"
     ref = json.loads(subprocess.check_output(
         ["gh", "api", f"repos/{repository}/git/ref/tags/{tag}"], text=True))
-    if ref["object"]["type"] != "commit" or ref["object"]["sha"] != sha:
+    target = ref["object"]
+    seen = set()
+    while target["type"] == "tag":
+        if target["sha"] in seen:
+            raise ValueError(f"Release tag {tag} has a cyclic tag target")
+        seen.add(target["sha"])
+        annotated = json.loads(subprocess.check_output(
+            ["gh", "api", f"repos/{repository}/git/tags/{target['sha']}"], text=True))
+        target = annotated["object"]
+    if target["type"] != "commit" or target["sha"] != sha:
         raise ValueError(f"Release tag {tag} does not point to checked-out commit {sha}")
     release = json.loads(subprocess.check_output(
         ["gh", "release", "view", tag, "--repo", repository, "--json", "isPrerelease,isDraft,body,assets"], text=True))

@@ -47,7 +47,10 @@ args = sys.argv[1:]
 with (root / 'calls').open('a') as out:
     out.write(json.dumps(args) + '\\n')
 if args[0] == 'api':
-    print((root / 'tag').read_text())
+    if '/git/tags/' in args[1]:
+        print(json.loads((root / 'tag-objects').read_text())[args[1].rsplit('/', 1)[1]])
+    else:
+        print((root / 'tag').read_text())
 elif args[:2] == ['release', 'view']:
     print((root / 'release').read_text())
 elif args[:2] == ['release', 'upload']:
@@ -303,14 +306,34 @@ assert args[args.index('--channel') + 1] == os.environ['EXPECTED_CHANNEL']
                 self.assertFalse((self.root / 'calls').exists())
                 self.assertFalse((self.root / 'output').exists())
 
-    def test_wrong_commit_or_annotated_tag_stops_before_publication(self):
-        for target in ({'type': 'commit', 'sha': 'b' * 40}, {'type': 'tag', 'sha': 'a' * 40}):
+    def test_wrong_commit_or_noncommit_tag_stops_before_publication(self):
+        for target in ({'type': 'commit', 'sha': 'b' * 40}, {'type': 'tree', 'sha': 'a' * 40}):
             (self.root / 'tag').write_text(json.dumps({'object': target}))
             result = self.metadata()
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('does not point to checked-out commit', result.stderr)
             self.assertFalse((self.root / 'output').exists())
             self.assertFalse((self.root / 'notes').exists())
+
+    def annotated_tag(self, target):
+        (self.root / 'tag').write_text(json.dumps({'object': {'type': 'tag', 'sha': 'c' * 40}}))
+        (self.root / 'tag-objects').write_text(json.dumps({
+            'c' * 40: json.dumps({'object': {'type': 'tag', 'sha': 'd' * 40}}),
+            'd' * 40: json.dumps({'object': target}),
+        }))
+
+    def test_annotated_stable_tag_is_peeled_before_publication(self):
+        self.annotated_tag({'type': 'commit', 'sha': 'a' * 40})
+        self.workflow_shell('stable')
+
+    def test_annotated_tag_wrong_commit_or_cycle_has_no_mutation(self):
+        for target in ({'type': 'commit', 'sha': 'b' * 40}, {'type': 'tag', 'sha': 'c' * 40}):
+            with self.subTest(target=target):
+                self.annotated_tag(target)
+                self.stable()
+                result = self.publish()
+                self.assertNotEqual(result.returncode, 0)
+                self.assert_no_mutation()
 
     def test_existing_assets_stable_release_and_draft_are_preserved(self):
         self.assets()
