@@ -23,10 +23,11 @@ class SparkleKeyFileTests(unittest.TestCase):
         with patch.dict(os.environ, {"TILR_SPARKLE_KEY_FILE": str(self.file)}):
             return publish.sparkle_public_key(Path("/nonexistent"))
 
-    def test_keychain_account_without_a_key_file(self):
+    def test_missing_key_file_fails_without_keychain_access(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TILR_SPARKLE_KEY_FILE", None)
-            self.assertEqual(publish.sparkle_key(), ["--account", "tilr-rexuni"])
+            with self.assertRaisesRegex(ValueError, "TILR_SPARKLE_KEY_FILE"):
+                publish.sparkle_key()
 
     def test_key_file_replaces_the_keychain_account(self):
         with patch.dict(os.environ, {"TILR_SPARKLE_KEY_FILE": str(self.file)}):

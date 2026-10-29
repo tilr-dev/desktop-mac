@@ -32,7 +32,7 @@ def bundle_server(app, arch, app_build, root=ROOT):
     releases = Path(os.environ.get("TILR_SERVER_RELEASE_ROOT", root / "build/server-releases"))
     directory = releases / f"{pin['version']}-{pin['build']}-{arch}"
     if not (directory / "release.json").exists():
-        raise ValueError(f"Acquire the pinned upstream server release first: scripts/release_server.py --version {pin['version']} --build {pin['build']} --protocol-version {pin['protocolVersion']} --arch {arch}; missing {directory}")
+        raise ValueError(f"Acquire the pinned upstream server release first: python3 scripts/fetch_server.py; missing {directory}")
     from fetch_server import validate_completed
     validate_completed(directory, pin["version"], pin["build"], arch, pin["protocolVersion"])
     receipt = json.loads((directory / "release.json").read_text())

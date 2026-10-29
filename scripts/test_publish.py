@@ -20,6 +20,7 @@ def feed(build=2, size=3, url="https://cdn.tilr.dev/mac/arm64/Tilr-0.1.1-2-arm64
 
 class PublishTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.dict(publish.os.environ, {"TILR_SPARKLE_KEY_FILE": "/fixture/sparkle.key"}))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

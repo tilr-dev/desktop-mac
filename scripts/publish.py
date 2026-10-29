@@ -32,17 +32,16 @@ def run(*args, **kwargs):
 
 
 def sparkle_key():
-    """Sparkle tool arguments: the Keychain account, or TILR_SPARKLE_KEY_FILE on an unattended runner."""
+    """Sparkle tool arguments for the signing key provisioned by CI."""
     path = os.environ.get("TILR_SPARKLE_KEY_FILE")
-    return ["--ed-key-file", path] if path else ["--account", "tilr-rexuni"]
+    if not path:
+        raise ValueError("TILR_SPARKLE_KEY_FILE is required for release publication")
+    return ["--ed-key-file", path]
 
 
 def sparkle_public_key(tools):
-    path = os.environ.get("TILR_SPARKLE_KEY_FILE")
-    if path:
-        # generate_keys reads only the Keychain; CryptoKit derives the key file's public half.
-        return subprocess.check_output(["swift", str(ROOT / "scripts/sparkle_public_key.swift"), path], text=True).strip()
-    return subprocess.check_output([str(tools / "generate_keys"), "--account", "tilr-rexuni", "-p"], text=True).strip()
+    path = sparkle_key()[1]
+    return subprocess.check_output(["swift", str(ROOT / "scripts/sparkle_public_key.swift"), path], text=True).strip()
 
 
 def digest(path):
@@ -253,7 +252,7 @@ def upload_deltas(meta, data, stage):
             key = urlsplit(entry['url']).path.lstrip('/')
             put(path, key, 'application/octet-stream', 'public, max-age=31536000, immutable')
         if not fetch(entry['url'], remote) or digest(remote) != expected:
-            raise ValueError('Public delta not verified; feed was NOT updated. Retry publish-only.')
+            raise ValueError('Public delta not verified; feed was NOT updated. Rerun the CI publication job.')
 
 
 def upload_verified_assets(meta, dmg, feed, stage):
@@ -277,7 +276,7 @@ def upload_verified_assets(meta, dmg, feed, stage):
                 raise ValueError(f"Published DMG checksum mismatch at {url}: expected {meta['sha256']}, got {actual} ({remote.stat().st_size} bytes); feed was NOT updated")
             break
         if attempt == len(delays):
-            raise ValueError(f"R2 object prepared but public URL still returns HTTP 404: {url}. Check cdn.tilr.dev's bucket mapping and cached 404 responses; feed was NOT updated. Retry the same publish-only command after fixing CDN delivery.")
+            raise ValueError(f"R2 object prepared but public URL still returns HTTP 404: {url}. Check cdn.tilr.dev's bucket mapping and cached 404 responses; feed was NOT updated. Rerun the CI publication job after fixing CDN delivery.")
         delay = delays[attempt]
         print(f"Waiting {delay}s for the public DMG URL (attempt {attempt + 2}/{len(delays) + 1})…", flush=True)
         time.sleep(delay)
@@ -322,7 +321,7 @@ def main():
         run("spctl", "--assess", "--type", "execute", directory / "Tilr.app")
         key = sparkle_public_key(args.sparkle_bin)
         if key != meta["public_key"]:
-            raise ValueError("Sparkle Keychain key differs from the key embedded in this release")
+            raise ValueError("Sparkle signing key differs from the key embedded in this release")
         with tempfile.TemporaryDirectory(prefix="publish-", dir=ROOT / "build") as temp:
             stage = Path(temp)
             feed = stage / "appcast.xml"

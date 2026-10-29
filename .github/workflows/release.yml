@@ -21,7 +21,7 @@ defaults:
     shell: bash
 
 env:
-  # Public half of the release key: application Sparkle updates (release.local.json locally).
+  # Public half of the release key: application Sparkle updates.
   TILR_UPDATE_PUBLIC_KEY: pbumHO+mL+o+BzD0cBPPXxHyxkOJzyGtvUSfwr0IvMg=
   TILR_NOTARY_PROFILE: tilr-ci
 

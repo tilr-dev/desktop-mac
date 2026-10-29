@@ -1,5 +1,0 @@
-{
-  "TILR_SIGN_IDENTITY": "Developer ID Application: EXACT REXUNI CERTIFICATE NAME (TEAMID)",
-  "TILR_NOTARY_PROFILE": "tilr-rexuni",
-  "TILR_UPDATE_PUBLIC_KEY": "BASE64 PUBLIC KEY FROM SPARKLE generate_keys --account tilr-rexuni -p"
-}
