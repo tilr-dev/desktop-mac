@@ -6,15 +6,18 @@ Define verified immutable app/server publication, update compatibility, delta ge
 ## Requirements
 
 ### Requirement: Credential preflight and secret handling
-Release tools SHALL use existing authorized CI credentials without printing secrets, storing them in Git, creating replacement certificates to bypass restrictions or changing blanket key permissions.
+Release tools SHALL use existing authorized credentials without printing secrets, storing them in Git, creating replacement certificates to bypass restrictions or changing blanket key permissions.
 
 #### Scenario: Check release access
-- **WHEN** release_all.py --check runs in the CI build job
-- **THEN** it verifies required build tools, the configured identity/private key, notarization profile, temporary real signing and disk-image creation without creating a release or requiring the Sparkle private key
-- **AND** the CI publisher uses scoped Sparkle/R2 access without Apple signing private keys, notarization login, compilation or image creation
-- **AND** release configuration comes from the runner environment; no local setup command or local credentials configuration file is required
-- **AND** all app architectures share the Sparkle public key, separate from Developer ID credentials; CDN access uses R2 S3 keys through the AWS CLI
-- **AND** unattended runners must already possess scoped access without interactive prompts or permission bypasses
+- **WHEN** release_all.py --check --publish runs
+- **THEN** it verifies required tools, configured identity/private key, notarization profile, Sparkle key, temporary real signing, disk-image creation and bucket access, without creating a release or publishing
+- **WHEN** release_all.py --check runs without publication
+- **THEN** it checks the build access without requiring the Sparkle private key
+- **WHEN** --check --publish-only runs
+- **THEN** it checks publication using existing Sparkle/R2 access without Apple signing private key, notarization login, compilation or image creation; publication still verifies signatures/staples and uses Sparkle/mounting tools
+- **AND** macOS 14+ with Xcode, Python 3.11+, the AWS CLI and signing/notary access are prerequisites; ignored release.local.json contains identity/profile/public key only and environment overrides it
+- **AND** all app architectures share the Sparkle public key, separate from Developer ID credentials; CDN access uses R2 S3 keys for the existing account/bucket through the AWS CLI, from a local profile or a scoped runner secret
+- **AND** scripts do not grant OS/tool permissions or bypass restrictions through UI automation/accounts/tools; unattended runners must already possess scoped access without interactive prompts
 
 #### Scenario: Sparkle key on an unattended runner
 - **WHEN** TILR_SPARKLE_KEY_FILE names a Sparkle private key file
@@ -22,10 +25,10 @@ Release tools SHALL use existing authorized CI credentials without printing secr
 - **AND** its public key, derived from the file, must equal the configured public key before publication
 
 ### Requirement: Immutable publication with feed last
-Publication SHALL run only through the CI release coordinator; stable SHALL require the stable tag created by merging the release PR, with no emergency flag or environment override. App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
+Local app publication SHALL target beta only; stable SHALL require the CI path from the stable tag created by merging the release PR, with no emergency flag or environment override. App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
 
 #### Scenario: Publish a pair
-- **WHEN** ci_release.py publish runs
+- **WHEN** release_all.py publishes or --publish-only is used
 - **THEN** version/build/channel/key, hashes, signatures, stapling and feed metadata are checked; both appcasts are prepared/validated before either feed is changed
 - **AND** the public host is https://cdn.tilr.dev; stable feeds are https://cdn.tilr.dev/mac/<arch>/appcast.xml and beta feeds https://cdn.tilr.dev/mac/beta/<arch>/appcast.xml, where <arch> is arm64 or x86_64; each app reads only its compiled architecture’s feed, selecting stable by default or beta when Receive RC versions is enabled; a leftover TILR_UPDATE_FEED cannot override application selection or coordinator routing
 - **AND** only HTTP 404 means an absent previous feed; other failures stop publication, and compatible feed history is retained
@@ -34,18 +37,18 @@ Publication SHALL run only through the CI release coordinator; stable SHALL requ
 - **AND** normal releases preserve bundle ID, feed URLs and signing keys; key rotation is a separate migration, and correcting/reverting a bad public release requires a higher build
 - **AND** a CDN rule overriding origin cache headers must exclude mac/**/appcast.xml before distribution; signed DMGs/bundles are never edited after appcast generation, and changed contents require rebuilding/signing/notarization
 - **AND** --notes may embed release notes; a changed archive at an existing URL or an attempted downgrade/newer-feed overwrite is rejected
-- **AND** failed builds publish neither architecture; serial feed writes are not atomic, require one release runner and are serialized by workflow concurrency
+- **AND** failed builds publish neither architecture; serial feed writes are not atomic, require one release runner and are not coordinated across Macs by the local lock
 
 #### Scenario: Reject direct stable publication
-- **WHEN** packaging is invoked outside the CI publication job
-- **THEN** it exposes no combined publication or publication-only mode, saved upload selection or local publication wrapper
-- **AND** stable publication remains gated by the shared workflow reporting creation of the stable release
+- **WHEN** release_all.py --publish or --publish-only selects stable, explicitly or through build/latest-app-release.json (including upload.command)
+- **THEN** it stops with an error explaining that stable requires the CI release from a merged release PR tag, before any CDN upload or feed change
+- **AND** local beta publication retains its existing behavior
 
 ### Requirement: Verified resume and downloads evidence
 Publication SHALL resume idempotently only from completed artifacts matching the requested metadata and publicly verified bytes.
 
 #### Scenario: Partial publication
-- **WHEN** the CI publisher retries a partial beta publication
+- **WHEN** --resume or the same explicit upload is retried
 - **THEN** matching completed artifacts and their hashes are reused without rebuilding/signing/notarizing; already-published builds require matching feed signatures/metadata and an exact downloaded DMG
 - **AND** completion is reported only after both feeds verify and build/releases/<version>-<build>-<channel>-downloads.json contains both immutable URLs
 - **AND** website code/deployment is unchanged; download buttons use verified URLs for both architectures with an About This Mac hint, never proposed URLs presented as live
@@ -70,7 +73,7 @@ Desktop release tools SHALL NOT publish an app-managed server feed or server upd
 - **WHEN** the desktop release publishes application artifacts
 - **THEN** only application downloads and Sparkle appcasts are published
 - **AND** no server/macos feed or server binary is uploaded by desktop release tools
-- **AND** the upstream tilrd release opens the automatic application pin PR; desktop release tools expose no manual server release command
+- **AND** release_server.py rejects the former --publish and --publish-only options before acquisition or publication
 
 #### Scenario: Generate critical update items
 - **WHEN** new appcast items are generated
@@ -116,7 +119,7 @@ The Release workflow SHALL run automatically on pushes to release/**, use the pi
 - **AND** the app job acquires the pinned tilrd GitHub Release for both architectures, verifies archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
 - **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one
-- **AND** that build is logged and passed explicitly to both architecture builds and publication, without local release history or reservations
+- **AND** that build is logged and passed explicitly to both architecture builds and publication, without changing local release numbering
 - **AND** the publish job publishes those artifacts to beta through the CI publish command without rebuilding or environment approval, holding the Sparkle and R2 keys but no Apple keys
 - **AND** after successful CDN publication it attaches both unchanged DMGs to the shared GitHub prerelease and names it Tilr X.Y.Z-rc.N (<build>), using its existing body as Sparkle notes
 - **AND** the shared workflow uses the release GitHub App token for release PRs and tags; only the publish job has contents: write on GITHUB_TOKEN, while the app job has only contents: read
