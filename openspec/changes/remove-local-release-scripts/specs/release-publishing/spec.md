@@ -17,7 +17,7 @@ Release tools SHALL use existing authorized CI credentials without printing secr
 - **AND** its public key, derived from the file, must equal the configured public key before publication
 
 ### Requirement: Immutable publication with feed last
-Publication SHALL run only through the CI release coordinator; stable SHALL require the stable tag created by merging the release PR, with no emergency flag or environment override. App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
+Publication SHALL run only through the CI release coordinator; stable SHALL require the stable tag vX.Y.Z pushed by Dan using bin/release, with no emergency flag or environment override. App publication SHALL validate completed receipts and exact artifacts, upload immutable downloads first and change feeds only after public verification.
 
 #### Scenario: Publish a pair
 - **WHEN** ci_release.py publish runs
@@ -34,7 +34,7 @@ Publication SHALL run only through the CI release coordinator; stable SHALL requ
 #### Scenario: Reject direct stable publication
 - **WHEN** packaging is invoked outside the CI publication job
 - **THEN** it exposes no combined publication or publication-only mode, saved upload selection or local publication wrapper
-- **AND** stable publication remains gated by the shared workflow reporting creation of the stable release
+- **AND** stable publication remains gated by the shared workflow reporting a nonempty tag and is_rc=false from a stable tag push
 
 ### Requirement: Verified resume and downloads evidence
 Publication SHALL resume idempotently only from completed artifacts matching the requested metadata and publicly verified bytes.
@@ -60,31 +60,36 @@ Desktop release tools SHALL NOT publish an app-managed server feed or server upd
 - **AND** resume leaves previously published feeds unchanged; dismissing the prompt does not mark the version skipped, and installation still requires consent
 
 ### Requirement: Release from CI
-The Release workflow SHALL run automatically on pushes to release/**, use the pinned shared release-please and RC workflow, and build, sign, notarize and publish both app architectures as release candidates to beta or stable releases from stable tags on GitHub-hosted macOS. Each key SHALL remain only in the job that uses it. Merging the release PR SHALL be the only release approval.
+The Release workflow SHALL run automatically on pushes to release/** and stable vX.Y.Z tags (excluding v*-rc.*), use the pinned shared release workflow, and build, sign, notarize and publish both app architectures as release candidates to beta or stable releases from stable tags on GitHub-hosted macOS. Each key SHALL remain only in the job that uses it. Dan pushing the stable tag through bin/release SHALL be the release approval.
 
 #### Scenario: Run a CI release
 - **WHEN** a commit is pushed to release/X.Y and the shared workflow reports is_rc=true
-- **THEN** release-please opens or updates the release PR and the shared workflow provides numeric version X.Y.Z and a fresh tag vX.Y.Z-rc.N, where N increases for successive candidates
+- **THEN** the shared workflow provides version X.Y.Z-rc.N and a fresh tag vX.Y.Z-rc.N, where N increases for successive candidates
 - **AND** the app job acquires the pinned tilrd GitHub Release for both architectures, verifies archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
 - **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one
 - **AND** that build is logged and passed explicitly to both architecture builds and publication, without local release history or reservations
 - **AND** the publish job publishes those artifacts to beta through the CI publish command without rebuilding or environment approval, holding the Sparkle and R2 keys but no Apple keys
 - **AND** after successful CDN publication it attaches both unchanged DMGs to the shared GitHub prerelease and names it Tilr X.Y.Z-rc.N (<build>), using its existing body as Sparkle notes
-- **AND** the shared workflow uses the release GitHub App token for release PRs and tags; only the publish job has contents: write on GITHUB_TOKEN, while the app job has only contents: read
+- **AND** the shared workflow uses the release GitHub App token for candidate tags and GitHub Releases; only the publish job has contents: write on GITHUB_TOKEN, while the app job has only contents: read
 
 #### Scenario: Run from a branch other than a release branch
-- **WHEN** a commit is pushed to main or any branch outside release/**, or a tag is pushed
+- **WHEN** a commit is pushed to main or any branch outside release/**, or an RC tag is pushed
 - **THEN** the Release workflow does not start and there is no workflow_dispatch entry point
-- **AND** the apple-signing and release environments accept only release/* branches, without required reviewers
+- **AND** the apple-signing and release environments accept release/* branches and v* tags, without required reviewers
 
-#### Scenario: Merge the release PR
-- **WHEN** the release-please PR is merged into release/X.Y
-- **THEN** the shared workflow creates the stable tag vX.Y.Z without an environment approval
-- **AND** release_created=true and is_rc=false select stable in the same workflow; both app and publish jobs check out that exact tag and verify its commit rather than building the event commit
+#### Scenario: Push the release tag
+- **WHEN** Dan pushes stable tag vX.Y.Z using bin/release
+- **THEN** the shared workflow verifies that its commit belongs to release/X.Y before creating or reusing the regular GitHub Release
+- **AND** both lightweight and annotated tags are resolved to their commit before checkout verification
+- **AND** a nonempty tag and is_rc=false select stable only for a stable tag push; both app and publish jobs check out that exact tag and verify its commit rather than building a branch tip
 - **AND** both architectures are built, signed and notarized anew with a build greater than every published stable and beta build; the publish job uses those completed artifacts for stable appcasts
-- **AND** after CDN publication both manifest-selected DMGs are attached to the regular GitHub Release titled Tilr X.Y.Z (<build>), preserving the release-please body and tag
-- **AND** no stable publication runs without the shared workflow reporting creation of the stable release
+- **AND** after CDN publication both manifest-selected DMGs are attached to the regular GitHub Release titled Tilr X.Y.Z (<build>), preserving the generated GitHub Release notes and tag
+- **AND** no stable publication runs without a nonempty shared tag and is_rc=false from a tag push
+
+#### Scenario: Reject an unrelated stable tag
+- **WHEN** a stable tag points outside the matching release/X.Y branch or that branch does not exist
+- **THEN** the shared workflow fails before publication and neither app nor publish runs
 
 #### Scenario: Resolve a build from channel appcasts
 - **WHEN** the four stable/beta architecture appcasts contain different builds or multiple historical releases

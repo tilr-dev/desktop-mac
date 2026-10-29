@@ -5,7 +5,7 @@ The release workflow SHALL separate credential setup, building, verification and
 
 #### Scenario: CI release
 - **WHEN** the Release workflow runs
-- **THEN** it acquires the pinned upstream server without compilation or signing and builds both DMGs, and its publish job publishes those same files as an RC to beta after a release/X.Y push or to stable from the stable tag created by merging the release PR, without rebuilding them in the publish job
+- **THEN** it acquires the pinned upstream server without compilation or signing and builds both DMGs, and its publish job publishes those same files as an RC to beta after a release/X.Y push or to stable from the stable tag vX.Y.Z pushed by Dan using bin/release, without rebuilding them in the publish job
 - **AND** release_all.py packages explicit CI version/build inputs without publication, local build reservations or a saved last-release selection
 
 #### Scenario: Default commands
@@ -33,11 +33,11 @@ CI SHALL allocate monotonically increasing application builds from published app
 
 #### Scenario: No release version in the template
 - **WHEN** the source Info.plist contains `0.0.0-dev`
-- **THEN** CI uses the numeric release-please version explicitly without changing the source template or consulting local history
+- **THEN** CI uses the numeric version from the verified selected tag, stripping v and any RC suffix explicitly without changing the source template or consulting local history
 
 #### Scenario: CI release numbers
 - **WHEN** the Release workflow runs on a runner without local history
-- **THEN** it takes the numeric version from the shared release-please workflow, resolves build as the highest build in both architecture appcasts across stable and beta plus one, and passes these explicitly to packaging and publication
+- **THEN** it takes the numeric version from the selected tag provided by the shared release workflow, stripping v and any RC suffix, resolves build as the highest build in both architecture appcasts across stable and beta plus one, and passes these explicitly to packaging and publication
 - **AND** no local reservation, remembered version or last-completed-release file is required or written
 
 ### Requirement: Verified upstream server artifacts
