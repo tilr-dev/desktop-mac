@@ -99,7 +99,7 @@ def completed(directory, version, build, arch, feed, key):
 
 def require_beta_publication(channel, publishing):
     if publishing and channel != "beta":
-        raise ValueError("Stable publication requires the CI release from a merged release PR tag; direct stable publication is disabled")
+        raise ValueError("Stable publication requires the CI release from a pushed stable vX.Y.Z tag; direct stable publication is disabled")
 
 
 def execute(version, build, channel, config, publish=False, resume=False, notes=None, root=ROOT, runner=run, publish_only=False):
@@ -304,7 +304,7 @@ def main():
                 print("Publish this completed pair after testing: ./upload.command")
                 print(f"Or explicitly: python3 scripts/release_all.py --version {args.version} --build {args.build} --channel beta --publish-only")
             else:
-                print("Stable publication requires the CI release from a merged release PR tag; direct stable publication is disabled")
+                print("Stable publication requires the CI release from a pushed stable vX.Y.Z tag; direct stable publication is disabled")
 
 
 if __name__ == "__main__":
