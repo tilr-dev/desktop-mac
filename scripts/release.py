@@ -166,11 +166,7 @@ def main():
         from bundle_plugins import bundle_plugins, verify_plugin_publishers, plugin_inventory, describe_plugins
         bundle_plugins(app, args.arch, identity, args.native_plugins)
         from bundle_server import bundle_server
-        server = bundle_server(app, args.arch, args.build)
-        info.update(TilrServerProtocolVersion=server["protocolVersion"],
-                    TilrBundledServerBuild=server["build"], TilrBundledServerVersion=server["version"])
-        with (contents / "Info.plist").open("wb") as file:
-            plistlib.dump(info, file)
+        bundle_server(app, args.arch, info["TilrServerProtocolVersion"])
         audit(app, args.arch)
         sign(app, identity, ROOT / 'Tilr.entitlements')
         verify_plugin_publishers(app)

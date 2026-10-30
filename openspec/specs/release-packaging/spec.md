@@ -10,7 +10,7 @@ The release workflow SHALL separate credential setup, building, verification and
 
 #### Scenario: CI release
 - **WHEN** the Release workflow runs
-- **THEN** it acquires the pinned upstream server without compilation or signing and builds both DMGs, and its publish job publishes those same files as an RC to beta after a release/X.Y push or to stable from the stable tag vX.Y.Z pushed by Dan using bin/release, without rebuilding them in the publish job
+- **THEN** it acquires the latest stable upstream server release without compilation or signing and builds both DMGs, and its publish job publishes those same files as an RC to beta after a release/X.Y push or to stable from the stable tag vX.Y.Z pushed by Dan using bin/release, without rebuilding them in the publish job
 - **AND** release_all.py packages explicit CI version/build inputs without publication, local build reservations or a saved last-release selection
 
 #### Scenario: Default commands
@@ -84,19 +84,21 @@ Signing SHALL retry timestamp-service failures on the same file according to rel
 - **AND** certificate/Keychain failures are not retried and exhaustion leaves incomplete artifacts for diagnosis/resume rather than weakening signing
 
 ### Requirement: Verified upstream server artifacts
-fetch_server.py SHALL acquire signed and notarized macOS tilrd and tilr from the same pinned upstream GitHub Release independently from application releases, writing completion receipts only after verification of both executables.
+fetch_server.py SHALL acquire signed and notarized macOS tilrd and tilr from the same upstream GitHub Release, the latest stable tilrd release when it runs, independently from application releases, writing completion receipts only after verification of both executables. Nothing in the repository SHALL pin the server version.
 
 #### Scenario: Acquire and verify pinned server artifacts
-- **WHEN** the pinned version is requested
-- **THEN** CI acquires both architectures using the exact server-release.json pin
+- **WHEN** the server is acquired for an application build
+- **THEN** CI resolves the latest stable tilr-dev/tilrd GitHub Release, skipping release candidates, and acquires both architectures from that one release
+- **AND** the release protocol is read from PROTOCOL_VERSION in the released tilr-proto source at the release tag and must equal TilrServerProtocolVersion in the application Info.plist
 - **AND** tilr-v<version>-<target>.tar.gz from tilr-dev/tilrd has its published SHA-256 verified before extracting either executable
 - **AND** both binaries have their architecture, Developer ID signature, expected Apple team, secure timestamp and matching version verified before completion
-- **AND** a missing client, bad checksum, unsafe archive, unexpected architecture, signature or version stops acquisition without a completed receipt or source-build fallback
+- **AND** a missing client, bad checksum, unsafe archive, unexpected architecture, signature, version or protocol stops acquisition without a completed receipt or source-build fallback
+- **AND** an unavailable or invalid latest release or protocol stops acquisition instead of guessing a version
 - **AND** no Rust, Zig, protoc, source checkout or Apple signing/notarization credentials are required
 - **AND** fetch_server.py exits with code 1 on missing or invalid upstream assets
-- **AND** server-release.json pins the upstream version and protocol; completion metadata retains the pinned artifact revision for bundling without feed channels or configurable app-build ranges
+- **AND** the releases root records the selected version and protocol for bundling, without feed channels, app-build ranges or an artifact revision
 - **AND** TILR_SERVER_RELEASE_ROOT may supply completed artifacts, which are verified before use
-- **AND** application packaging copies both executables and exact server manifest without compiling, stripping or re-signing either executable
+- **AND** application packaging copies both executables without compiling, stripping or re-signing either executable and without a bundled server manifest or bundled server version keys
 
 #### Scenario: Verify inline code signing requirements
 - **WHEN** an upstream macOS server is checked before import
@@ -106,4 +108,4 @@ fetch_server.py SHALL acquire signed and notarized macOS tilrd and tilr from the
 #### Scenario: Inspect the version in optimized upstream binaries
 - **WHEN** Rust stores the upstream version/platform immediately after another string literal
 - **THEN** acquisition recognizes the full version/platform without requiring a delimiter before the version
-- **AND** a different full release number is rejected even when it contains the pinned version as a suffix
+- **AND** a different full release number is rejected even when it contains the selected version as a suffix

@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 import Darwin
 
 @main struct InstallationTests {
@@ -39,11 +38,7 @@ import Darwin
             *) exit 1 ;;
             esac
             """)
-            let bytes = try Data(contentsOf: source.appendingPathComponent("tilrd"))
-            let sha = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
-            let manifest = ServerInstallation.Manifest(version: "1.0.0", build: 1, arch: "arm64", serverVersion: "1.0.0-abc", sha256: sha, protocolVersion: 1, minAppBuild: 1, maxAppBuild: nil)
-            try JSONEncoder().encode(manifest).write(to: source.appendingPathComponent("app-managed.json"))
-            var install = ServerInstallation(source: source, root: root, agents: base.appendingPathComponent("agents"), label: "sh.tilr.tilrd", port: 7890, timeout: 5, origins: ["tilr://app"], appBuild: 10, protocolVersion: 1, architecture: "arm64")
+            var install = ServerInstallation(source: source, root: root, agents: base.appendingPathComponent("agents"), label: "sh.tilr.tilrd", port: 7890, timeout: 5, origins: ["tilr://app"], protocolVersion: 1, architecture: "arm64")
             try executable(base.appendingPathComponent("shell"), """
             echo shell >> '\(log.path)'
             if [ -f '\(path.path)' ]; then cat '\(path.path)'; else exit 1; fi
@@ -118,7 +113,7 @@ import Darwin
         // Offline install copies the exact pair, uses service install and records ownership.
         let absent = try fixture("absent")
         let installed = try absent.install()
-        expect(installed.build == 1 && absent.installedByApp)
+        expect(installed.serverVersion == "1.0.0-abc" && absent.installedByApp)
         for name in ["tilrd", "tilr"] {
             expect(try Data(contentsOf: absent.source.appendingPathComponent(name)) == Data(contentsOf: absent.root.appendingPathComponent(name)))
         }
@@ -132,6 +127,12 @@ import Darwin
         let before = try Data(contentsOf: absent.binary)
         _ = try absent.install()
         expect(try Data(contentsOf: absent.binary) == before)
+        // The bundled pair needs no manifest, but a server of another release than its client is refused.
+        let mismatched = try fixture("mismatched-pair")
+        try executable(mismatched.source.appendingPathComponent("tilrd"), "echo 'tilrd 1.0.1-def (macos-aarch64)'\n")
+        rejects { _ = try mismatched.install() }
+        expect(!fm.fileExists(atPath: mismatched.binary.path))
+        expect(!fm.fileExists(atPath: mismatched.root.appendingPathComponent("tilr").path))
         // The daemon owns updates, including the exact external executable selected at discovery.
         let updater = try fixture("daemon-update")
         let updateRoot = base(updater)
@@ -171,10 +172,9 @@ import Darwin
         expect(try updater.credentials() == updateCredentials)
         try fm.removeItem(at: updateFailure)
         let beforeUpdateCommands = commands(updater)
-        // Successful updates may still be below the bundle pin; report the actual installed version.
+        // Successful updates report the actual installed version, whatever the bundle holds.
         let stableVersion = try updater.update(channel: "stable")
         expect(stableVersion == "0.9.1-stable")
-        expect(ServerInstallation.isOlder(stableVersion, than: "1.0.0"))
         expect(try updater.update(channel: "beta") == "1.1.0-rc.2")
         let updateCommands = try String(contentsOf: updateLog, encoding: .utf8).split(separator: "\n").map(String.init)
         expect(updateCommands == ["\(externalUpdater.path) update --channel stable", "\(externalUpdater.path) update --channel stable", "\(externalUpdater.path) update --channel beta"])
@@ -184,15 +184,11 @@ import Darwin
         expect(!fm.fileExists(atPath: updater.installationMarker.path))
         expect(!fm.fileExists(atPath: updater.root.appendingPathComponent(".tilr-app-pending.json").path))
         expect(!fm.fileExists(atPath: externalUpdater.appendingPathExtension("previous").path))
-        expect(ServerInstallation.isOlder("1.0.0-rc.1", than: "1.0.0"))
-        expect(ServerInstallation.isOlder("1.0.0-rc.2", than: "1.0.0-rc.10"))
-        expect(!ServerInstallation.isOlder("1.0.0", than: "1.0.0-rc.1"))
-        expect(!ServerInstallation.isOlder("1.0.0+installed", than: "1.0.0+bundled"))
-        expect(!ServerInstallation.isOlder("2.0.0", than: "1.0.0"))
         // Recovery covers bootstrap after the client rename but before the daemon rename.
         let half = try fixture("half-bootstrap")
         try fm.createDirectory(at: half.root, withIntermediateDirectories: true)
-        let halfManifest = try JSONDecoder().decode(ServerInstallation.Manifest.self, from: Data(contentsOf: half.source.appendingPathComponent("app-managed.json")))
+        let halfManifest = ServerInstallation.Manifest(version: "1.0.0-abc", build: 0, arch: "arm64", serverVersion: "1.0.0-abc",
+            sha256: try half.hash(half.source.appendingPathComponent("tilrd")), protocolVersion: 1, minAppBuild: 0, maxAppBuild: nil)
         try fm.copyItem(at: half.source.appendingPathComponent("tilr"), to: half.root.appendingPathComponent("tilr"))
         try fm.copyItem(at: half.source.appendingPathComponent("tilrd"), to: half.binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"))
         let clientHash = try half.hash(half.root.appendingPathComponent("tilr"))
@@ -201,7 +197,7 @@ import Darwin
         transaction["bootstrap"] = true
         transaction["clientHash"] = clientHash
         try JSONSerialization.data(withJSONObject: transaction).write(to: half.root.appendingPathComponent(".tilr-app-pending.json"))
-        expect(try half.install().build == 1)
+        expect(try half.install() == halfManifest)
         expect(half.installedByApp)
         // Recovery after both renames but before ownership marker creation repairs the marker.
         try fm.removeItem(at: half.installationMarker)
@@ -216,7 +212,7 @@ import Darwin
         expect(!fm.fileExists(atPath: pending.path))
         expect(!fm.fileExists(atPath: absent.binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new").path))
         try fm.removeItem(at: base(absent).appendingPathComponent("running"))
-        expect(try absent.install().build == 1)
+        expect(try absent.install().serverVersion == "1.0.0-abc")
         expect(absent.installedByApp)
         // A daemon discovered via proc_pidpath uses a canonical path after relaunch.
         let linked = try fixture("linked-marker")

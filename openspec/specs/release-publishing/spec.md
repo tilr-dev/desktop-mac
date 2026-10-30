@@ -70,7 +70,7 @@ Desktop release tools SHALL NOT publish an app-managed server feed or server upd
 - **WHEN** the desktop release publishes application artifacts
 - **THEN** only application downloads and Sparkle appcasts are published
 - **AND** no server/macos feed or server binary is uploaded by desktop release tools
-- **AND** the upstream tilrd release opens the automatic application pin PR; desktop release tools expose no manual server release command
+- **AND** a tilrd release opens no application pull request; installed applications update tilrd themselves, and desktop release tools expose no manual server release command
 
 #### Scenario: Generate critical update items
 - **WHEN** new appcast items are generated
@@ -113,7 +113,7 @@ The Release workflow SHALL run automatically on pushes to release/** and stable 
 #### Scenario: Run a CI release
 - **WHEN** a commit is pushed to release/X.Y and the shared workflow reports is_rc=true
 - **THEN** the shared workflow provides version X.Y.Z-rc.N and a fresh tag vX.Y.Z-rc.N, where N increases for successive candidates
-- **AND** the app job acquires the pinned tilrd GitHub Release for both architectures, verifies archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
+- **AND** the app job acquires the latest stable tilrd GitHub Release for both architectures, verifies archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
 - **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one
 - **AND** that build is logged and passed explicitly to both architecture builds and publication, without local release history or reservations

@@ -21,7 +21,7 @@ import Foundation
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: server.path)
             let owned = scenario != "external-no" && scenario != "external-yes"
             var installation = ServerInstallation(source: bin, root: bin, agents: base, label: "fixture", port: 7890,
-                timeout: 1, origins: [], appBuild: 1, protocolVersion: 1, architecture: "arm64")
+                timeout: 1, origins: [], protocolVersion: 1, architecture: "arm64")
             if owned { try Data(server.path.utf8).write(to: installation.installationMarker) }
             var commands: [[String]] = []
             installation.runner = { _, args in

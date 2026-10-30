@@ -100,6 +100,8 @@ jobs:
           done
 
       - name: Fetch the signed upstream server
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/fetch_server.py --public-key "$TILR_UPDATE_PUBLIC_KEY"
 
       - name: Import the Developer ID and notarization key

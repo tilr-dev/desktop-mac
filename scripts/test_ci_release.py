@@ -169,19 +169,11 @@ runpy.run_path(sys.argv[0], run_name='__main__')
             contents.mkdir(parents=True)
             (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
                 CFBundleIdentifier='dev.tilr.mac', CFBundleVersion='13', CFBundleShortVersionString='0.3.0',
-                SUPublicEDKey='public', TilrUpdateFeedSelection='preferences', TilrServerProtocolVersion=1,
-                TilrBundledServerBuild=4, TilrBundledServerVersion='0.2.1')))
+                SUPublicEDKey='public', TilrUpdateFeedSelection='preferences', TilrServerProtocolVersion=1)))
             helpers = contents / 'Helpers'
             helpers.mkdir()
             (helpers / 'tilrd').write_bytes(b'server')
             (helpers / 'tilr').write_bytes(b'client')
-            server = contents / 'Resources/server'
-            server.mkdir(parents=True)
-            (server / 'app-managed.json').write_text(json.dumps(dict(
-                version='0.2.1', build=4, arch=arch, protocolVersion=1, minAppBuild=1, maxAppBuild=None,
-                serverVersion='0.2.1-abcdef0', sha256=hashlib.sha256(b'server').hexdigest())))
-            (server / 'client.json').write_text(json.dumps(dict(
-                version='0.2.1-abcdef0', sha256=hashlib.sha256(b'client').hexdigest())))
 
     def github(self, tag='v0.3.0-rc.2'):
         return self.run_helper('github', '--tag', tag, '--build', '13', '--root', str(self.root))

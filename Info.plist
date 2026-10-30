@@ -37,6 +37,9 @@
     <!-- Seconds between background checks while the app is running. -->
     <key>SUScheduledCheckInterval</key>
     <integer>3600</integer>
+    <!-- The tilrd protocol this application speaks: the only compatibility condition with tilrd. -->
+    <key>TilrServerProtocolVersion</key>
+    <integer>1</integer>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

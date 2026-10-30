@@ -40,10 +40,10 @@ cannot race. The latest push replaces a pending run; multiple pushes arriving
 faster than an RC build are not supported. No local build history or reservations
 are used.
 
-The pinned tilrd version, artifact revision and protocol are defined in
-[`server-release.json`](server-release.json).
+Nothing pins the bundled tilrd: each release bundles the latest stable tilrd release
+at build time, whose protocol must equal `TilrServerProtocolVersion` in `Info.plist`.
 
-1. `app`: `fetch_server.py` acquires both architectures from the exact pinned
+1. `app`: `fetch_server.py` acquires both architectures from the latest stable
    tilrd GitHub Release, verifies archive SHA-256, architecture, expected Developer ID
    signature and upstream version. Missing or invalid assets stop the release (fetch_server.py exits 1; the former
    exit 3 for an unpublished feed build is removed).
@@ -97,25 +97,20 @@ Secrets (Settings → Environments), provisioned by Dan:
 | `release` (no required reviewer, branches `release/*`, tags `v*`) | `SPARKLE_PRIVATE_KEY` | exported Sparkle EdDSA private key |
 | | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | R2 API token (S3) with object read and write on the bucket `tilr-cdn` |
 
-## Pinned upstream server
+## Bundled upstream server
 
-`server-release.json` selects the signed upstream tilrd version, artifact revision
-(`build`) and protocol for the DMG. The revision identifies local completed artifacts;
-it is not a published server feed number.
+`fetch_server.py` resolves the latest stable tilrd GitHub Release (release
+candidates are prereleases and are skipped) and reads `PROTOCOL_VERSION` from its
+released `tilr-proto` source. A protocol other than `TilrServerProtocolVersion` in
+`Info.plist` stops the release: the application must be updated for the new
+protocol first. The selected version and protocol are recorded in
+`build/server-releases/selected.json`, so both architectures bundle the same release.
 
-After tilrd uploads a newly created stable release's signed GitHub assets, tilr-bot
-opens `chore: bump tilrd to X.Y.Z` into this repository's `main`. It refreshes the
-single `bot/bump-tilrd` branch from current main and updates an existing open PR
-instead of opening another. The pin uses that exact released version and the
-protocol constant from its released source; `build` is retained from main. RCs
-never update the pin. Normal PR CI runs `fetch_server.py` against that exact
-GitHub Release and verifies both architectures; review and merge follow the normal
-process, and the next Tilr release includes the new bootstrap server.
-
-The repository owner must grant the tilr-bot App installation access to desktop-mac
-with Contents and Pull requests read/write permissions. The tilrd release job uses
-its existing App credentials to mint a short-lived token scoped to this repository;
-it does not bypass checks or merge the PR. The automatic PR is the pin update path.
+The bundled pair is only an offline starting point. Tilr installs it when no tilrd
+is installed and at every launch, including the first launch after a Sparkle
+update, runs the installed `tilrd update` for the Receive RC versions channel. A new
+tilrd release therefore reaches users without a Tilr release, and no pin update or
+bot pull request exists. PR CI does not acquire the server.
 
 Desktop release tools do not publish server feeds or server update binaries.
 Installed apps delegate server updates to `tilrd update`.
@@ -135,7 +130,7 @@ the shipped app. An existing SwiftPM `Tilr.dSYM` is also copied there. Keep thes
 files for diagnostics: an unstripped executable alone does not supply source-level
 debug information when the compiler did not generate it. Sparkle exports are not
 stripped. Server artifacts are never stripped or re-signed when bundled into an app.
-The current server pin is defined in [`server-release.json`](server-release.json),
+The bundled server is the latest stable tilrd release at build time,
 independently of app numbers.
 
 Each app release writes `sizes.json` with logical file bytes (excluding duplicate
@@ -161,14 +156,14 @@ a delta stops publication before the feed update: retry the same upload after CD
 propagation. A changed file at an existing URL is an error, never an overwrite.
 
 The bundled server starts offline. Subsequent daemon updates run the installed
-`tilrd update --channel stable|beta` command from Local Server.
+`tilrd update --channel stable|beta` command at every launch and from Local Server.
 
 App update selection is controlled in Tilr → Update Settings → Receive RC versions.
 It defaults to off (stable), persists between launches, and takes effect on the next
 fresh appcast check. An automatic RC installation already prepared by Sparkle is
 kept and can still be installed after disabling RC versions. Enabling the setting
-selects beta for the app’s compiled architecture and for the next Update tilrd action.
-The daemon channel is read from this preference when the action starts.
+selects beta for the app’s compiled architecture and for the next launch update or
+Update tilrd action. The daemon channel is read from this preference when the update starts.
 
 ## Two independent update tracks, with a bundled server
 
@@ -177,24 +172,26 @@ The daemon channel is read from this preference when the action starts.
   Local Server passes `--channel stable|beta` from Receive RC versions. Server
   versions remain independent of app versions; the app consumes no server feed.
 
-The bundle contains an offline bootstrap server, pinned in `server-release.json`.
-An app build copies that exact completed server artifact unchanged, including its
-signature and manifest; it neither compiles the server nor changes its version.
-A compatible installed server is reused. A version older than the bundle pin or
-an incompatible protocol produces an Update tilrd prompt without application-side
-binary replacement. Installing a fresh app requires no network connection.
+The bundle contains an offline bootstrap server: the latest stable tilrd release
+when the app was built. An app build copies that completed server artifact unchanged,
+including its signature; it neither compiles the server nor changes its version.
+The bundle carries no server manifest or version keys, and its version selects
+nothing. A compatible installed server of any version is reused and updated by its
+own `tilrd update` at launch. Protocol is the only compatibility condition: a daemon
+speaking a newer protocol asks the user to update Tilr, an older one to update tilrd,
+without application-side binary replacement. Installing a fresh app requires no
+network connection.
 No JavaScript `tilr` CLI, Node, npm or Git is shipped.
 
 ### Bundle a server in an application release
 
-The automatic upstream release PR updates `server-release.json`.
-CI fetches and consumes the corresponding
+CI fetches the latest stable release and consumes the selected
 completed artifacts from `build/server-releases/`; `TILR_SERVER_RELEASE_ROOT` may
 point to the same downloaded artifacts on another build machine. App builds require verified upstream server artifacts, including preview apps. App releases remain two
 separate architecture DMGs; universal server artifacts are not used.
 
-The signed app records its supported server protocol and bundled server identity
-in Info.plist. Packaging verifies both pinned executables and copies them unchanged.
+The signed app records its supported server protocol, `TilrServerProtocolVersion`,
+in the source Info.plist. Packaging verifies both executables and copies them unchanged.
 The app uses the bundled binaries for offline installation; later updates run through
 `tilrd update` and are confirmed through the shared daemon's normal reload path.
 A newer installed server is not downgraded to the bundled version.
@@ -217,15 +214,18 @@ created. Previous private installations are not migrated; reinstall them.
 
 `Tilr > Check for Updates…` checks the application. Local Server shows installed
 and running tilrd versions; Refresh repeats the authenticated connection check.
-Update tilrd runs the selected daemon's `update --channel stable|beta` command off
-the UI thread. Receive RC versions selects its channel at the time of the action.
+At every launch, after the daemon is ready, Tilr runs the selected daemon's
+`update --channel stable|beta` command in the background; the current credentials
+stay in use, and a failure (for example offline) is shown in Local Server without an
+alert. A daemon speaking a newer protocol than the app is not updated.
+Update tilrd runs the same command on demand off the UI thread. Receive RC versions
+selects its channel at the time of the update.
 The app neither reads a server feed nor downloads or replaces an update itself.
 
 If the command fails (including unavailable CDN or beta pointer), the app reports
 its output, preserves credentials and leaves Update tilrd available for retry.
 After success it checks actual installed and running versions and compatibility.
-If beta selected an older RC after promotion, a version below the bundle pin keeps
-the update prompt. `local_server.update_timeout` bounds the daemon update command;
+`local_server.update_timeout` bounds the daemon update command;
 command/startup timeouts still govern local connection and readiness checks.
 The `.tilr-app-pending.json` journal remains only for first installation of the
 bundled daemon/client pair. Old update journals are retired without publishing
