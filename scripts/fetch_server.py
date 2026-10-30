@@ -129,7 +129,7 @@ def prepare(temp, arch, version, protocol):
     return binaries, manifest, provenance
 
 
-def install(destination, binaries, manifest, provenance, public_key):
+def install(destination, binaries, manifest, provenance):
     destination.mkdir(parents=True, exist_ok=False)
     for executable, binary in binaries.items():
         shutil.copy2(binary, destination / executable)
@@ -137,11 +137,11 @@ def install(destination, binaries, manifest, provenance, public_key):
     (destination / "client.json").write_text(json.dumps(client, indent=2) + "\n")
     (destination / "server.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (destination / "sizes.json").write_text(json.dumps(dict(architecture=manifest["arch"], binary_bytes=(destination / "tilrd").stat().st_size), indent=2) + "\n")
-    receipt = dict(preview=False, manifest=manifest, public_key=public_key, upstream=provenance, client=client)
+    receipt = dict(preview=False, manifest=manifest, upstream=provenance, client=client)
     (destination / "release.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
-def validate_completed(directory, version, arch, protocol, public_key=None):
+def validate_completed(directory, version, arch, protocol):
     receipt = json.loads((directory / "release.json").read_text())
     manifest = json.loads((directory / "server.json").read_text())
     upstream = receipt.get("upstream", {})
@@ -150,8 +150,8 @@ def validate_completed(directory, version, arch, protocol, public_key=None):
             or not re.fullmatch(r"[0-9a-f]{64}", upstream.get("sha256", ""))):
         raise ValueError("Server is not a completed upstream release")
     expected = dict(version=version, arch=arch, protocolVersion=protocol)
-    if any(manifest.get(k) != v for k, v in expected.items()) or (public_key is not None and receipt.get("public_key") != public_key):
-        raise ValueError("Server differs from the selected release or key")
+    if any(manifest.get(k) != v for k, v in expected.items()):
+        raise ValueError("Server differs from the selected release")
     if digest(directory / "tilrd") != manifest["sha256"]:
         raise ValueError("Server changed after acquisition")
     if check_binary(directory / "tilrd", arch, version) != manifest["serverVersion"]:
@@ -166,9 +166,7 @@ def validate_completed(directory, version, arch, protocol, public_key=None):
 
 
 def main():
-    parser = ArgumentParser(description=__doc__)
-    parser.add_argument("--public-key", default="")
-    args = parser.parse_args()
+    ArgumentParser(description=__doc__).parse_args()
     with (ROOT / "Info.plist").open("rb") as file:
         supported = plistlib.load(file)["TilrServerProtocolVersion"]
     releases = ROOT / "build/server-releases"
@@ -180,12 +178,12 @@ def main():
         for arch in TARGETS:
             directory = releases / f"{version}-{arch}"
             if directory.exists():
-                validate_completed(directory, version, arch, protocol, args.public_key)
+                validate_completed(directory, version, arch, protocol)
             else:
                 prepared[arch] = (directory, prepare(Path(temp), arch, version, protocol))
         # Verify both architectures before completing either new artifact.
         for directory, payload in prepared.values():
-            install(directory, *payload, args.public_key)
+            install(directory, *payload)
             success(f"Acquired upstream server: {directory}")
     # Bundling uses exactly this acquisition, not whatever release is latest by then.
     (releases / "selected.json").write_text(json.dumps(dict(version=version, protocolVersion=protocol), indent=2) + "\n")

@@ -91,7 +91,7 @@ class UpstreamServerTests(unittest.TestCase):
         # check_output internally calls run, so native execution is explicitly handled below.
         stack.enter_context(patch.object(fetch_server.subprocess, 'check_output', self.output))
         stack.enter_context(patch.object(fetch_server.platform, 'machine', return_value='arm64'))
-        stack.enter_context(patch('sys.argv', ['fetch_server.py', '--public-key', 'public']))
+        stack.enter_context(patch('sys.argv', ['fetch_server.py']))
         stack.enter_context(redirect_stdout(io.StringIO()))
         return stack
 
@@ -130,7 +130,7 @@ class UpstreamServerTests(unittest.TestCase):
         for arch in fetch_server.TARGETS:
             path = self.root / f'build/server-releases/0.2.0-{arch}'
             with self.patches():
-                manifest = fetch_server.validate_completed(path, '0.2.0', arch, 1, 'public')
+                manifest = fetch_server.validate_completed(path, '0.2.0', arch, 1)
                 bundle_server.bundle_server(self.root / f'{arch}.app', arch, 1, root=self.root)
             self.assertEqual(manifest['serverVersion'], '0.2.0-abcdef0')
             self.assertEqual((path / 'tilrd').read_bytes(), self.binaries[arch])
@@ -142,6 +142,7 @@ class UpstreamServerTests(unittest.TestCase):
             self.assertEqual(client['version'], manifest['serverVersion'])
             receipt = json.loads((path / 'release.json').read_text())
             self.assertEqual(receipt['upstream']['url'], fetch_server.release_url('0.2.0', arch))
+            self.assertNotIn('public_key', receipt)
         requirements = [arg[3:] for c in self.commands for arg in c if arg.startswith('-R=')]
         self.assertTrue(requirements)
         self.assertTrue(all('anchor apple generic' in r and '100.6.1.13' in r

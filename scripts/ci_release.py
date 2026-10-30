@@ -13,7 +13,7 @@ from publish import build_of, fetch, feed_items, validate_manifest
 from release_all import ARCHES, feed_for, completed, preflight, settings, publish_pair
 
 
-def resolve_build(requested):
+def published_maximum():
     maximum = 0
     with tempfile.TemporaryDirectory() as temporary:
         for channel in ("stable", "beta"):
@@ -21,11 +21,12 @@ def resolve_build(requested):
                 path = Path(temporary) / f"{channel}-{arch}.xml"
                 if fetch(feed_for(arch, channel), path):
                     maximum = max([maximum] + [build_of(item) for item in feed_items(path.read_bytes())])
-    if requested and (not requested.isdecimal() or int(requested) < 1):
-        raise ValueError("Build must be a positive integer")
-    build = int(requested) if requested else maximum + 1
-    if build <= maximum:
-        raise ValueError(f"Build {build} must be greater than published build {maximum}")
+    return maximum
+
+
+def resolve_build():
+    maximum = published_maximum()
+    build = maximum + 1
     print(f"App build: {build} (highest published across stable and beta: {maximum})", flush=True)
     return build
 
@@ -75,8 +76,8 @@ def publish_cdn(tag, build, root, repository, sha, notes_file):
     version, channel, notes = release_metadata(tag, repository, sha)
     assets = release_assets(version, build, channel, root)
     # Stable cannot be republished; beta retains verified partial-publication resume.
-    if channel == "stable":
-        resolve_build(str(build))
+    if channel == "stable" and build <= (maximum := published_maximum()):
+        raise ValueError(f"Build {build} must be greater than published build {maximum}")
     config = settings(require_build=False)
     inventories = [completed(asset.parent, version, build, arch, feed_for(arch, channel),
                              config["TILR_UPDATE_PUBLIC_KEY"])
@@ -106,8 +107,7 @@ def publish_github(tag, build, root, repository, sha):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    numbering = commands.add_parser("build")
-    numbering.add_argument("--build", default="")
+    commands.add_parser("build")
     metadata = commands.add_parser("release")
     metadata.add_argument("--tag", required=True)
     metadata.add_argument("--notes-file", type=Path, required=True)
@@ -122,7 +122,7 @@ def main():
     github.add_argument("--root", type=Path, default=Path("build/releases"))
     args = parser.parse_args()
     if args.command == "build":
-        build = resolve_build(args.build)
+        build = resolve_build()
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
             output.write(f"build={build}\n")
     elif args.command == "release":
