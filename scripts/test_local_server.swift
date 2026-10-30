@@ -47,6 +47,7 @@ final class Tab {
             esac
             cp "$state/installed" "$state/running"
             rm -f "$state/incompatible"
+            if [ -f "$state/upgrade-protocol" ]; then touch "$state/newer"; fi
             """
             try Data((script + "\n").utf8).write(to: daemon)
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: daemon.path)
@@ -174,6 +175,27 @@ final class Tab {
         await newerHost.waitForLaunchUpdate()
         expect(updates() == beforeNewer)
         expect(newerNotices.last?.contains("update Tilr.") == true)
+        try fm.removeItem(at: state.appendingPathComponent("newer"))
+        // A launch update that installs a newer protocol tells the user to update Tilr.
+        try write("upgrade-protocol", "")
+        let (upgradeHome, upgradeDaemon) = try makeHome("protocol-upgrade")
+        var upgradeNotices: [String] = []
+        let upgradeHost = LocalServerHost(homeDirectory: upgradeHome, receiveNotice: { upgradeNotices.append($0) },
+                                          resolveRunningExecutable: { upgradeDaemon })
+        upgradeHost.updateChannel = { "stable" }
+        upgradeHost.start(settings: settings, origins: ["tilr://app"], allowed: true)
+        expect(try await credentials(upgradeHost) == first)
+        expect(upgradeNotices.isEmpty)
+        await upgradeHost.waitForLaunchUpdate()
+        expect(upgradeNotices.count == 1)
+        expect(upgradeNotices.last?.contains("tilrd speaks protocol 2 and this Tilr supports protocol 1: update Tilr.") == true)
+        do {
+            _ = try await credentials(upgradeHost)
+            fatalError("Expected a newer protocol after the launch update")
+        } catch {
+            expect(error.localizedDescription.contains("update Tilr."))
+        }
+        try fm.removeItem(at: state.appendingPathComponent("upgrade-protocol"))
         try fm.removeItem(at: state.appendingPathComponent("newer"))
         print("local server daemon updates and protocol recovery passed")
     }

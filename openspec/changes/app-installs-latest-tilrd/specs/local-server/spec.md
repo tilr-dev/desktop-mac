@@ -22,6 +22,7 @@ Tilr SHALL bundle unchanged signed/notarized tilrd and tilr executables from the
 - **AND** the existing credentials stay usable while the command runs; after it succeeds the application waits for the reported version to be running and rechecks it
 - **AND** an already latest daemon is left running unchanged
 - **AND** an unavailable CDN or a failed command leaves the installed pair running and is shown in Local Server without an alert, so an offline launch keeps the bundled or installed version
+- **AND** an update that leaves the ready daemon speaking a newer protocol than the application is reported with an alert asking the user to update Tilr
 - **AND** a daemon reported as speaking a newer protocol than the application is not updated at launch
 
 #### Scenario: Validate daemon identity

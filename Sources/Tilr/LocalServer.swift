@@ -94,6 +94,8 @@ final class LocalServerHost: NSObject {
         guard install.isInstalled, !busy, !removed, self.settings != nil else { return }
         busy = true
         defer { busy = false }
+        let wasReady: Bool
+        if case .success(.some) = result { wasReady = true } else { wasReady = false }
         do {
             try await runUpdate(install, settings)
             status = versionDescription
@@ -101,6 +103,9 @@ final class LocalServerHost: NSObject {
             await inspectVersions(install)
             status = versionDescription + "\n\nCould not update tilrd at launch: " + error.localizedDescription
             print("local server:", status)
+            // An offline update leaves the daemon usable; one that installed a release this
+            // application cannot speak to (a newer protocol) must not fail silently.
+            if wasReady, case .failure = result { notice(status) }
         }
     }
 
