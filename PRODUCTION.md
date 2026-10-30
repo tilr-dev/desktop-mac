@@ -48,6 +48,8 @@ at build time, whose protocol must equal `TilrServerProtocolVersion` in `Info.pl
    signature and upstream version. Missing or invalid assets stop the release (fetch_server.py exits 1; the former
    exit 3 for an unpublished feed build is removed).
    No server compilation, stripping, signing or notarization happens here.
+   `fetch_gitpm.py` installs the plugin manager from the gitpm release in `gitpm.pin`
+   (see Plugin manager below); no gitpm sources or Rust toolchain are on the runner.
    Both app architectures are compiled without keys, then `release_all.py` signs,
    notarizes and packages the DMGs. No Sparkle key or Cloudflare token here.
 2. `publish`: verifies that the existing release tag points to checkout HEAD,
@@ -114,6 +116,34 @@ bot pull request exists. PR CI does not acquire the server.
 
 Desktop release tools do not publish server feeds or server update binaries.
 Installed apps delegate server updates to `tilrd update`.
+
+## Plugin manager (gitpm)
+
+The plugin manager is linked statically, so its version is fixed when the app is
+built. `gitpm.pin` holds one line: a gitpm release tag (`vX.Y.Z` or `vX.Y.Z-rc.N`),
+the full commit that tag points to and the SHA-256 of the release asset
+`gitpm-ffi-<tag>-universal-apple-darwin.tar.gz` (GitpmFFI.xcframework with arm64 and
+x86_64 slices, `swift/Gitpm.swift`, headers, licenses). gitpm's Release workflow
+attaches it with a `.sha256` file to every stable release and RC.
+
+`scripts/fetch_gitpm.py` (PR CI, RC and stable builds) downloads the archive and
+accepts it only when its SHA-256 equals both the pinned and the published value, the
+tag resolves to the pinned commit (`git ls-remote`), every entry is a regular file or
+folder under the archive's top folder and the library holds both slices. It then
+installs `Vendor/GitpmFFI.xcframework` and `Sources/Gitpm/Generated/Gitpm.swift`
+and records `release <tag> <sha256>` in `Vendor/.gitpm-built`; an installed pinned
+release is reused without downloading. Any failure exits 1 and leaves the installed
+plugin manager unchanged.
+
+`scripts/build-gitpm.sh` is for local development from gitpm sources (`../git/gitpm`
+or `GITPM_DIR`); without sources it keeps the installed release. Building the pinned
+commit from source (`bin/check` in the task workflow does) gives the same API.
+
+To move to another gitpm version, take a gitpm release or RC that has the archive,
+put its tag, commit and archive SHA-256
+(`gh release download <tag> -R tilr-dev/gitpm -p 'gitpm-ffi-*.sha256' -O -`) into
+`gitpm.pin` and adapt the Swift code to its API in the same pull request. There is
+no automatic pin bump.
 
 ## Compact packaging and delta updates (implemented)
 

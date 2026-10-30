@@ -25,8 +25,9 @@ updates take effect after restart. Package/ABI checks: `python3 scripts/test_nat
 add `--gui` in a desktop session for the browser/app probes.
 
 The plugin manager is the Rust library gitpm (`../git/gitpm`, its UniFFI wrapper
-`gitpm-ffi`), linked statically: `scripts/build-gitpm.sh` (run by `run.sh` and the release scripts; rebuilds
-when the library's sources are newer, needs cargo + rustup targets then) puts
+`gitpm-ffi`), linked statically: CI and releases install the gitpm release pinned in `gitpm.pin`
+with `scripts/fetch_gitpm.py` (no Rust); locally `scripts/build-gitpm.sh` (run by `run.sh` and the release scripts; rebuilds
+when the library's sources are newer, needs cargo + rustup targets then, keeps an installed release without sources) puts
 `Vendor/GitpmFFI.xcframework` (C module `GitpmFFI`) and `Sources/Gitpm/Generated/Gitpm.swift` (both
 gitignored) in place; the `Gitpm` target's `Sources/Gitpm/PluginManagerService.swift` runs it off the main
 thread (async, errors as `PluginManagerFailure` kind + message), `PluginManagerHost.swift` feeds it
@@ -36,9 +37,9 @@ thread (async, errors as `PluginManagerFailure` kind + message), `PluginManagerH
 Launch runs `syncDist` once to migrate the configured workspace's legacy dist contents to active
 plugins only; failures are logged and do not abort startup. Missing/empty workspaces are not
 created, unmanaged files are preserved, and probes use temporary workspaces.
-CI generates bindings from the full commit SHA in `gitpm.pin`; its first field is a
-revision label (a tag or `main`). Local and release builds use `../git/gitpm` or
-`GITPM_DIR`, so that checkout must expose the same API as the pin. The service uses
+`gitpm.pin` is `<release tag> <commit of that tag> <archive SHA-256>` (PRODUCTION.md, Plugin
+manager). Local builds use `../git/gitpm` or `GITPM_DIR`, so that checkout must expose the same API
+as the pin; bump the pin by hand together with the Swift code for a new API. The service uses
 `PackageManager`/`InstalledPackage`; `replace(original:replacement:)` has no confirmation
 parameter and refuses incompatible consumers. Restore the original with
 `replace(original: id, replacement: id)`. The probe covers invalid replacement,

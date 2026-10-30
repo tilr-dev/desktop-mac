@@ -12,9 +12,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "AppUpdates", dependencies: ["Sparkle"]),
-        // The plugin manager (Rust, ../git/gitpm) as a static library with UniFFI's Swift
-        // API. Both are generated and gitignored: scripts/build-gitpm.sh (run.sh and
-        // scripts/release.py call it) builds Vendor/ and Sources/Gitpm/Generated/.
+        // The plugin manager (Rust, gitpm) as a static library with UniFFI's Swift API, in
+        // Vendor/ and Sources/Gitpm/Generated/ (gitignored): scripts/fetch_gitpm.py installs
+        // the gitpm release in gitpm.pin (CI, releases); scripts/build-gitpm.sh builds them
+        // from local sources (../git/gitpm or GITPM_DIR) for development.
         .binaryTarget(name: "GitpmFFI", path: "Vendor/GitpmFFI.xcframework"),
         .target(name: "Gitpm", dependencies: ["GitpmFFI"]),
         .executableTarget(name: "Tilr", dependencies: ["Yams", "Sparkle", "AppUpdates", "Gitpm", .product(name: "TilrPluginABI", package: "SDK")], path: "Sources/Tilr",

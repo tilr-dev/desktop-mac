@@ -78,7 +78,8 @@ version=$(sh scripts/dev-version.sh)
 echo "version:     $version (build $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist))"
 
 # The plugin manager's static library and Swift API (Vendor/, Sources/Gitpm/Generated/,
-# gitignored): rebuilt from ../git/gitpm when its sources changed, else a no-op.
+# gitignored): rebuilt from ../git/gitpm when its sources changed, else a no-op; without
+# sources, the release installed by scripts/fetch_gitpm.py is kept.
 scripts/build-gitpm.sh
 swift build --build-system native -c release
 app=build/Tilr.app

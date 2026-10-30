@@ -137,6 +137,16 @@ class ReleaseWorkflowContract(unittest.TestCase):
             self.assertNotIn(forbidden, app)
         self.assertNotIn('name: server', self.text)
 
+    def test_plugin_manager_is_the_pinned_gitpm_release_not_compiled(self):
+        ci = jobs(WORKFLOW.with_name('ci.yml').read_text())["mac"]
+        app = self.jobs["app"]
+        for job in (ci, app):
+            for forbidden in ("tilr-dev/gitpm", "GITPM_DIR", "rustup", "cargo", "build-gitpm.sh"):
+                self.assertNotIn(forbidden, job)
+        self.assertLess(index(ci, "scripts/fetch_gitpm.py"), index(ci, "swift build"))
+        compile_step = steps(app)[index(app, "name: Compile")]
+        self.assertLess(compile_step.index("scripts/fetch_gitpm.py"), compile_step.index("swift package resolve"))
+
     def test_publication_reuses_the_tested_artifacts(self):
         publish = self.jobs["publish"]
         self.assertNotIn("scripts/release_server.py", publish)
