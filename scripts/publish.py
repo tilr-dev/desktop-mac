@@ -130,7 +130,7 @@ def validate_manifest(directory):
         from release_packaging import audit
         audit(directory / "Tilr.app", meta["arch"])
     from bundle_server import verify_server
-    verify_server(directory / "Tilr.app", meta["version"], meta["build"], meta["arch"])
+    verify_server(directory / "Tilr.app", meta["arch"])
     return meta, dmg
 
 

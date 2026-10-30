@@ -34,51 +34,43 @@ class PublishTests(unittest.TestCase):
         with info.open("wb") as file:
             plistlib.dump(dict(CFBundleIdentifier="dev.tilr.mac", CFBundleVersion="2",
                                CFBundleShortVersionString="0.1.1", SUFeedURL=self.meta["feed"],
-                               SUPublicEDKey="public", TilrServerProtocolVersion=1, TilrBundledServerBuild=2,
-                               TilrBundledServerVersion="0.1.1"), file)
+                               SUPublicEDKey="public", TilrServerProtocolVersion=1), file)
         helpers = self.root / "Tilr.app/Contents/Helpers"
         helpers.mkdir()
         (helpers / "tilrd").write_bytes(b"server")
         (helpers / "tilr").write_bytes(b"client")
-        resources = self.root / "Tilr.app/Contents/Resources/server"
-        resources.mkdir(parents=True)
-        (resources / "app-managed.json").write_text(json.dumps(dict(
-            version="0.1.1", build=2, arch="arm64", serverVersion="0.1.1-build2-test",
-            sha256=publish.digest(helpers / "tilrd"), protocolVersion=1, minAppBuild=1, maxAppBuild=None)))
-        (resources / "client.json").write_text(json.dumps(dict(
-            version="0.1.1-build2-test", sha256=publish.digest(helpers / "tilr"))))
         # These publication fixtures use bytes, not signed Mach-O executables.
         binary_check = patch("fetch_server.check_binary", return_value="0.1.1-build2-test")
         binary_check.start()
         self.addCleanup(binary_check.stop)
         self.manifest()
 
-    def test_protocol_one_release_rejects_other_server_protocols(self):
+    def test_server_pin_metadata_or_missing_protocol_blocks_publication(self):
         publish.validate_manifest(self.root)
-        path = self.root / "Tilr.app/Contents/Resources/server/app-managed.json"
-        manifest = json.loads(path.read_text())
-        for protocol in (0, 2):
-            with self.subTest(protocol=protocol):
-                manifest["protocolVersion"] = protocol
-                path.write_text(json.dumps(manifest))
-                with self.assertRaisesRegex(ValueError, "protocol does not match"):
+        info = self.root / "Tilr.app/Contents/Info.plist"
+        original = info.read_bytes()
+        values = plistlib.loads(original)
+        for change in (dict(TilrBundledServerVersion="0.1.1"), dict(TilrBundledServerBuild=2)):
+            with self.subTest(change=change):
+                info.write_bytes(plistlib.dumps(dict(values, **change)))
+                with self.assertRaisesRegex(ValueError, "pin metadata"):
                     publish.validate_manifest(self.root)
+        values.pop("TilrServerProtocolVersion")
+        info.write_bytes(plistlib.dumps(values))
+        with self.assertRaisesRegex(ValueError, "supported server protocol"):
+            publish.validate_manifest(self.root)
+        info.write_bytes(original)
+        resources = self.root / "Tilr.app/Contents/Resources/server"
+        resources.mkdir(parents=True)
+        (resources / "app-managed.json").write_text("{}")
+        with self.assertRaisesRegex(ValueError, "pin metadata"):
+            publish.validate_manifest(self.root)
 
-    def test_server_missing_tampered_or_wrong_build_blocks_publication(self):
-        helpers = self.root / "Tilr.app/Contents/Helpers"
-        (helpers / "tilrd").write_bytes(b"different")
-        with self.assertRaisesRegex(ValueError, "server checksum"):
-            publish.validate_manifest(self.root)
-        (helpers / "tilrd").write_bytes(b"server")
-        path = self.root / "Tilr.app/Contents/Resources/server/app-managed.json"
-        meta = json.loads(path.read_text())
-        meta["build"] = 1
-        path.write_text(json.dumps(meta))
-        with self.assertRaisesRegex(ValueError, "server differs"):
-            publish.validate_manifest(self.root)
-        path.unlink()
-        with self.assertRaises(FileNotFoundError):
-            publish.validate_manifest(self.root)
+    def test_client_of_another_release_blocks_publication(self):
+        identities = {"tilrd": "0.1.1-build2-test", "tilr": "0.1.2-other"}
+        with patch("fetch_server.check_binary", side_effect=lambda binary, *args: identities[Path(binary).name]):
+            with self.assertRaisesRegex(ValueError, "Bundled client differs"):
+                publish.validate_manifest(self.root)
 
     def manifest(self):
         (self.root / "release.json").write_text(json.dumps(self.meta))

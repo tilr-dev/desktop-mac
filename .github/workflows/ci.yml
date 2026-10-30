@@ -47,12 +47,6 @@ jobs:
         with:
           python-version: '3.13'
 
-      # Public key matches the release workflow; no signing credentials are needed.
-      - name: Verify the pinned upstream server
-        env:
-          TILR_UPDATE_PUBLIC_KEY: pbumHO+mL+o+BzD0cBPPXxHyxkOJzyGtvUSfwr0IvMg=
-        run: python3 scripts/fetch_server.py --public-key "$TILR_UPDATE_PUBLIC_KEY"
-
       - name: Toolchain
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin

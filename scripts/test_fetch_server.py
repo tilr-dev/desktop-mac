@@ -21,8 +21,10 @@ class UpstreamServerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        (self.root / 'server-release.json').write_text(json.dumps(dict(version='0.2.0', build=4, protocolVersion=1)))
+        import plistlib
+        (self.root / 'Info.plist').write_bytes(plistlib.dumps(dict(TilrServerProtocolVersion=1)))
         self.remote = {}
+        self.release('0.2.0')
         self.binaries = {}
         self.clients = {}
         self.commands = []
@@ -56,6 +58,13 @@ class UpstreamServerTests(unittest.TestCase):
                 tar.addfile(entry)
         self.remote[url] = data.getvalue()
         self.remote[url + '.sha256'] = (hashlib.sha256(data.getvalue()).hexdigest() + '  ' + Path(url).name + '\n').encode()
+
+    def release(self, version, tag=None, protocol='pub const PROTOCOL_VERSION: u32 = 1;\n'):
+        self.remote[fetch_server.LATEST_URL] = json.dumps(dict(tag_name=tag or f'v{version}', prerelease=False)).encode()
+        if protocol is None:
+            self.remote.pop(fetch_server.protocol_url(version), None)
+        else:
+            self.remote[fetch_server.protocol_url(version)] = protocol.encode()
 
     def fetch(self, url, path):
         if url not in self.remote:
@@ -117,10 +126,10 @@ class UpstreamServerTests(unittest.TestCase):
     def test_import_and_bundle_validation_preserve_signed_bytes(self):
         self.assertEqual(self.main(), 0)
         for arch in fetch_server.TARGETS:
-            path = self.root / f'build/server-releases/0.2.0-4-{arch}'
+            path = self.root / f'build/server-releases/0.2.0-{arch}'
             with self.patches():
-                manifest = fetch_server.validate_completed(path, '0.2.0', 4, arch, 1, 'public')
-                bundle_server.bundle_server(self.root / f'{arch}.app', arch, 17, root=self.root)
+                manifest = fetch_server.validate_completed(path, '0.2.0', arch, 1, 'public')
+                bundle_server.bundle_server(self.root / f'{arch}.app', arch, 1, root=self.root)
             self.assertEqual(manifest['serverVersion'], '0.2.0-abcdef0')
             self.assertEqual((path / 'tilrd').read_bytes(), self.binaries[arch])
             self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilrd').read_bytes(), self.binaries[arch])
@@ -140,7 +149,7 @@ class UpstreamServerTests(unittest.TestCase):
 
     def test_bundle_rejects_preview_receipts_before_copying(self):
         self.main()
-        path = self.root / 'build/server-releases/0.2.0-4-arm64/release.json'
+        path = self.root / 'build/server-releases/0.2.0-arm64/release.json'
         receipt = json.loads(path.read_text())
         app = self.root / 'preview.app'
         for preview in (True, None, 0):
@@ -148,17 +157,19 @@ class UpstreamServerTests(unittest.TestCase):
                 receipt['preview'] = preview
                 path.write_text(json.dumps(receipt))
                 with self.patches(), self.assertRaisesRegex(ValueError, 'not a completed upstream release'):
-                    bundle_server.bundle_server(app, 'arm64', 17, root=self.root)
+                    bundle_server.bundle_server(app, 'arm64', 1, root=self.root)
                 self.assertFalse(app.exists())
 
     def test_local_acquisition_needs_no_release_credentials_and_bundles_exact_bytes(self):
         with self.patches(), patch.dict('os.environ', {}, clear=True):
             self.assertEqual(self.main(), 0)
             for arch in fetch_server.TARGETS:
-                bundle_server.bundle_server(self.root / f'{arch}.app', arch, 17, root=self.root)
+                bundle_server.bundle_server(self.root / f'{arch}.app', arch, 1, root=self.root)
                 self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilrd').read_bytes(), self.binaries[arch])
                 self.assertEqual((self.root / f'{arch}.app/Contents/Helpers/tilr').read_bytes(), self.clients[arch])
-        self.assertTrue(all(url.startswith('https://github.com/tilr-dev/tilrd/') for url in self.remote))
+        self.assertTrue(all(url.startswith(('https://github.com/tilr-dev/tilrd/', 'https://api.github.com/repos/tilr-dev/tilrd/',
+                                            'https://raw.githubusercontent.com/tilr-dev/tilrd/v0.2.0/'))
+                            for url in self.remote))
 
     def test_release_identity_can_follow_an_adjacent_rust_string(self):
         for arch in fetch_server.TARGETS:
@@ -176,7 +187,7 @@ class UpstreamServerTests(unittest.TestCase):
         with patch.object(Path, 'rename', side_effect=OSError(errno.EXDEV, 'Cross-device link')):
             self.assertEqual(self.main(), 0)
         for arch in fetch_server.TARGETS:
-            binary = self.root / f'build/server-releases/0.2.0-4-{arch}/tilrd'
+            binary = self.root / f'build/server-releases/0.2.0-{arch}/tilrd'
             self.assertEqual(binary.read_bytes(), self.binaries[arch])
             self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
             client = binary.with_name('tilr')
@@ -286,17 +297,17 @@ class UpstreamServerTests(unittest.TestCase):
         import plistlib
         (app / 'Contents').mkdir(parents=True)
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
-            TilrServerProtocolVersion=1, TilrBundledServerBuild=4, TilrBundledServerVersion='0.2.0')))
+            TilrServerProtocolVersion=1)))
         with self.patches():
-            bundle_server.bundle_server(app, 'arm64', 17, root=self.root)
-            bundle_server.verify_server(app, '0.2.0', 17, 'arm64')
+            bundle_server.bundle_server(app, 'arm64', 1, root=self.root)
+            bundle_server.verify_server(app, 'arm64')
             (app / 'Contents/Helpers/tilr').write_bytes(b'changed')
-            with self.assertRaisesRegex(ValueError, 'Bundled client'):
-                bundle_server.verify_server(app, '0.2.0', 17, 'arm64')
+            with self.assertRaises(ValueError):
+                bundle_server.verify_server(app, 'arm64')
 
     def test_cached_client_tampering_or_missing_file_is_rejected(self):
         self.main()
-        path = self.root / 'build/server-releases/0.2.0-4-arm64/tilr'
+        path = self.root / 'build/server-releases/0.2.0-arm64/tilr'
         path.write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'Client changed after'):
             self.main()
@@ -306,7 +317,7 @@ class UpstreamServerTests(unittest.TestCase):
 
     def test_cached_tampering_and_legacy_compiled_receipt_are_rejected(self):
         self.main()
-        path = self.root / 'build/server-releases/0.2.0-4-arm64'
+        path = self.root / 'build/server-releases/0.2.0-arm64'
         (path / 'tilrd').write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'changed after'):
             self.main()
@@ -316,6 +327,44 @@ class UpstreamServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'completed upstream'):
             self.main()
 
+
+    def test_latest_stable_release_is_selected_for_bundling(self):
+        self.assertEqual(self.main(), 0)
+        selected = json.loads((self.root / 'build/server-releases/selected.json').read_text())
+        self.assertEqual(selected, dict(version='0.2.0', protocolVersion=1))
+        # A newer latest release does not change what an earlier acquisition selected.
+        self.release('0.3.0')
+        app = self.root / 'arm64.app'
+        with self.patches():
+            bundle_server.bundle_server(app, 'arm64', 1, root=self.root)
+        self.assertEqual((app / 'Contents/Helpers/tilrd').read_bytes(), self.binaries['arm64'])
+        self.assertFalse((app / 'Contents/Resources/server').exists())
+        with self.patches(), self.assertRaisesRegex(ValueError, 'protocol does not match'):
+            bundle_server.bundle_server(self.root / 'other.app', 'arm64', 2, root=self.root)
+
+    def test_invalid_latest_release_or_protocol_stops_before_download(self):
+        cases = (
+            dict(tag='v0.3.0-rc.1'),
+            dict(tag='nightly'),
+            dict(protocol=None),
+            dict(protocol='pub const PROTOCOL_VERSION: u32 = 0;\n'),
+            dict(protocol='// no protocol\n'),
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                self.release('0.2.0', **case)
+                with self.assertRaises(ValueError):
+                    self.main()
+                self.assertFalse((self.root / 'build/server-releases').exists())
+        del self.remote[fetch_server.LATEST_URL]
+        with self.assertRaisesRegex(ValueError, 'No stable tilrd GitHub Release'):
+            self.main()
+
+    def test_latest_release_of_another_protocol_stops_acquisition(self):
+        self.release('0.2.0', protocol='pub const PROTOCOL_VERSION: u32 = 2;\n')
+        with self.assertRaisesRegex(ValueError, 'speaks protocol 2; this application supports protocol 1'):
+            self.main()
+        self.assertFalse((self.root / 'build/server-releases').exists())
 
 if __name__ == '__main__':
     unittest.main()

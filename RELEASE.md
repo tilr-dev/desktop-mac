@@ -1,7 +1,7 @@
 # Tilr Mac releases
 
 The [production release guide](PRODUCTION.md) describes the CI release workflow,
-credentials, automatic server pins and artifact verification. Push a fix to
+credentials, the bundled latest tilrd and artifact verification. Push a fix to
 `release/X.Y` to build an RC for beta. Dan runs `bin/release desktop-mac` in the
 workflow tools to push the stable `vX.Y.Z` tag, which builds and publishes stable.
 CI allocates builds from all published appcasts.

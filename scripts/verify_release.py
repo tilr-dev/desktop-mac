@@ -43,7 +43,7 @@ def verify(directory, launch=False):
                 audit(app, meta["arch"])
             binary = app / "Contents/MacOS/Tilr"
             run("lipo", binary, "-verify_arch", meta["arch"])
-            verify_server(app, meta["version"], meta["build"], meta["arch"])
+            verify_server(app, meta["arch"])
             for executable in ("tilrd", "tilr"):
                 helper = app / "Contents/Helpers" / executable
                 run("lipo", helper, "-verify_arch", meta["arch"])

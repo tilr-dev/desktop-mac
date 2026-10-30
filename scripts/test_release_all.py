@@ -123,7 +123,7 @@ class ReleaseAllTests(unittest.TestCase):
                         stack.enter_context(patch("bundle_plugins." + name))
                     stack.enter_context(patch("bundle_plugins.plugin_inventory", return_value=[]))
                     stack.enter_context(patch("bundle_server.bundle_server", return_value=
-                        dict(protocolVersion=1, build=1, version="0.1.0")))
+                        dict(protocolVersion=1, version="0.1.0")))
                     stack.enter_context(patch.object(release_all, "completed", return_value=[]))
                     directories = release_all.execute("0.1.0", 1, channel, config, root=root, runner=runner)
                 outputs[channel] = []
@@ -133,6 +133,7 @@ class ReleaseAllTests(unittest.TestCase):
                     self.assertEqual(info["CFBundleShortVersionString"], "0.1.0")
                     self.assertTrue((directory / f"Tilr-0.1.0-1-{directory.name.rsplit('-', 1)[1]}.dmg").is_file())
                     self.assertNotIn("SUFeedURL", info)
+                    self.assertFalse(any(key.startswith("TilrBundledServer") for key in info))
                     self.assertEqual(info["TilrUpdateFeedSelection"], "preferences")
                     receipt = json.loads((directory / "release.json").read_text())
                     self.assertEqual(receipt["feed"], release_all.feed_for(receipt["arch"], channel))
