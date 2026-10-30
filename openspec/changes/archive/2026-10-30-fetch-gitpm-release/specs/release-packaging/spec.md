@@ -51,4 +51,3 @@ The release workflow SHALL separate credential setup, building, verification and
 #### Scenario: Local development
 - **WHEN** a developer builds or tests locally
 - **THEN** run.sh and the artifact verifier remain available without configuring a local release workflow
-

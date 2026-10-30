@@ -17,4 +17,3 @@ Tilr development SHALL use Swift Package/AppKit without an Xcode project and exe
 - **WHEN** run.sh builds the application
 - **THEN** the built Info.plist version is `<latest reachable v-tag without v>-dev.<short commit>[.dirty]`, with base `0.0.0` when no tag exists
 - **AND** the dirty suffix reflects tracked changes, the source Info.plist remains the `0.0.0-dev` placeholder, and real release versions are assigned by release tooling
-

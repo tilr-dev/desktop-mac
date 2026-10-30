@@ -53,4 +53,3 @@ The Release workflow SHALL run automatically on pushes to release/** and stable 
 - **WHEN** another release push arrives while an RC or stable build is active
 - **THEN** the active run is not cancelled and the latest push replaces any pending run
 - **AND** multiple pushes arriving faster than a release build are not supported
-

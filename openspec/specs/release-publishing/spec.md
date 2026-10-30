@@ -114,6 +114,7 @@ The Release workflow SHALL run automatically on pushes to release/** and stable 
 - **WHEN** a commit is pushed to release/X.Y and the shared workflow reports is_rc=true
 - **THEN** the shared workflow provides version X.Y.Z-rc.N and a fresh tag vX.Y.Z-rc.N, where N increases for successive candidates
 - **AND** the app job acquires the latest stable tilrd GitHub Release for both architectures, verifies archive SHA-256 and expected Developer ID signature, and stops on failure without compiling or signing the server
+- **AND** the app job installs the gitpm release pinned in gitpm.pin as the plugin manager before compiling, without gitpm sources or a Rust toolchain, and stops on any verification failure
 - **AND** the app job compiles both architectures, then signs, notarizes and packages them with Apple keys in a temporary keychain removed in every outcome
 - **AND** the app job resolves one build before packaging: the highest published build across stable and beta appcasts for both architectures plus one
 - **AND** that build is logged and passed explicitly to both architecture builds and publication, without local release history or reservations
@@ -131,6 +132,7 @@ The Release workflow SHALL run automatically on pushes to release/** and stable 
 - **THEN** the shared workflow verifies that its commit belongs to release/X.Y before creating or reusing the regular GitHub Release
 - **AND** both lightweight and annotated tags are resolved to their commit before checkout verification
 - **AND** a nonempty tag and is_rc=false select stable only for a stable tag push; both app and publish jobs check out that exact tag and verify its commit rather than building a branch tip
+- **AND** the app job installs the gitpm release pinned in gitpm.pin at that tag, as for candidates
 - **AND** both architectures are built, signed and notarized anew with a build greater than every published stable and beta build; the publish job uses those completed artifacts for stable appcasts
 - **AND** after CDN publication both manifest-selected DMGs are attached to the regular GitHub Release titled Tilr X.Y.Z (<build>), preserving the generated GitHub Release notes and tag
 - **AND** no stable publication runs without a nonempty shared tag and is_rc=false from a tag push
