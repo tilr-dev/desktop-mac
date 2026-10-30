@@ -28,6 +28,7 @@ class UpstreamServerTests(unittest.TestCase):
         self.binaries = {}
         self.clients = {}
         self.commands = []
+        self.requests = []
         self.signature = f'Authority=Developer ID Application: Rexuni ({fetch_server.TEAM})\nTeamIdentifier={fetch_server.TEAM}\nTimestamp=Oct 27, 2026\n'
         for arch in fetch_server.TARGETS:
             self.archive(arch)
@@ -66,7 +67,8 @@ class UpstreamServerTests(unittest.TestCase):
         else:
             self.remote[fetch_server.protocol_url(version)] = protocol.encode()
 
-    def fetch(self, url, path):
+    def fetch(self, url, path, headers=()):
+        self.requests.append((url, [Path(h[1:]).read_text() if h.startswith('@') else h for h in headers]))
         if url not in self.remote:
             return False
         path.write_bytes(self.remote[url])
@@ -365,6 +367,18 @@ class UpstreamServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'speaks protocol 2; this application supports protocol 1'):
             self.main()
         self.assertFalse((self.root / 'build/server-releases').exists())
+
+    def test_latest_release_lookup_authenticates_without_logging_the_token(self):
+        with patch.dict('os.environ', {'GH_TOKEN': 'secret-token'}):
+            self.assertEqual(self.main(), 0)
+        api = [headers for url, headers in self.requests if url == fetch_server.LATEST_URL]
+        self.assertEqual(api, [['Accept: application/vnd.github+json', 'Authorization: Bearer secret-token\n']])
+        self.assertFalse(any('secret-token' in str(arg) for command in self.commands for arg in command))
+        self.assertTrue(all(not headers for url, headers in self.requests if url != fetch_server.LATEST_URL))
+        with patch.dict('os.environ', {}, clear=True):
+            self.requests.clear()
+            self.main()
+        self.assertEqual([h for url, h in self.requests if url == fetch_server.LATEST_URL], [['Accept: application/vnd.github+json']])
 
 if __name__ == '__main__':
     unittest.main()

@@ -49,11 +49,13 @@ def digest(path):
         return hashlib.file_digest(file, "sha256").hexdigest()
 
 
-def fetch(url, path):
-    """404 means absent; auth/network/server failures must never mean a new feed."""
+def fetch(url, path, headers=()):
+    """404 means absent; auth/network/server failures must never mean a new feed.
+    Extra headers are curl -H values; pass secrets as @file so the logged command omits them."""
+    extra = [arg for header in headers for arg in ("-H", header)]
     result = run("curl", "-sS", "-L", "--proto", "=https", "--proto-redir", "=https",
                  "--connect-timeout", "15", "--max-time", "300",
-                 "-H", "Cache-Control: no-cache", "-o", path, "-w", "%{http_code}", url,
+                 "-H", "Cache-Control: no-cache", *extra, "-o", path, "-w", "%{http_code}", url,
                  capture_output=True, text=True)
     status = result.stdout.strip()
     if status == "404":

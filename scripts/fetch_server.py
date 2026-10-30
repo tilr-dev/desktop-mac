@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Acquire the latest stable signed tilrd GitHub Release without building or signing it."""
 import json
+import os
 from pathlib import Path, PurePosixPath
 import platform
 import plistlib
@@ -61,10 +62,22 @@ def check_binary(binary, arch, version, executable="tilrd"):
     return identity
 
 
+def github_api_headers(temp):
+    """CI passes GH_TOKEN: unauthenticated API reads share a small per-runner-IP limit."""
+    headers = ["Accept: application/vnd.github+json"]
+    token = os.environ.get("GH_TOKEN", "")
+    if token:
+        secret = temp / "github-headers"
+        with os.fdopen(os.open(secret, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
+            file.write(f"Authorization: Bearer {token}\n")
+        headers.append(f"@{secret}")
+    return headers
+
+
 def latest_release(temp):
     """GitHub's latest release is the newest stable one; candidates are prereleases."""
     latest = temp / "latest.json"
-    if not fetch(LATEST_URL, latest):
+    if not fetch(LATEST_URL, latest, github_api_headers(temp)):
         raise ValueError("No stable tilrd GitHub Release")
     tag = json.loads(latest.read_text()).get("tag_name", "")
     match = re.fullmatch(r"v(\d+\.\d+\.\d+)", tag if isinstance(tag, str) else "")
