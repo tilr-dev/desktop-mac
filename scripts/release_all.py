@@ -63,7 +63,7 @@ def preflight(config, publish, build=True):
         run(["swift", "package", "resolve"], cwd=ROOT)
     # Only publication signs feeds: a build-only runner embeds the public key and holds no Sparkle key.
     if publish:
-        key = sparkle_public_key(tools)
+        key = sparkle_public_key()
         if key != config["TILR_UPDATE_PUBLIC_KEY"]:
             raise ValueError("Runner's Sparkle key is missing or differs from configured public key")
     # Exercise the exact facilities which can be absent in an agent sandbox.

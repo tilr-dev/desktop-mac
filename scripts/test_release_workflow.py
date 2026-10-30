@@ -131,6 +131,7 @@ class ReleaseWorkflowContract(unittest.TestCase):
     def test_server_is_imported_before_apple_keys_arrive(self):
         app = self.jobs["app"]
         self.assertLess(index(app, "scripts/fetch_server.py"), index(app, "ci-apple-keychain.sh import"))
+        self.assertNotIn("--public-key", steps(app)[index(app, "scripts/fetch_server.py")])
         self.assertNotIn("--min-app-build", self.text)
         self.assertNotIn('server_min_app_build', self.text)
         for forbidden in ("tilrd-src", "Compile the server", "scripts/release_server.py", "notarytool"):
