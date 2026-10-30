@@ -15,12 +15,6 @@ struct ServerInstallation {
         let protocolVersion: Int
         let minAppBuild: Int
         let maxAppBuild: Int?
-
-        func supports(appBuild: Int, protocolVersion: Int, arch: String) -> Bool {
-            build > 0 && self.protocolVersion == protocolVersion && appBuild >= minAppBuild
-                && (maxAppBuild.map { appBuild <= $0 } ?? true)
-                && (self.arch == arch || self.arch == "universal")
-        }
     }
     struct Failure: LocalizedError {
         let message: String
@@ -30,6 +24,8 @@ struct ServerInstallation {
     struct ConnectionFailure: LocalizedError {
         let message: String
         let transient: Bool
+        /// The protocol a refusing daemon reported speaking, when it said.
+        var daemonProtocol: Int? = nil
         var errorDescription: String? { message }
     }
     struct Output {
@@ -44,11 +40,9 @@ struct ServerInstallation {
     let port: UInt16
     var timeout: TimeInterval
     let origins: [String]
-    let appBuild: Int
     let protocolVersion: Int
     let architecture: String
     var runner: Runner? = nil
-    var sourceManifest: URL? = nil
     /// Each launchd step, for the status the app shows while it works.
     var progress: ((String) -> Void)? = nil
 
@@ -171,13 +165,15 @@ struct ServerInstallation {
         guard response.status == 0 else {
             let text = response.text.lowercased()
             let protocolFailure = text.contains("protocol")
-            let hint = protocolFailure ? " Update tilrd in Local Server." : ""
+            let daemonProtocol = Self.daemonProtocol(response.text)
+            let hint = protocolFailure ? " " + protocolAdvice(daemonProtocol) : ""
             // The CLI has no machine-readable error kind. Retry only its known
             // transport diagnostics; protocol, peer and other refusals stay fatal.
             let transient = !protocolFailure && ["does not answer as tilrd does:", "did not answer",
                 "the server closed the connection", "send to the server", "read from the server"]
                 .contains { text.contains($0) }
-            throw ConnectionFailure(message: "Cannot connect to the ordinary tilrd: \(response.text)\(hint)", transient: transient)
+            throw ConnectionFailure(message: "Cannot connect to the ordinary tilrd: \(response.text)\(hint)", transient: transient,
+                                    daemonProtocol: daemonProtocol)
         }
         for line in response.text.split(separator: "\n") {
             if line.hasPrefix("tilrd "), !line.hasPrefix("tilrd is not running at "), let end = line.range(of: " at ") {
@@ -186,6 +182,25 @@ struct ServerInstallation {
             }
         }
         return nil
+    }
+
+    /// The bundled client reports "the server speaks protocol N, tilr M".
+    static func daemonProtocol(_ text: String) -> Int? {
+        guard let range = text.range(of: #"speaks protocol [0-9]+"#, options: .regularExpression) else { return nil }
+        return Int(text[range].split(separator: " ").last ?? "")
+    }
+
+    /// Only a newer application can speak a newer daemon protocol; an older daemon updates itself.
+    func protocolAdvice(_ daemon: Int?) -> String {
+        guard let daemon else { return "Update tilrd in Local Server." }
+        let both = "tilrd speaks protocol \(daemon) and this Tilr supports protocol \(protocolVersion)"
+        return daemon > protocolVersion ? both + ": update Tilr." : both + ": update tilrd in Local Server."
+    }
+
+    /// Updating a daemon newer than the application cannot make them compatible.
+    func needsNewerApplication(_ error: Error) -> Bool {
+        guard let daemon = (error as? ConnectionFailure)?.daemonProtocol else { return false }
+        return daemon > protocolVersion
     }
 
     /// macOS exposes the connected peer's pid. Resolve the live daemon's path for explicit
@@ -324,17 +339,15 @@ struct ServerInstallation {
             try? fm.removeItem(at: binary.deletingLastPathComponent().appendingPathComponent(".tilrd.app-new"))
             if let found = try discover() { return found }
         }
-        let data = try Data(contentsOf: sourceManifest ?? source.appendingPathComponent("app-managed.json"))
-        let wanted = try JSONDecoder().decode(Manifest.self, from: data)
+        // The bundled pair is a starting point, not a pin: its signatures and matching versions
+        // identify it, and the launch update replaces it with the latest release.
         let payload = source.appendingPathComponent("tilrd")
-        guard wanted.supports(appBuild: appBuild, protocolVersion: protocolVersion, arch: architecture) else {
-            throw Failure("The server is incompatible with this application; the running daemon was left untouched.")
-        }
-        guard try hash(payload) == wanted.sha256 else { throw Failure("Server checksum mismatch") }
         let signature = try command(URL(fileURLWithPath: "/usr/bin/codesign"), ["--verify", "--strict", payload.path])
-        guard signature.status == 0, try executableVersion(payload) == wanted.serverVersion else {
-            throw Failure("Server signature or version verification failed")
-        }
+        guard signature.status == 0 else { throw Failure("Server signature verification failed") }
+        let bundledVersion = try executableVersion(payload)
+        let wanted = Manifest(version: bundledVersion, build: 0, arch: architecture, serverVersion: bundledVersion,
+                              sha256: try hash(payload), protocolVersion: protocolVersion, minAppBuild: 0, maxAppBuild: nil)
+        let data = try JSONEncoder().encode(wanted)
         let cli = source.appendingPathComponent("tilr")
         let check = try command(URL(fileURLWithPath: "/usr/bin/codesign"), ["--verify", "--strict", cli.path])
         let version = try command(cli, ["--version"])
@@ -412,29 +425,6 @@ struct ServerInstallation {
         let response = try command(binary, ["update", "--channel", channel])
         guard response.status == 0 else { throw Failure("tilrd update failed: \(response.text)") }
         return try installedVersion()
-    }
-
-    /// Commit suffixes identify a build, not release order. RC versions sort below
-    /// their stable release; compare numeric RC identifiers numerically.
-    static func isOlder(_ version: String, than pin: String) -> Bool {
-        func parts(_ value: String) -> ([Int], String?) {
-            let clean = value.split(separator: "+", maxSplits: 1)[0]
-            let pieces = clean.split(separator: "-", maxSplits: 1)
-            let numbers = pieces[0].split(separator: ".").compactMap { Int($0) }
-            let suffix = pieces.count > 1 ? String(pieces[1].split(separator: "-")[0]) : ""
-            return (numbers, suffix.hasPrefix("rc") || suffix.hasPrefix("beta") || suffix.hasPrefix("alpha") ? suffix : nil)
-        }
-        let (left, prerelease) = parts(version)
-        let (right, pinnedPrerelease) = parts(pin)
-        for index in 0..<max(left.count, right.count) {
-            let a = index < left.count ? left[index] : 0
-            let b = index < right.count ? right[index] : 0
-            if a != b { return a < b }
-        }
-        if let prerelease, let pinnedPrerelease {
-            return prerelease.compare(pinnedPrerelease, options: .numeric) == .orderedAscending
-        }
-        return prerelease != nil && pinnedPrerelease == nil
     }
 
     enum Removal { case removed, notInstalled, declined }

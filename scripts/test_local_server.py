@@ -26,11 +26,9 @@ class LocalServerIntegrationTests(unittest.TestCase):
             binary.parent.mkdir(parents=True)
             helpers = contents / "Helpers"
             helpers.mkdir()
-            resources = contents / "Resources/server"
-            resources.mkdir(parents=True)
-            (resources / "app-managed.json").write_text("{}")
+            (helpers / "tilrd").write_text("#!/bin/sh\nexit 1\n")
             info = dict(CFBundleIdentifier="dev.tilr.host-fixture", CFBundleExecutable="Fixture",
-                        CFBundleVersion="10", TilrServerProtocolVersion=1, TilrBundledServerVersion="1.0.0")
+                        CFBundleVersion="10", TilrServerProtocolVersion=1)
             (contents / "Info.plist").write_bytes(plistlib.dumps(info))
             cli = helpers / "tilr"
             cli.write_text('''#!/bin/sh
@@ -40,7 +38,8 @@ state="$TILR_HOST_FIXTURE"
 case "$1" in
 version)
     if [ -f "$state/running" ]; then
-        if [ -f "$state/incompatible" ]; then echo 'incompatible protocol: daemon is too old' >&2; exit 2; fi
+        if [ -f "$state/newer" ]; then echo 'tilr: the server speaks protocol 2, tilr 1' >&2; exit 2; fi
+        if [ -f "$state/incompatible" ]; then echo 'tilr: the server speaks protocol 0, tilr 1' >&2; exit 2; fi
         echo "tilrd $(cat "$state/running") at local"
     else echo 'tilrd is not running at local'; fi;;
 token) test -f "$state/running"; cat "$state/token";;

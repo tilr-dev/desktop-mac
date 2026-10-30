@@ -65,20 +65,31 @@ final class Tab {
             precondition(Thread.isMainThread, "Local Server notices must run on the main thread")
             notices.append($0)
         }, resolveRunningExecutable: { daemon })
+        var reconnects = 0
         host.didUpdate = {
             precondition(Thread.isMainThread, "Local Server UI updates must run on the main thread")
+            reconnects += 1
         }
         var channel = "stable"
         host.updateChannel = {
             precondition(Thread.isMainThread, "Local Server update preferences must be read on the main thread")
             return channel
         }
+        func updates() -> String {
+            (try? String(contentsOf: state.appendingPathComponent("updates"), encoding: .utf8)) ?? ""
+        }
         var settings = Config.LocalServer()
+        // Launch serves the installed daemon at once, then updates it to the latest release.
         host.start(settings: settings, origins: ["tilr://app"], allowed: true)
         let first = try await credentials(host)
         expect(first?["token"] == "shared-token")
-        expect(host.status.contains("Installed tilrd: 0.9.0"))
-        expect(host.status.contains("Please update tilrd: this application bundles 1.0.0."))
+        await host.waitForLaunchUpdate()
+        expect(updates() == "update --channel stable\n")
+        expect(host.status.contains("Installed tilrd: 0.9.1"))
+        expect(host.status.contains("Running tilrd: 0.9.1"))
+        expect(!host.status.contains("Please update tilrd"))
+        expect(try await credentials(host) == first)
+        expect(reconnects == 1 && notices.isEmpty)
         settings.enabled = false
         host.configChanged(settings: settings, origins: ["tilr://app"], allowed: true)
         let disabled = try await credentials(host)
@@ -87,6 +98,11 @@ final class Tab {
         host.configChanged(settings: settings, origins: ["tilr://app"], allowed: true)
         let reenabled = try await credentials(host)
         expect(reenabled == first)
+        // The latest release is already running: nothing changes and pages do not reconnect.
+        await host.waitForLaunchUpdate()
+        expect(updates() == "update --channel stable\nupdate --channel stable\n")
+        expect(host.status.contains("Running tilrd: 0.9.1"))
+        expect(reconnects == 1 && notices.isEmpty)
         print("local server enable-disable-enable passed")
         let originalBytes = try Data(contentsOf: daemon)
         try write("fail", "")
@@ -98,21 +114,27 @@ final class Tab {
         expect(try Data(contentsOf: daemon) == originalBytes)
         expect(try String(contentsOf: state.appendingPathComponent("token"), encoding: .utf8) == "shared-token\n")
         expect(!fm.fileExists(atPath: home.appendingPathComponent(".local/bin/.tilr-app-pending.json").path))
+        // An unreachable CDN at launch keeps the installed daemon and only reports it.
+        var offlineNotices: [String] = []
+        let offline = LocalServerHost(homeDirectory: home, receiveNotice: { offlineNotices.append($0) },
+                                      resolveRunningExecutable: { daemon })
+        offline.start(settings: settings, origins: ["tilr://app"], allowed: true)
+        expect(try await credentials(offline) == first)
+        await offline.waitForLaunchUpdate()
+        expect(offline.status.contains("Running tilrd: 0.9.1"))
+        expect(offline.status.contains("Could not update tilrd at launch: tilrd update failed: daemon download failed"))
+        expect(try await credentials(offline) == first)
+        expect(offlineNotices.isEmpty)
         try fm.removeItem(at: state.appendingPathComponent("fail"))
-        await host.updateTilrd()
-        expect(host.status.contains("Installed tilrd: 0.9.1"))
-        expect(host.status.contains("Running tilrd: 0.9.1"))
-        expect(host.status.contains("Please update tilrd:"))
         channel = "beta"
         await host.updateTilrd()
         expect(host.status.contains("Installed tilrd: 1.1.0-rc.2"))
         expect(host.status.contains("Running tilrd: 1.1.0-rc.2"))
-        expect(!host.status.contains("Please update tilrd:"))
-        let updates = try String(contentsOf: state.appendingPathComponent("updates"), encoding: .utf8)
-        expect(updates == "update --channel stable\nupdate --channel stable\nupdate --channel beta\n")
+        expect(reconnects == 2)
+        expect(updates().hasSuffix("update --channel stable\nupdate --channel stable\nupdate --channel beta\n"))
         expect(try Data(contentsOf: daemon) == originalBytes)
-        // Starting the stopped old daemon fails its first authenticated probe, then the
-        // same update button recovers it without replacing it from the application bundle.
+        // Starting the stopped old daemon fails its first authenticated probe; the launch
+        // update recovers it through the daemon's own update, not from the application bundle.
         try fm.removeItem(at: state.appendingPathComponent("running"))
         try write("installed", "0.8.0\n")
         try write("incompatible", "")
@@ -126,18 +148,33 @@ final class Tab {
             _ = try await credentials(oldHost)
             fatalError("Expected incompatible protocol")
         } catch {
-            expect(error.localizedDescription.contains("incompatible protocol"))
-            expect(error.localizedDescription.contains("Update tilrd"))
+            expect(error.localizedDescription.contains("tilrd speaks protocol 0 and this Tilr supports protocol 1: update tilrd in Local Server."))
         }
-        expect(protocolNotices.last?.contains("incompatible protocol") == true)
-        expect(protocolNotices.last?.components(separatedBy: "incompatible protocol").count == 2)
-        expect(oldHost.status.contains("Installed tilrd: 0.8.0"))
-        await oldHost.updateTilrd()
+        expect(protocolNotices.last?.contains("speaks protocol 0") == true)
+        expect(protocolNotices.last?.components(separatedBy: "the server speaks protocol 0").count == 2)
+        await oldHost.waitForLaunchUpdate()
         let recovered = try await credentials(oldHost)
         expect(recovered == first)
         expect(oldHost.status.contains("Running tilrd: 1.1.0-rc.2"))
         expect(try Data(contentsOf: oldDaemon) == oldBytes)
         expect(!fm.fileExists(atPath: oldHome.appendingPathComponent(".local/bin/.tilr-app-pending.json").path))
+        // A daemon newer than the application asks for a Tilr update and is not updated.
+        try write("newer", "")
+        let beforeNewer = updates()
+        var newerNotices: [String] = []
+        let newerHost = LocalServerHost(homeDirectory: oldHome, receiveNotice: { newerNotices.append($0) },
+                                        resolveRunningExecutable: { oldDaemon })
+        newerHost.start(settings: settings, origins: ["tilr://app"], allowed: true)
+        do {
+            _ = try await credentials(newerHost)
+            fatalError("Expected a newer protocol")
+        } catch {
+            expect(error.localizedDescription.contains("tilrd speaks protocol 2 and this Tilr supports protocol 1: update Tilr."))
+        }
+        await newerHost.waitForLaunchUpdate()
+        expect(updates() == beforeNewer)
+        expect(newerNotices.last?.contains("update Tilr.") == true)
+        try fm.removeItem(at: state.appendingPathComponent("newer"))
         print("local server daemon updates and protocol recovery passed")
     }
 }

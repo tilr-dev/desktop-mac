@@ -1,7 +1,8 @@
 import AppKit
 import WebKit
 
-/// The bundle seeds an offline first install; the ordinary daemon owns subsequent updates.
+/// The bundle seeds an offline first install; the ordinary daemon owns subsequent updates,
+/// which the application runs at every start to keep it on the latest release.
 final class LocalServerHost: NSObject {
     static let shared = LocalServerHost()
     private let homeDirectory: URL
@@ -31,6 +32,7 @@ final class LocalServerHost: NSObject {
     /// Removed in this run (dialog or config); the dialog then offers nothing.
     private var removed = false
     var didUpdate: (() -> Void)?
+    private var launchUpdate: Task<Void, Never>?
 
     static var architecture: String {
         #if arch(arm64)
@@ -44,7 +46,7 @@ final class LocalServerHost: NSObject {
     func start(settings: Config.LocalServer, origins: [String], allowed: Bool) {
         guard allowed, !CommandLine.arguments.contains("--no-local-server") else { return }
         guard let bundle = Bundle.main.resourceURL?.deletingLastPathComponent(),
-              FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Resources/server/app-managed.json").path) else {
+              FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Helpers/tilrd").path) else {
             // Only a release build manages the server, so only it removes one.
             status = "This development build has no bundled server."
             return
@@ -57,8 +59,6 @@ final class LocalServerHost: NSObject {
         }
         guard settings.port == 7890, settings.commandTimeout > 0, settings.startupTimeout > 0, settings.retryInterval > 0,
               settings.updateTimeout > 0,
-              let appBuildText = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-              let appBuild = Int(appBuildText),
               let protocolVersion = Bundle.main.object(forInfoDictionaryKey: "TilrServerProtocolVersion") as? Int else {
             finish(.failure(ServerInstallation.Failure("Invalid local_server configuration (port must be 7890) or missing release compatibility metadata.")))
             return
@@ -68,9 +68,9 @@ final class LocalServerHost: NSObject {
         removed = false
         status = "Preparing the local server…"
         let install = makeInstallation(bundle: bundle, settings: settings, origins: origins,
-                                       appBuild: appBuild, protocolVersion: protocolVersion)
+                                       protocolVersion: protocolVersion)
         installation = install
-        Task { @MainActor in
+        launchUpdate = Task { @MainActor in
             do {
                 let (_, credentials) = try await Self.prepare(install, settings)
                 await inspectVersions(install)
@@ -82,9 +82,30 @@ final class LocalServerHost: NSObject {
                 await inspectVersions(install)
                 status = versionDescription
                 finish(.failure(error))
+                if install.needsNewerApplication(error) { return }
             }
+            await updateAtLaunch(install, settings)
         }
     }
+
+    /// Ready credentials stay in use while the daemon updates itself; an offline or failed
+    /// update keeps the installed pair and reports it without interrupting the user.
+    @MainActor private func updateAtLaunch(_ install: ServerInstallation, _ settings: Config.LocalServer) async {
+        guard install.isInstalled, !busy, !removed, self.settings != nil else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            try await runUpdate(install, settings)
+            status = versionDescription
+        } catch {
+            await inspectVersions(install)
+            status = versionDescription + "\n\nCould not update tilrd at launch: " + error.localizedDescription
+            print("local server:", status)
+        }
+    }
+
+    /// The launch update of the latest start, for callers that need its outcome.
+    func waitForLaunchUpdate() async { await launchUpdate?.value }
 
     /// The config file changed: `enabled: false` disables integration; `true` discovers the daemon when
     /// this run has not (it was off at launch, or removed since).
@@ -96,13 +117,12 @@ final class LocalServerHost: NSObject {
     }
 
     private func makeInstallation(bundle: URL, settings: Config.LocalServer, origins: [String],
-                                  appBuild: Int, protocolVersion: Int) -> ServerInstallation {
+                                  protocolVersion: Int) -> ServerInstallation {
         var install = ServerInstallation(source: bundle.appendingPathComponent("Helpers"),
             root: homeDirectory.appendingPathComponent(".local/bin"),
             agents: homeDirectory.appendingPathComponent("Library/LaunchAgents"),
             label: "sh.tilr.tilrd", port: 7890, timeout: settings.commandTimeout,
-            origins: Array(Set(origins)), appBuild: appBuild, protocolVersion: protocolVersion, architecture: Self.architecture,
-            sourceManifest: bundle.appendingPathComponent("Resources/server/app-managed.json"))
+            origins: Array(Set(origins)), protocolVersion: protocolVersion, architecture: Self.architecture)
         install.runningExecutable = resolveRunningExecutable
         install.progress = Self.report
         return install
@@ -159,21 +179,10 @@ final class LocalServerHost: NSObject {
                               retryInterval: settings.retryInterval)
     }
 
-    private var bundledVersion: String? {
-        if let version = Bundle.main.object(forInfoDictionaryKey: "TilrBundledServerVersion") as? String { return version }
-        guard let source = installation?.sourceManifest,
-              let data = try? Data(contentsOf: source),
-              let manifest = try? JSONDecoder().decode(ServerInstallation.Manifest.self, from: data) else { return nil }
-        return manifest.serverVersion
-    }
-
     private var versionDescription: String {
         var lines = ["Installed tilrd: " + (installedVersion ?? "Unknown"),
                      "Running tilrd: " + (runningVersion ?? "Not running or unreachable")]
         if let versionError { lines.append(versionError) }
-        if let installedVersion, let pin = bundledVersion, ServerInstallation.isOlder(installedVersion, than: pin) {
-            lines.append("Please update tilrd: this application bundles \(pin).")
-        }
         lines.append("Use Update tilrd to update the shared daemon. Closing Tilr leaves terminals running until logout.")
         return lines.joined(separator: "\n\n")
     }
@@ -198,31 +207,40 @@ final class LocalServerHost: NSObject {
         guard !starting, !busy, let installation, let settings else { return }
         busy = true
         defer { busy = false }
-        let channel = updateChannel()
-        status = "Updating tilrd (\(channel))…"
         do {
-            var updater = installation
-            updater.timeout = settings.updateTimeout
-            let version = try await Self.background { try updater.update(channel: channel) }
-            let credentials: [String: String]
-            do {
-                credentials = try await Self.background {
-                    try Self.waitReady(installation, version: version, settings)
-                }
-            } catch {
-                result = .failure(error)
-                didUpdate?()
-                throw error
-            }
-            await inspectVersions(installation)
-            result = .success(credentials)
-            didUpdate?()
+            try await runUpdate(installation, settings)
             status = versionDescription + "\n\nThe tilrd update command completed."
         } catch {
             await inspectVersions(installation)
             status = versionDescription + "\n\nCould not update tilrd: " + error.localizedDescription
         }
         notice(status)
+    }
+
+    /// The selected daemon installs the latest tilrd and tilr of the channel read now, then
+    /// the application waits for the version it reports. Pages reconnect only on a change.
+    @MainActor private func runUpdate(_ installation: ServerInstallation, _ settings: Config.LocalServer) async throws {
+        let channel = updateChannel()
+        status = "Updating tilrd (\(channel))…"
+        var updater = installation
+        updater.timeout = settings.updateTimeout
+        let previous = runningVersion
+        let wasReady: Bool
+        if case .success(.some) = result { wasReady = true } else { wasReady = false }
+        let version = try await Self.background { try updater.update(channel: channel) }
+        let credentials: [String: String]
+        do {
+            credentials = try await Self.background {
+                try Self.waitReady(installation, version: version, settings)
+            }
+        } catch {
+            result = .failure(error)
+            didUpdate?()
+            throw error
+        }
+        await inspectVersions(installation)
+        result = .success(credentials)
+        if !wasReady || previous != version { didUpdate?() }
     }
 
     private func finish(_ outcome: Result<[String: String]?, Error>) {
@@ -308,7 +326,7 @@ final class LocalServerHost: NSObject {
             guard let bundle = Bundle.main.resourceURL?.deletingLastPathComponent() else {
                 throw ServerInstallation.Failure("Cannot locate the application helpers.")
             }
-            install = makeInstallation(bundle: bundle, settings: settings, origins: [], appBuild: 0, protocolVersion: 1)
+            install = makeInstallation(bundle: bundle, settings: settings, origins: [], protocolVersion: 1)
             try await Self.background { try install.locateForRemoval() }
         }
         _ = try await Self.background { try install.remove(confirmExternal: Self.confirmExternalRemoval) }
