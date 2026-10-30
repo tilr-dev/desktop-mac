@@ -177,7 +177,7 @@ The shared publisher can use verified retained history when available.
 
 Sparkle decides whether a useful delta can be generated; two is an upper bound,
 not a promise. The full DMG remains in every new update item for first installations
-and fallback. Server updates continue to download the full server binary.
+and fallback.
 No ARM/Intel or stable/beta mixing occurs. Generated patches are retained in
 `deltas/`, their sizes/source versions in `delta-sizes.json`. They are verified with
 `sign_update`, uploaded to immutable URLs and downloaded/checksummed before the

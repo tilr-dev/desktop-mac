@@ -39,7 +39,7 @@ def sparkle_key():
     return ["--ed-key-file", path]
 
 
-def sparkle_public_key(tools):
+def sparkle_public_key():
     path = sparkle_key()[1]
     return subprocess.check_output(["swift", str(ROOT / "scripts/sparkle_public_key.swift"), path], text=True).strip()
 
@@ -321,7 +321,7 @@ def main():
             run("codesign", "--verify", "--deep", "--strict", path)
             run("xcrun", "stapler", "validate", path)
         run("spctl", "--assess", "--type", "execute", directory / "Tilr.app")
-        key = sparkle_public_key(args.sparkle_bin)
+        key = sparkle_public_key()
         if key != meta["public_key"]:
             raise ValueError("Sparkle signing key differs from the key embedded in this release")
         with tempfile.TemporaryDirectory(prefix="publish-", dir=ROOT / "build") as temp:

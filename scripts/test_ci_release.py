@@ -103,9 +103,9 @@ sys.argv = sys.argv[1:]
 runpy.run_path(sys.argv[0], run_name='__main__')
 """
 
-    def assert_build(self, expected, requested=''):
+    def assert_build(self, expected):
         (self.root / 'output').unlink(missing_ok=True)
-        result = self.run_helper('build', '--build', requested)
+        result = self.run_helper('build')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / 'output').read_text(), f'build={expected}\n')
         self.assertIn(f'App build: {expected}', result.stdout)
@@ -128,29 +128,24 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         self.feed('x86_64', [6])
         self.assert_build(7)
 
-    def test_explicit_build_must_exceed_maximum(self):
+    def test_explicit_build_is_rejected(self):
         self.feed('arm64', [7])
         self.feed('x86_64', [9])
-        self.feed('arm64', [15], 'beta')
-        for value in ('7', '9', '14', '15', '0', '-1', 'oops', '1.5'):
-            with self.subTest(build=value):
-                result = self.run_helper('build', '--build', value)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse((self.root / 'output').exists())
-        self.assert_build(20, requested='20')
+        result = self.run_helper('build', '--build', '20')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / 'output').exists())
 
-    def test_feed_errors_never_allocate_number_even_with_explicit_build(self):
+    def test_feed_errors_never_allocate_number(self):
         self.feed('arm64', [4])
         cases = [dict(status='403'), dict(status='500'), dict(exit=28),
                  dict(raw='not XML'), dict(raw='<rss/>'),
                  dict(raw='<rss><channel><item/></channel></rss>'), dict(builds=['oops'])]
         for case in cases:
-            for requested in ('', '20'):
-                with self.subTest(case=case, requested=requested):
-                    self.feed('x86_64', **case)
-                    result = self.run_helper('build', '--build', requested)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse((self.root / 'output').exists())
+            with self.subTest(case=case):
+                self.feed('x86_64', **case)
+                result = self.run_helper('build')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / 'output').exists())
 
     def assets(self, channel='beta', root=None, custom_name=False):
         root = root or self.root
