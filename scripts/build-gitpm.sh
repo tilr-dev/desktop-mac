@@ -5,6 +5,8 @@
 # Both are generated and gitignored. They are rebuilt (git/gitpm/scripts/build-apple.sh,
 # universal arm64 + x86_64) when missing or when the SHA-256 of the library sources differs
 # from the last build's (a checkout or touch alone does not rebuild); otherwise this is a no-op. run.sh and scripts/release.py call it before `swift build`.
+# For local development: CI and releases install the gitpm release in gitpm.pin with
+# scripts/fetch_gitpm.py instead, and without sources this script keeps that installation.
 #
 #   scripts/build-gitpm.sh [--arch ARCH]... [--force]
 #     --arch   a slice the library must contain (default: this Mac's); repeat for several

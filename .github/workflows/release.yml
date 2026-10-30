@@ -46,23 +46,10 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 120
     environment: apple-signing
-    env:
-      GITPM_DIR: ${{ github.workspace }}/.gitpm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.release.outputs.tag }}
-          persist-credentials: false
-
-      - name: Read the gitpm pin
-        id: gitpm
-        run: echo "sha=$(grep -v '^#' gitpm.pin | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: tilr-dev/gitpm
-          ref: ${{ steps.gitpm.outputs.sha }}
-          path: .gitpm
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -82,15 +69,15 @@ jobs:
 
       - name: Toolchain
         run: |
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
           xcodebuild -version
           swift --version
 
-      # Before any key is on the runner: the plugin manager, Swift packages and both app
-      # architectures with release.py's own swift invocation, so signing finds them up to date.
+      # Before any key is on the runner: the plugin manager (the verified gitpm release in
+      # gitpm.pin, not compiled), Swift packages and both app architectures with release.py's
+      # own swift invocation, so signing finds them up to date.
       - name: Compile
         run: |
-          scripts/build-gitpm.sh --arch arm64 --arch x86_64
+          python3 scripts/fetch_gitpm.py
           swift package resolve
           export CLANG_MODULE_CACHE_PATH="$PWD/.build/ModuleCache"
           export SWIFTPM_MODULECACHE_OVERRIDE="$CLANG_MODULE_CACHE_PATH"
