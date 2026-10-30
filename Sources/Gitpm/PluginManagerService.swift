@@ -178,9 +178,9 @@ public final class PluginManagerService: @unchecked Sendable {
     public func syncDistPlan() async throws -> DistSync { try await run { try $0.syncDistPlan() } }
     /// Reconciles legacy distribution contents with the current active set.
     public func syncDist() async throws -> DistSync { try await run { try $0.syncDist() } }
-    /// Forks an installed plugin into `namespace` at `destination` (outside the workspace).
-    public func fork(id: String, destination: String, namespace: String) async throws -> ForkResult {
-        try await run(git: true) { try $0.fork(id: id, destination: destination, namespace: namespace) }
+    /// Forks an installed plugin at `destination` (outside the workspace).
+    public func fork(id: String, destination: String) async throws -> ForkResult {
+        try await run(git: true) { try $0.fork(id: id, destination: destination) }
     }
 
     // Free functions: no workspace, no lock; still off the caller's thread.

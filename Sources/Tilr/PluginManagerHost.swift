@@ -93,7 +93,7 @@ extension AppDelegate {
         let empty = try? await pm.list()
         check(empty?.isEmpty == true, "a new workspace did not return an empty list")
         let gitProblem = await Task.detached(operation: { PluginManagerService.gitProblem() }).value
-        let missing = await Self.outcome { _ = try await pm.uninstallPlan(id: "probe/missing") }
+        let missing = await Self.outcome { _ = try await pm.uninstallPlan(id: Self.probeID("missing")) }
         check(missing == (gitProblem == nil ? "repository_not_found" : "git"), "uninstall plan of a missing plugin: \(missing)")
         let other = PluginManagerService(settings: .init(root: first, catalog: nil), label: "dev.tilr.plugin-manager.probe2")
         let locked = await Self.outcome { try await other.open() }
@@ -131,15 +131,15 @@ extension AppDelegate {
                 check(false, "fixture repository: \(error.localizedDescription)")
             }
             let installed = try? await pm.install(source: source.path)
-            check(installed?.id == "probe/demo" && installed?.current.version == "0.1.0", "install from a local repository: \(String(describing: installed))")
+            check(installed?.id == Self.probeID("demo") && installed?.current.version == "0.1.0", "install from a local repository: \(String(describing: installed))")
             let listed = (try? await pm.list()) ?? []
-            check(listed.map(\.id) == ["probe/demo"] && listed.first?.enabled == true, "list after install: \(listed.map(\.id))")
-            let plan = try? await pm.uninstallPlan(id: "probe/demo")
+            check(listed.map(\.id) == [Self.probeID("demo")] && listed.first?.enabled == true, "list after install: \(listed.map(\.id))")
+            let plan = try? await pm.uninstallPlan(id: Self.probeID("demo"))
             check(plan?.registered == true && plan?.lostWork.isEmpty == true && plan?.dependents.isEmpty == true,
                   "uninstall plan of a clean install: \(String(describing: plan))")
-            let replace = await Self.outcome { _ = try await pm.replace(original: "probe/other", replacement: "probe/demo") }
+            let replace = await Self.outcome { _ = try await pm.replace(original: Self.probeID("other"), replacement: Self.probeID("demo")) }
             check(replace == "invalid_argument", "replace by a plugin that declares no replaces: \(replace)")
-            check(await Self.outcome { try await pm.uninstall(id: "probe/demo") } == "ok", "uninstall")
+            check(await Self.outcome { try await pm.uninstall(id: Self.probeID("demo")) } == "ok", "uninstall")
             check(((try? await pm.list()) ?? [listed.first!]).isEmpty, "list after uninstall")
             await probeReplacements(pm, base: base)
             gitStep = "install, plan, uninstall, replace, incompatible refusal, restore original: ok"
@@ -155,31 +155,31 @@ extension AppDelegate {
         do {
             for (name, dependencies, replaces) in [
                 ("base", [:], nil),
-                ("consumer", ["probe/base": "^1"], nil),
+                ("consumer", [Self.probeID("base"): "^1"], nil),
                 ("replacement", [:], "1.0.0"),
                 ("incompatible", [:], "2.0.0")
             ] as [(String, [String: String], String?)] {
                 let source = base.appendingPathComponent(name)
                 try await Task.detached {
-                    try Self.makeProbePlugin(at: source, id: "probe/\(name)", version: "1.0.0",
+                    try Self.makeProbePlugin(at: source, name: name, version: "1.0.0",
                                              dependencies: dependencies, replaces: replaces)
                 }.value
                 _ = try await pm.install(source: source.path)
             }
             func provider(_ packages: [InstalledPackage]) -> String? {
-                packages.first { $0.id == "probe/consumer" }?.dependencies.first { $0.id == "probe/base" && $0.satisfied }?.provider
+                packages.first { $0.id == Self.probeID("consumer") }?.dependencies.first { $0.id == Self.probeID("base") && $0.satisfied }?.provider
             }
-            guard provider(try await pm.list()) == "probe/base" else { throw ProbeReplacementFailure.state }
-            let plan = try await pm.replace(original: "probe/base", replacement: "probe/replacement")
-            guard plan.provider == "probe/replacement", plan.consumers == ["probe/consumer"],
-                  provider(try await pm.list()) == "probe/replacement" else { throw ProbeReplacementFailure.state }
+            guard provider(try await pm.list()) == Self.probeID("base") else { throw ProbeReplacementFailure.state }
+            let plan = try await pm.replace(original: Self.probeID("base"), replacement: Self.probeID("replacement"))
+            guard plan.provider == Self.probeID("replacement"), plan.consumers == [Self.probeID("consumer")],
+                  provider(try await pm.list()) == Self.probeID("replacement") else { throw ProbeReplacementFailure.state }
             // Recreate the distribution layout left by gitpm <=0.4: replaced original
             // still deployed, active replacement missing, and an unrelated unmanaged folder.
             let files = FileManager.default
             let root = try await pm.root()
             let dist = URL(fileURLWithPath: root).appendingPathComponent("dist")
-            let stale = dist.appendingPathComponent("probe/base")
-            let active = dist.appendingPathComponent("probe/replacement")
+            let stale = dist.appendingPathComponent(Self.probeID("base"))
+            let active = dist.appendingPathComponent(Self.probeID("replacement"))
             let stray = dist.appendingPathComponent("stray")
             try files.createDirectory(at: stale, withIntermediateDirectories: true)
             try "legacy".write(to: stale.appendingPathComponent("index.js"), atomically: true, encoding: .utf8)
@@ -187,7 +187,7 @@ extension AppDelegate {
             try files.createDirectory(at: stray, withIntermediateDirectories: true)
             try "unmanaged".write(to: stray.appendingPathComponent("keep.txt"), atomically: true, encoding: .utf8)
             let drift = try await pm.syncDistPlan()
-            guard drift.deployed.contains("probe/replacement"), drift.removed.contains("probe/base"),
+            guard drift.deployed.contains(Self.probeID("replacement")), drift.removed.contains(Self.probeID("base")),
                   files.fileExists(atPath: stale.path), !files.fileExists(atPath: active.path) else {
                 throw ProbeReplacementFailure.state
             }
@@ -206,15 +206,15 @@ extension AppDelegate {
             let clean = try await pm.syncDistPlan()
             guard clean.deployed.isEmpty, clean.removed.isEmpty else { throw ProbeReplacementFailure.state }
             print("plugin manager: legacy dist migration, read-only plan, nonfatal lock failure, repeat sync: ok")
-            _ = try await pm.replace(original: "probe/base", replacement: "probe/base")
-            guard provider(try await pm.list()) == "probe/base" else { throw ProbeReplacementFailure.state }
+            _ = try await pm.replace(original: Self.probeID("base"), replacement: Self.probeID("base"))
+            guard provider(try await pm.list()) == Self.probeID("base") else { throw ProbeReplacementFailure.state }
             do {
-                _ = try await pm.replace(original: "probe/base", replacement: "probe/incompatible")
+                _ = try await pm.replace(original: Self.probeID("base"), replacement: Self.probeID("incompatible"))
                 throw ProbeReplacementFailure.acceptedIncompatible
             } catch let failure as PluginManagerFailure {
-                guard failure.kind == "incompatible_replacement", failure.plugins == ["probe/consumer"] else { throw failure }
+                guard failure.kind == "incompatible_replacement", failure.plugins == [Self.probeID("consumer")] else { throw failure }
             }
-            guard provider(try await pm.list()) == "probe/base" else { throw ProbeReplacementFailure.state }
+            guard provider(try await pm.list()) == Self.probeID("base") else { throw ProbeReplacementFailure.state }
         } catch {
             print("plugin manager: FAILED replacement round trip:", error)
             Instance.terminating()
@@ -229,19 +229,26 @@ extension AppDelegate {
         do { try await body(); return "ok" } catch { return PluginManagerFailure.from(error).kind }
     }
 
+    /// Package IDs of the probe's fixture plugins: fixed canonical UUIDs (gitpm identifies a
+    /// package by the UUID in its plugin.json; the name is only an alias).
+    nonisolated static func probeID(_ name: String) -> String {
+        let index = ["demo", "missing", "other", "base", "consumer", "replacement", "incompatible"].firstIndex(of: name)!
+        return String(format: "7e5d0000-0000-4000-8000-%012d", index + 1)
+    }
+
     /// A plugin repository like the library's scaffold: plugin.json, dist/, one commit, release
-    /// tag `<id>@<version>`. The user's Git settings that would sign or ask are switched off.
-    nonisolated static func makeProbePlugin(at directory: URL, id: String = "probe/demo", version: String = "0.1.0",
+    /// tag `v<version>`. The user's Git settings that would sign or ask are switched off.
+    nonisolated static func makeProbePlugin(at directory: URL, name: String = "demo", version: String = "0.1.0",
                                            dependencies: [String: String] = [:], replaces: String? = nil) throws {
         let files = FileManager.default
         try files.createDirectory(at: directory.appendingPathComponent("dist"), withIntermediateDirectories: true)
-        var manifest: [String: Any] = ["id": id, "version": version, "dependencies": dependencies]
-        if let replaces { manifest["replaces"] = ["id": "probe/base", "version": replaces] }
+        var manifest: [String: Any] = ["id": probeID(name), "name": "probe-\(name)", "version": version, "dependencies": dependencies]
+        if let replaces { manifest["replaces"] = ["id": probeID("base"), "version": replaces] }
         try JSONSerialization.data(withJSONObject: manifest).write(to: directory.appendingPathComponent("plugin.json"))
         try "export const probe = true\n".write(to: directory.appendingPathComponent("dist/index.js"), atomically: true, encoding: .utf8)
         let config = ["-c", "user.name=Tilr probe", "-c", "user.email=probe@example.invalid",
                       "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
-        for arguments in [["init", "-q", "-b", "main"], ["add", "--all"], ["commit", "-q", "-m", "probe 0.1.0"], ["tag", "\(id)@\(version)"]] {
+        for arguments in [["init", "-q", "-b", "main"], ["add", "--all"], ["commit", "-q", "-m", "probe 0.1.0"], ["tag", "v\(version)"]] {
             let git = Process()
             git.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             git.arguments = ["git", "-C", directory.path] + config + arguments
