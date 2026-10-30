@@ -1,5 +1,6 @@
 import hashlib
 import io
+import shutil
 from contextlib import ExitStack
 from pathlib import Path
 import subprocess
@@ -124,6 +125,41 @@ class FetchGitpmTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'must hold one line'):
                     self.main()
         self.assertEqual(self.requests, [])
+
+    def test_swift_copy_failure_preserves_previous_installation(self):
+        self.main()
+        before = self.installed_files()
+        self.swift = b'// generated API 2\n'
+        self.archive()
+        copyfile = shutil.copyfile
+
+        def fail_swift(src, dst, **kwargs):
+            if Path(src).name == 'Gitpm.swift':
+                raise OSError('Swift copy failed')
+            return copyfile(src, dst, **kwargs)
+
+        with patch.object(fetch_gitpm.shutil, 'copyfile', fail_swift):
+            with self.assertRaisesRegex(OSError, 'Swift copy failed'):
+                self.main()
+        self.assertEqual(self.installed_files(), before)
+
+    def test_replacement_failure_rolls_back_previous_installation(self):
+        self.main()
+        before = self.installed_files()
+        self.swift = b'// generated API 2\n'
+        self.archive()
+        replace = Path.replace
+        swift = self.root / 'Sources/Gitpm/Generated/Gitpm.swift'
+
+        def fail_replace(path, target):
+            if Path(target) == swift and path.name == 'new-swift':
+                raise OSError('Swift replacement failed')
+            return replace(path, target)
+
+        with patch.object(Path, 'replace', fail_replace):
+            with self.assertRaisesRegex(OSError, 'Swift replacement failed'):
+                self.main()
+        self.assertEqual(self.installed_files(), before)
 
     def assert_rejected(self, pattern):
         """A rejected release leaves the previously installed plugin manager unchanged."""

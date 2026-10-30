@@ -18,6 +18,10 @@ CI and release builds SHALL link the plugin manager from the gitpm GitHub Releas
 - **WHEN** the pinned release is already installed and its files are present
 - **THEN** the fetch succeeds without downloading
 
+#### Scenario: Preserve the installed release on an installation error
+- **WHEN** staging or replacing the verified library, Swift API or release stamp fails
+- **THEN** the fetch fails with the reason and restores any previously installed library, Swift API and stamp
+
 #### Scenario: Change the gitpm version
 - **WHEN** the application needs another plugin manager version
 - **THEN** a developer updates gitpm.pin and any Swift code using the plugin manager API in the same change; there is no automatic pin bump

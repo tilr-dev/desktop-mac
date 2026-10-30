@@ -93,16 +93,41 @@ def install(root, top, tag, sha256):
     vendor = root / "Vendor"
     vendor.mkdir(exist_ok=True)
     stamp = vendor / ".gitpm-built"
-    stamp.unlink(missing_ok=True)  # an interrupted install is never taken for the pinned release
     xcf = vendor / "GitpmFFI.xcframework"
-    shutil.rmtree(xcf, ignore_errors=True)
-    shutil.copytree(top / "GitpmFFI.xcframework", xcf)
     swift = root / "Sources/Gitpm/Generated/Gitpm.swift"
     swift.parent.mkdir(parents=True, exist_ok=True)
-    # Rewritten only on change, so an unchanged API does not recompile the Swift target.
-    if not swift.is_file() or swift.read_bytes() != (top / "swift/Gitpm.swift").read_bytes():
-        shutil.copyfile(top / "swift/Gitpm.swift", swift)
-    stamp.write_text(stamp_text(tag, sha256))
+    # Stage on the destination filesystem before touching the existing installation.
+    with tempfile.TemporaryDirectory(prefix=".gitpm-install-", dir=root) as temp:
+        staging = Path(temp)
+        staged_xcf = staging / "new-xcf"
+        shutil.copytree(top / "GitpmFFI.xcframework", staged_xcf)
+        replacements = [(staged_xcf, xcf)]
+        # Preserve the Swift mtime when its API is unchanged.
+        if not swift.is_file() or swift.read_bytes() != (top / "swift/Gitpm.swift").read_bytes():
+            staged_swift = staging / "new-swift"
+            shutil.copyfile(top / "swift/Gitpm.swift", staged_swift)
+            replacements.append((staged_swift, swift))
+        staged_stamp = staging / "new-stamp"
+        staged_stamp.write_text(stamp_text(tag, sha256))
+        replacements.append((staged_stamp, stamp))
+        moved = []
+        try:
+            for source, target in replacements:
+                backup = staging / f"old-{source.name}"
+                existed = target.exists()
+                if existed:
+                    target.replace(backup)
+                moved.append((target, backup, existed))
+                source.replace(target)
+        except OSError:
+            for target, backup, existed in reversed(moved):
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink(missing_ok=True)
+                if existed:
+                    backup.replace(target)
+            raise
 
 
 def main():
