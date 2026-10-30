@@ -12,4 +12,4 @@
 
 ## 4. Validation
 - [x] 4.1 Deterministic tests for launch update (newer, equal, unreachable, beta, other protocol) and latest-stable acquisition.
-- [ ] 4.2 Verify checks and review the final diff.
+- [x] 4.2 Verify checks and review the final diff.
