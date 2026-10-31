@@ -22,6 +22,13 @@ skips building and publication. Marketing version and DMG filenames use numeric
 repository version file or generated changelog; release history is maintained in
 GitHub Release notes. The source `Info.plist` remains a development template.
 
+The full tag version without `v` (`X.Y.Z` or `X.Y.Z-rc.N`) is stored in the bundle's
+`TilrReleaseTag`, `release.json`'s `release_tag`, and the appcast item title
+(`Tilr X.Y.Z[-rc.N]`). `CFBundleShortVersionString` and
+`sparkle:shortVersionString` stay numeric `X.Y.Z`; `CFBundleVersion` remains the
+numeric build number. Resume and publication stop if the stored release tag does
+not match the requested tag.
+
 Dan approves stable by running `bin/release desktop-mac` in the workflow tools,
 which pushes `vX.Y.Z`. The shared workflow rejects a tag whose commit does not
 belong to the matching `release/X.Y` branch before creating or reusing its regular
@@ -194,6 +201,14 @@ fresh appcast check. An automatic RC installation already prepared by Sparkle is
 kept and can still be installed after disabling RC versions. Enabling the setting
 selects beta for the app’s compiled architecture. The preference only controls the
 Sparkle feed for Tilr.app; the daemon reads its own channel from `server.toml`.
+
+In About / Check for Updates, RC builds appear as
+`Installed: X.Y.Z-rc.N (build B)` and available RC updates as
+`Available: X.Y.Z-rc.N (build B)`. Stable versions have no RC suffix. Installed
+uses `TilrReleaseTag` from the bundle; Available uses the appcast item title.
+Older builds and feeds without this metadata fall back to the numeric version.
+Update ordering and the "You're up to date!" check still use the build number,
+so a stable release with the same `X.Y.Z` and a higher build updates an RC.
 
 ## Two independent update tracks, with a bundled server
 

@@ -154,7 +154,7 @@ The Release workflow SHALL run automatically on pushes to release/** and stable 
 #### Scenario: Keep the marketing version numeric
 - **WHEN** an RC is built with version X.Y.Z and RC number N
 - **THEN** CFBundleShortVersionString and both DMG names use X.Y.Z without an RC suffix
-- **AND** the RC suffix appears only in the Git tag and GitHub pre-release metadata
+- **AND** the full version from the tag, including any RC suffix, is preserved separately in the bundle TilrReleaseTag and appcast item title; Sparkle shortVersionString remains numeric
 
 #### Scenario: Serialize candidate runs
 - **WHEN** another release push arrives while an RC or stable build is active
@@ -177,3 +177,33 @@ Stable CI publication SHALL stop before any CDN upload, feed change or GitHub Re
 - **WHEN** both completed stable artifacts pass preflight
 - **THEN** both feeds are prepared before publication and immutable downloads are uploaded and publicly verified before appcast.xml is changed and downloaded back for comparison
 - **AND** the regular GitHub Release receives both unchanged DMGs after successful CDN publication, without prerelease conversion, tag creation or replacement assets
+
+### Requirement: Release identity in the update panel
+The About / Check for Updates panel SHALL show the full tagged version for installed and available releases independently of Sparkle's numeric version and build comparison.
+
+#### Scenario: Display a release candidate
+- **WHEN** a release built from vX.Y.Z-rc.N is installed or offered by the beta appcast
+- **THEN** Installed or Available respectively shows X.Y.Z-rc.N (build B)
+- **AND** Installed reads TilrReleaseTag from the signed bundle and Available reads the appcast title Tilr X.Y.Z-rc.N
+- **AND** packaging derives this metadata from the tag rather than the selected update channel
+
+#### Scenario: Display a stable or older release
+- **WHEN** a stable vX.Y.Z release is installed or offered
+- **THEN** the panel shows X.Y.Z (build B), without an RC suffix
+- **WHEN** the bundle lacks TilrReleaseTag or the appcast lacks a recognized release title
+- **THEN** the panel falls back to CFBundleShortVersionString or sparkle:shortVersionString respectively
+
+#### Scenario: Compare builds independently of release display
+- **WHEN** an installed X.Y.Z-rc.N at build B checks a stable X.Y.Z at a greater build
+- **THEN** Sparkle offers the stable build as an update
+- **WHEN** no newer build is available
+- **THEN** the panel retains the up-to-date status while displaying the full available version
+- **AND** CFBundleShortVersionString, CFBundleVersion, DMG naming and Sparkle comparison fields retain their existing numeric formats
+
+#### Scenario: Carry verified tag identity through packaging and publication
+- **WHEN** CI verifies a stable or RC tag
+- **THEN** its full version without the leading v is passed with --release-tag through release_all.py to release.py and stored in the completed release receipt
+- **AND** omitted --release-tag defaults to the numeric version; an explicit value must match that version with an optional positive -rc.N suffix
+- **WHEN** a resumed build or publication requests a different release tag from its completed artifact
+- **THEN** it stops before publishing that artifact
+- **AND** publication verifies that the bundle release tag and generated appcast title match the receipt

@@ -45,6 +45,71 @@ class PublishTests(unittest.TestCase):
         self.addCleanup(binary_check.stop)
         self.manifest()
 
+    def test_release_identity_bundle_and_generated_feed(self):
+        from release import app_info
+        path = self.root / "Tilr.app/Contents/Info.plist"
+        template = plistlib.loads(path.read_bytes())
+        for tag in ('0.1.1-rc.2', '0.1.1'):
+            with self.subTest(tag=tag):
+                self.meta['release_tag'] = tag
+                info = app_info(dict(template, TilrReleaseTag='stale'), '0.1.1', 2, 'public', tag)
+                path.write_bytes(plistlib.dumps(info))
+                self.manifest()
+                publish.validate_manifest(self.root)
+                self.assertEqual(info['CFBundleShortVersionString'], '0.1.1')
+                self.assertEqual(info['CFBundleVersion'], '2')
+                self.assertEqual(info['TilrReleaseTag'], tag)
+                data = publish.set_release_title(feed(), self.meta)
+                item = publish.feed_items(data)[0]
+                self.assertEqual(item.findtext('title'), 'Tilr ' + tag)
+                self.assertEqual(item.findtext('sparkle:shortVersionString', namespaces=publish.NS), '0.1.1')
+                self.assertEqual(publish.build_of(item), 2)
+                publish.validate_candidate(data, self.meta, self.dmg)
+                for bad in (None, '0.1.1-rc.9'):
+                    broken = dict(info)
+                    if bad is None:
+                        broken.pop('TilrReleaseTag')
+                    else:
+                        broken['TilrReleaseTag'] = bad
+                    path.write_bytes(plistlib.dumps(broken))
+                    with self.assertRaisesRegex(ValueError, 'bundle'):
+                        publish.validate_manifest(self.root)
+                with self.assertRaisesRegex(ValueError, 'release title'):
+                    publish.validate_candidate(feed(), self.meta, self.dmg)
+        for invalid in ('0.1.2-rc.1', '0.1.1-rc.0', 'v0.1.1'):
+            with self.assertRaises(ValueError):
+                app_info(template, '0.1.1', 2, 'public', invalid)
+
+    def test_prepare_adds_tag_title_to_generated_appcast(self):
+        from release import app_info
+        path = self.root / "Tilr.app/Contents/Info.plist"
+        template = plistlib.loads(path.read_bytes())
+        for tag in ('0.1.1-rc.2', '0.1.1'):
+            self.meta['release_tag'] = tag
+            path.write_bytes(plistlib.dumps(app_info(template, '0.1.1', 2, 'public', tag)))
+            self.manifest()
+            def platform_run(*args, **kwargs):
+                if Path(args[0]).name == 'generate_appcast':
+                    data = feed().replace(b'</item>', b'<sparkle:criticalUpdate /></item>')
+                    (Path(args[-1]) / 'appcast.xml').write_bytes(data)
+            with patch.object(publish, 'ROOT', self.root), \
+                 patch.object(sys, 'argv', ['publish.py', str(self.root), '--maximum-deltas', '0']), \
+                 patch.object(publish, 'fetch', return_value=False), \
+                 patch.object(publish, 'run', side_effect=platform_run), \
+                 patch.object(publish.subprocess, 'check_output', return_value='public\n'):
+                publish.main()
+            generated = (self.root / 'appcast.xml').read_bytes()
+            self.assertEqual(publish.feed_items(generated)[0].findtext('title'), 'Tilr ' + tag)
+            publish.validate_candidate(generated, self.meta, self.dmg, require_no_skip=True)
+
+    def test_release_title_preserves_history_and_delta_metadata(self):
+        data = feed().replace(b'</channel>', b'<item><title>Old</title><sparkle:version>1</sparkle:version></item></channel>')
+        data = data.replace(b'</item>', b'<sparkle:deltas><enclosure sparkle:deltaFrom="1" /></sparkle:deltas></item>', 1)
+        self.meta['release_tag'] = '0.1.1-rc.1'
+        items = publish.feed_items(publish.set_release_title(data, self.meta))
+        self.assertEqual(items[1].findtext('title'), 'Old')
+        self.assertEqual(items[0].find('sparkle:deltas/enclosure', namespaces=publish.NS).get('{'+publish.SPARKLE+'}deltaFrom'), '1')
+
     def test_server_pin_metadata_or_missing_protocol_blocks_publication(self):
         publish.validate_manifest(self.root)
         info = self.root / "Tilr.app/Contents/Info.plist"

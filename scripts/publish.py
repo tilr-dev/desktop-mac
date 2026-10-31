@@ -24,6 +24,7 @@ ACCOUNT = "8e0530af975a33f2f739127f75084531"
 ENDPOINT = f"https://{ACCOUNT}.r2.cloudflarestorage.com"
 SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 NS = {"sparkle": SPARKLE}
+ET.register_namespace("sparkle", SPARKLE)
 
 
 def run(*args, **kwargs):
@@ -93,6 +94,11 @@ def validate_app_metadata(info, meta):
     """Accept runtime routing or unchanged completed legacy channel-bound apps."""
     expected = {"CFBundleIdentifier": "dev.tilr.mac", "CFBundleVersion": str(meta["build"]),
                 "CFBundleShortVersionString": meta["version"], "SUPublicEDKey": meta["public_key"]}
+    if "release_tag" in meta or "TilrReleaseTag" in info:
+        from release import release_version
+        if not isinstance(meta.get("release_tag"), str):
+            raise ValueError("Missing release tag in completed release metadata")
+        expected["TilrReleaseTag"] = release_version(meta["version"], meta["release_tag"])
     if "TilrUpdateFeedSelection" in info:
         if info["TilrUpdateFeedSelection"] != "preferences" or "SUFeedURL" in info:
             raise ValueError("Invalid runtime update feed metadata")
@@ -136,6 +142,19 @@ def validate_manifest(directory):
     return meta, dmg
 
 
+def set_release_title(data, meta):
+    """Change only the selected item's title, retaining Sparkle comparison fields."""
+    tree = ET.fromstring(data)
+    items = [item for item in tree.findall("./channel/item") if build_of(item) == meta["build"]]
+    if len(items) != 1:
+        raise ValueError("Generated feed must contain exactly one item for this build")
+    title = items[0].find("title")
+    if title is None:
+        title = ET.SubElement(items[0], "title")
+    title.text = "Tilr " + meta["release_tag"]
+    return ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+
+
 def validate_candidate(data, meta, dmg, require_no_skip=False):
     items = [item for item in feed_items(data) if build_of(item) == meta["build"]]
     if len(items) != 1:
@@ -153,6 +172,8 @@ def validate_candidate(data, meta, dmg, require_no_skip=False):
         raise ValueError("Generated update URL/size does not match the DMG")
     if item.findtext("sparkle:shortVersionString", namespaces=NS) != meta["version"]:
         raise ValueError("Generated feed marketing version differs from the release")
+    if "release_tag" in meta and item.findtext("title") != "Tilr " + meta["release_tag"]:
+        raise ValueError("Generated feed release title differs from the release")
     signature = enclosure.get(f"{{{SPARKLE}}}edSignature", "")
     if len(base64.b64decode(signature, validate=True)) != 64:
         raise ValueError("Missing/invalid EdDSA signature")
@@ -356,6 +377,8 @@ def main():
                 "--versions", str(meta["build"]),
                 "--critical-update-version", "",
                 "--download-url-prefix", meta["feed"].rsplit("/", 1)[0] + "/", stage)
+            if "release_tag" in meta:
+                feed.write_bytes(set_release_title(feed.read_bytes(), meta))
             signature = validate_candidate(feed.read_bytes(), meta, dmg, require_no_skip=True)
             run(args.sparkle_bin / "sign_update", *sparkle_key(), "--verify", dmg, signature)
             deltas = validate_deltas(feed.read_bytes(), meta, stage, args.sparkle_bin, history)

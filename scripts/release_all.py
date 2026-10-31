@@ -82,18 +82,22 @@ def preflight(config, publish, build=True):
     success("Release runner preflight passed.")
 
 
-def completed(directory, version, build, arch, feed, key):
+def completed(directory, version, build, arch, feed, key, release_tag=None):
     meta, _ = validate_manifest(directory)
     expected = dict(version=version, build=build, arch=arch, feed=feed, public_key=key)
     if any(meta.get(name) != value for name, value in expected.items()):
         raise ValueError(f"Existing release does not match requested version/build/channel/key: {directory}")
+    if release_tag is not None and meta.get("release_tag") != release_tag:
+        raise ValueError("Completed release tag differs from the requested release")
     from bundle_plugins import describe_plugins
     print(f"Completed native plugins ({arch}): {describe_plugins(meta.get('native_plugins', []))}", flush=True)
     return [(p['id'], p['version'], p['abi']) for p in meta.get('native_plugins', [])]
 
 
-def execute(version, build, channel, config, resume=False, root=ROOT, runner=run):
+def execute(version, build, channel, config, resume=False, root=ROOT, runner=run, release_tag=None):
     """Build and validate both architecture packages without publication."""
+    from release import release_version
+    release_tag = release_version(version, release_tag)
     outputs = []
     inventories = []
     for arch in ARCHES:
@@ -105,8 +109,8 @@ def execute(version, build, channel, config, resume=False, root=ROOT, runner=run
             if not resume:
                 raise ValueError(f"Output already exists: {output}. Use --resume for completed builds.")
         else:
-            runner([sys.executable, root / "scripts/release.py", "--version", version, "--build", str(build), "--arch", arch], env=env)
-        inventories.append(completed(output, version, build, arch, env["TILR_UPDATE_FEED"], config["TILR_UPDATE_PUBLIC_KEY"]))
+            runner([sys.executable, root / "scripts/release.py", "--version", version, "--build", str(build), "--arch", arch, "--release-tag", release_tag], env=env)
+        inventories.append(completed(output, version, build, arch, env["TILR_UPDATE_FEED"], config["TILR_UPDATE_PUBLIC_KEY"], release_tag))
         outputs.append(output)
     if inventories[0] != inventories[1]:
         raise ValueError("Native plugin versions/ABIs differ between architecture releases")
@@ -128,6 +132,7 @@ def publish_pair(outputs, notes=None, root=ROOT, runner=run):
 def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--version")
+    parser.add_argument("--release-tag", help="Full tag version without v")
     parser.add_argument("--build", type=int)
     parser.add_argument("--channel", choices=["stable", "beta"], default="stable")
     parser.add_argument("--resume", action="store_true", help="Reuse matching completed builds")
@@ -140,7 +145,7 @@ def main():
     preflight(config, publish=False)
     if args.check:
         return
-    outputs = execute(args.version, args.build, args.channel, config, resume=args.resume)
+    outputs = execute(args.version, args.build, args.channel, config, resume=args.resume, release_tag=args.release_tag)
     success("Both notarized builds are ready.")
     for output in outputs:
         success(f"Output: {output}")

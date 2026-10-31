@@ -72,13 +72,21 @@ def sign(path, identity, entitlements=None):
             return
 
 
-def app_info(template, version, build, public_key):
+def release_version(version, release_tag=None):
+    value = version if release_tag is None else release_tag
+    if not re.fullmatch(re.escape(version) + r"(?:-rc\.[1-9][0-9]*)?", value):
+        raise ValueError("Release tag version must match the numeric version with an optional -rc.N suffix")
+    return value
+
+
+def app_info(template, version, build, public_key, release_tag=None):
     """Channel-neutral signed metadata; the receipt alone routes publication."""
     info = dict(template)
     info.pop("SUFeedURL", None)
     info.pop("SUPublicEDKey", None)
     info.pop("TilrUpdateFeedSelection", None)
-    info.update(CFBundleShortVersionString=version, CFBundleVersion=str(build))
+    info.update(CFBundleShortVersionString=version, CFBundleVersion=str(build),
+                TilrReleaseTag=release_version(version, release_tag))
     if public_key:
         info.update(SUPublicEDKey=public_key, TilrUpdateFeedSelection="preferences")
     return info
@@ -87,6 +95,7 @@ def app_info(template, version, build, public_key):
 def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--release-tag", help="Full tag version without v, including any RC suffix")
     parser.add_argument("--build", required=True, type=int)
     parser.add_argument("--arch", choices=["arm64", "x86_64"], default="arm64")
     parser.add_argument("--preview", action="store_true", help="Ad-hoc local preview, NOT a public release")
@@ -98,6 +107,7 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"\d+(\.\d+){0,2}", args.version) or args.build < 1:
         parser.error("version must be numeric (e.g. 0.1.0); build must be positive")
+    args.release_tag = release_version(args.version, args.release_tag)
     def setting(name):
         return os.environ.get(name, "")
     identity = "-" if args.preview else setting("TILR_SIGN_IDENTITY")
@@ -153,7 +163,7 @@ def main():
         run("ditto", ROOT / "Resources/AppIcon.icns", contents / "Resources/AppIcon.icns")
         with (ROOT / "Info.plist").open("rb") as file:
             info = plistlib.load(file)
-        info = app_info(info, args.version, args.build, key)
+        info = app_info(info, args.version, args.build, key, args.release_tag)
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump(info, file)
         symbols = output / "symbols"
@@ -196,7 +206,7 @@ def main():
         with dmg.open("rb") as archive:
             sha256 = hashlib.file_digest(archive, "sha256").hexdigest()
         (output / "release.json").write_text(json.dumps({
-            "version": args.version, "build": args.build, "arch": args.arch, "packaging": 1,
+            "release_tag": args.release_tag, "version": args.version, "build": args.build, "arch": args.arch, "packaging": 1,
             "preview": args.preview, "dmg": dmg.name,
             "sha256": sha256,
             "native_plugins": plugins,

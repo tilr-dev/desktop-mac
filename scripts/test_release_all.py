@@ -125,17 +125,20 @@ class ReleaseAllTests(unittest.TestCase):
                     stack.enter_context(patch("bundle_server.bundle_server", return_value=
                         dict(protocolVersion=1, version="0.1.0")))
                     stack.enter_context(patch.object(release_all, "completed", return_value=[]))
-                    directories = release_all.execute("0.1.0", 1, channel, config, root=root, runner=runner)
+                    directories = release_all.execute("0.1.0", 1, channel, config, root=root, runner=runner,
+                                                      release_tag="0.1.0-rc.2")
                 outputs[channel] = []
                 for directory in directories:
                     data = (directory / "Tilr.app/Contents/Info.plist").read_bytes()
                     info = plistlib.loads(data)
                     self.assertEqual(info["CFBundleShortVersionString"], "0.1.0")
+                    self.assertEqual(info["TilrReleaseTag"], "0.1.0-rc.2")
                     self.assertTrue((directory / f"Tilr-0.1.0-1-{directory.name.rsplit('-', 1)[1]}.dmg").is_file())
                     self.assertNotIn("SUFeedURL", info)
                     self.assertFalse(any(key.startswith("TilrBundledServer") for key in info))
                     self.assertEqual(info["TilrUpdateFeedSelection"], "preferences")
                     receipt = json.loads((directory / "release.json").read_text())
+                    self.assertEqual(receipt["release_tag"], "0.1.0-rc.2")
                     self.assertEqual(receipt["feed"], release_all.feed_for(receipt["arch"], channel))
                     outputs[channel].append(data)
             finally:
@@ -146,7 +149,7 @@ class ReleaseAllTests(unittest.TestCase):
         calls = []
         def runner(cmd, **kwargs):
             calls.append(cmd)
-            if cmd[-1] == "x86_64":
+            if cmd[cmd.index("--arch") + 1] == "x86_64":
                 raise RuntimeError("Intel build failed")
         with patch.object(release_all, "completed"), self.assertRaises(RuntimeError):
             release_all.execute("0.1.0", 1, "beta", self.config, root=self.root, runner=runner)
@@ -173,6 +176,13 @@ class ReleaseAllTests(unittest.TestCase):
         self.assertFalse(calls)
         self.assertEqual(check.call_count, 2)
         self.assertIn("/mac/beta/x86_64/", check.call_args.args[4])
+
+    def test_resume_rejects_different_rc_identity(self):
+        meta = dict(version="0.1.0", build=1, arch="arm64", feed=release_all.feed_for("arm64", "beta"),
+                    public_key="key", release_tag="0.1.0-rc.1")
+        with patch.object(release_all, "validate_manifest", return_value=(meta, None)):
+            with self.assertRaisesRegex(ValueError, "release tag differs"):
+                release_all.completed(self.root, "0.1.0", 1, "arm64", meta["feed"], "key", "0.1.0-rc.2")
 
     def test_second_feed_preparation_failure_publishes_nothing(self):
         calls = []
