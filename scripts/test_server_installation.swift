@@ -138,19 +138,19 @@ import Darwin
         let updateRoot = base(updater)
         let externalUpdater = updateRoot.appendingPathComponent("external/tilrd")
         let updateVersion = updateRoot.appendingPathComponent("installed-version")
+        let updateConfig = updateRoot.appendingPathComponent("server.toml")
         let updateFailure = updateRoot.appendingPathComponent("fail-update")
         let updateLog = updateRoot.appendingPathComponent("update-commands")
         try Data("0.9.0-old\n".utf8).write(to: updateVersion)
         try executable(externalUpdater, """
         if [ "$1" = --version ]; then echo "tilrd $(cat '\(updateVersion.path)') (macos-aarch64)"; exit; fi
         echo "$0 $*" >> '\(updateLog.path)'
-        test "$#" = 3
+        test "$#" = 1
         test "$1" = update
-        test "$2" = --channel
         if [ -f '\(updateFailure.path)' ]; then echo 'download rejected by daemon' >&2; exit 7; fi
-        case "$3" in
-        stable) echo 0.9.1-stable > '\(updateVersion.path)' ;;
-        beta) echo 1.1.0-rc.2 > '\(updateVersion.path)' ;;
+        case "$(cat '\(updateConfig.path)' 2>/dev/null || true)" in
+        ''|'update_channel = "stable"') echo 0.9.1-stable > '\(updateVersion.path)' ;;
+        'update_channel = "beta"') echo 1.1.0-rc.2 > '\(updateVersion.path)' ;;
         *) exit 9 ;;
         esac
         """)
@@ -162,7 +162,7 @@ import Darwin
         let updateCredentials = try updater.credentials()
         try Data().write(to: updateFailure)
         do {
-            _ = try updater.update(channel: "stable")
+            _ = try updater.update()
             fatalError("Expected daemon update failure")
         } catch {
             expect(error.localizedDescription.contains("download rejected by daemon"))
@@ -173,11 +173,12 @@ import Darwin
         try fm.removeItem(at: updateFailure)
         let beforeUpdateCommands = commands(updater)
         // Successful updates report the actual installed version, whatever the bundle holds.
-        let stableVersion = try updater.update(channel: "stable")
+        let stableVersion = try updater.update()
         expect(stableVersion == "0.9.1-stable")
-        expect(try updater.update(channel: "beta") == "1.1.0-rc.2")
+        try Data("update_channel = \"beta\"\n".utf8).write(to: updateConfig)
+        expect(try updater.update() == "1.1.0-rc.2")
         let updateCommands = try String(contentsOf: updateLog, encoding: .utf8).split(separator: "\n").map(String.init)
-        expect(updateCommands == ["\(externalUpdater.path) update --channel stable", "\(externalUpdater.path) update --channel stable", "\(externalUpdater.path) update --channel beta"])
+        expect(updateCommands == ["\(externalUpdater.path) update", "\(externalUpdater.path) update", "\(externalUpdater.path) update"])
         expect(commands(updater) == beforeUpdateCommands)
         expect(try Data(contentsOf: externalUpdater) == externalBytes)
         expect(!fm.fileExists(atPath: updater.receipt.path))
