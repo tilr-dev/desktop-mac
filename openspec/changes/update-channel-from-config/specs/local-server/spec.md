@@ -54,3 +54,4 @@ Tilr SHALL show the installed tilrd version and an Update tilrd button in Local 
 - **THEN** the application preserves the existing daemon and credentials, reports the command error and leaves Update tilrd available for retry
 - **WHEN** the command succeeds, including selecting an older RC from beta after a stable promotion
 - **THEN** the application rechecks the actual installed and running versions and protocol before reporting readiness
+
