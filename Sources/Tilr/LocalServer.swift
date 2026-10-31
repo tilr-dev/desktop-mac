@@ -9,7 +9,6 @@ final class LocalServerHost: NSObject {
 
     private let resolveRunningExecutable: (() throws -> URL?)?
     private let receiveNotice: ((String) -> Void)?
-    var updateChannel: () -> String = { "stable" }
     init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
          receiveNotice: ((String) -> Void)? = nil,
          resolveRunningExecutable: (() throws -> URL?)? = nil) {
@@ -222,17 +221,16 @@ final class LocalServerHost: NSObject {
         notice(status)
     }
 
-    /// The selected daemon installs the latest tilrd and tilr of the channel read now, then
+    /// The selected daemon reads its configured channel and installs the latest tilrd and tilr, then
     /// the application waits for the version it reports. Pages reconnect only on a change.
     @MainActor private func runUpdate(_ installation: ServerInstallation, _ settings: Config.LocalServer) async throws {
-        let channel = updateChannel()
-        status = "Updating tilrd (\(channel))…"
+        status = "Updating tilrd…"
         var updater = installation
         updater.timeout = settings.updateTimeout
         let previous = runningVersion
         let wasReady: Bool
         if case .success(.some) = result { wasReady = true } else { wasReady = false }
-        let version = try await Self.background { try updater.update(channel: channel) }
+        let version = try await Self.background { try updater.update() }
         let credentials: [String: String]
         do {
             credentials = try await Self.background {

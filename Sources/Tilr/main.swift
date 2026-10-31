@@ -63,7 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LocalServerHost.shared.didUpdate = { [weak self] in
             self?.tabs.forEach { $0.send(event: "tilr-local-server-ready", detail: [:]) }
         }
-        LocalServerHost.shared.updateChannel = { UpdatePreferences().daemonChannel }
         LocalServerHost.shared.start(settings: config.localServer,
                                     origins: Site.apps(config: config).map { "tilr://\($0.host)" },
                                     allowed: Config.isDefaultDir && !probing)

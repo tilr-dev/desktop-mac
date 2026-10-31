@@ -36,13 +36,12 @@ final class Tab {
             state="$TILR_HOST_FIXTURE"
             if [ "$1" = --version ]; then echo "tilrd $(cat "$state/installed") (macos-aarch64)"; exit; fi
             echo "$*" >> "$state/updates"
-            test "$#" = 3
+            test "$#" = 1
             test "$1" = update
-            test "$2" = --channel
             if [ -f "$state/fail" ]; then echo 'daemon download failed' >&2; exit 7; fi
-            case "$3" in
-            stable) echo 0.9.1 > "$state/installed" ;;
-            beta) echo 1.1.0-rc.2 > "$state/installed" ;;
+            case "$(cat "$state/server.toml" 2>/dev/null || true)" in
+            ''|'update_channel = "stable"') echo 0.9.1 > "$state/installed" ;;
+            'update_channel = "beta"') echo 1.1.0-rc.2 > "$state/installed" ;;
             *) exit 9 ;;
             esac
             cp "$state/installed" "$state/running"
@@ -71,11 +70,10 @@ final class Tab {
             precondition(Thread.isMainThread, "Local Server UI updates must run on the main thread")
             reconnects += 1
         }
-        var channel = "stable"
-        host.updateChannel = {
-            precondition(Thread.isMainThread, "Local Server update preferences must be read on the main thread")
-            return channel
-        }
+        let preferences = UserDefaults(suiteName: "dev.tilr.host-fixture.\(UUID().uuidString)")!
+        defer { preferences.removeObject(forKey: "TilrReceiveRCVersions") }
+        // The application RC preference does not change the daemon's default stable channel.
+        preferences.set(true, forKey: "TilrReceiveRCVersions")
         func updates() -> String {
             (try? String(contentsOf: state.appendingPathComponent("updates"), encoding: .utf8)) ?? ""
         }
@@ -85,7 +83,7 @@ final class Tab {
         let first = try await credentials(host)
         expect(first?["token"] == "shared-token")
         await host.waitForLaunchUpdate()
-        expect(updates() == "update --channel stable\n")
+        expect(updates() == "update\n")
         expect(host.status.contains("Installed tilrd: 0.9.1"))
         expect(host.status.contains("Running tilrd: 0.9.1"))
         expect(!host.status.contains("Please update tilrd"))
@@ -101,7 +99,7 @@ final class Tab {
         expect(reenabled == first)
         // The latest release is already running: nothing changes and pages do not reconnect.
         await host.waitForLaunchUpdate()
-        expect(updates() == "update --channel stable\nupdate --channel stable\n")
+        expect(updates() == "update\nupdate\n")
         expect(host.status.contains("Running tilrd: 0.9.1"))
         expect(reconnects == 1 && notices.isEmpty)
         print("local server enable-disable-enable passed")
@@ -127,12 +125,14 @@ final class Tab {
         expect(try await credentials(offline) == first)
         expect(offlineNotices.isEmpty)
         try fm.removeItem(at: state.appendingPathComponent("fail"))
-        channel = "beta"
+        // The daemon configuration selects beta even with application RC updates disabled.
+        preferences.set(false, forKey: "TilrReceiveRCVersions")
+        try write("server.toml", "update_channel = \"beta\"\n")
         await host.updateTilrd()
         expect(host.status.contains("Installed tilrd: 1.1.0-rc.2"))
         expect(host.status.contains("Running tilrd: 1.1.0-rc.2"))
         expect(reconnects == 2)
-        expect(updates().hasSuffix("update --channel stable\nupdate --channel stable\nupdate --channel beta\n"))
+        expect(updates().hasSuffix("update\nupdate\nupdate\n"))
         expect(try Data(contentsOf: daemon) == originalBytes)
         // Starting the stopped old daemon fails its first authenticated probe; the launch
         // update recovers it through the daemon's own update, not from the application bundle.
@@ -143,7 +143,6 @@ final class Tab {
         let oldBytes = try Data(contentsOf: oldDaemon)
         var protocolNotices: [String] = []
         let oldHost = LocalServerHost(homeDirectory: oldHome, receiveNotice: { protocolNotices.append($0) })
-        oldHost.updateChannel = { "beta" }
         oldHost.start(settings: settings, origins: ["tilr://app"], allowed: true)
         do {
             _ = try await credentials(oldHost)
@@ -182,7 +181,6 @@ final class Tab {
         var upgradeNotices: [String] = []
         let upgradeHost = LocalServerHost(homeDirectory: upgradeHome, receiveNotice: { upgradeNotices.append($0) },
                                           resolveRunningExecutable: { upgradeDaemon })
-        upgradeHost.updateChannel = { "stable" }
         upgradeHost.start(settings: settings, origins: ["tilr://app"], allowed: true)
         expect(try await credentials(upgradeHost) == first)
         expect(upgradeNotices.isEmpty)

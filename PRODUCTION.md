@@ -110,7 +110,7 @@ protocol first. The selected version and protocol are recorded in
 
 The bundled pair is only an offline starting point. Tilr installs it when no tilrd
 is installed and at every launch, including the first launch after a Sparkle
-update, runs the installed `tilrd update` for the Receive RC versions channel. A new
+update, runs the installed `tilrd update` using the channel in `server.toml`. A new
 tilrd release therefore reaches users without a Tilr release, and no pin update or
 bot pull request exists. PR CI does not acquire the server.
 
@@ -186,20 +186,21 @@ a delta stops publication before the feed update: retry the same upload after CD
 propagation. A changed file at an existing URL is an error, never an overwrite.
 
 The bundled server starts offline. Subsequent daemon updates run the installed
-`tilrd update --channel stable|beta` command at every launch and from Local Server.
+`tilrd update` command at every launch and from Local Server.
 
 App update selection is controlled in Tilr → Update Settings → Receive RC versions.
 It defaults to off (stable), persists between launches, and takes effect on the next
 fresh appcast check. An automatic RC installation already prepared by Sparkle is
 kept and can still be installed after disabling RC versions. Enabling the setting
-selects beta for the app’s compiled architecture and for the next launch update or
-Update tilrd action. The daemon channel is read from this preference when the update starts.
+selects beta for the app’s compiled architecture. The preference only controls the
+Sparkle feed for Tilr.app; the daemon reads its own channel from `server.toml`.
 
 ## Two independent update tracks, with a bundled server
 
 - **Mac application**: existing Sparkle feeds under `/mac/<arch>/appcast.xml`.
 - **Server**: the installed `tilrd update` command owns downloads and replacement.
-  Local Server passes `--channel stable|beta` from Receive RC versions. Server
+  Local Server passes no channel argument. Set `update_channel = "beta"` in
+  `server.toml` for beta daemon updates; without the key, stable applies. Server
   versions remain independent of app versions; the app consumes no server feed.
 
 The bundle contains an offline bootstrap server: the latest stable tilrd release
@@ -245,11 +246,11 @@ created. Previous private installations are not migrated; reinstall them.
 `Tilr > Check for Updates…` checks the application. Local Server shows installed
 and running tilrd versions; Refresh repeats the authenticated connection check.
 At every launch, after the daemon is ready, Tilr runs the selected daemon's
-`update --channel stable|beta` command in the background; the current credentials
+`update` command in the background; the current credentials
 stay in use, and a failure (for example offline) is shown in Local Server without an
 alert. A daemon speaking a newer protocol than the app is not updated.
-Update tilrd runs the same command on demand off the UI thread. Receive RC versions
-selects its channel at the time of the update.
+Update tilrd runs the same command on demand off the UI thread. The daemon reads
+its channel from `server.toml` for each update.
 The app neither reads a server feed nor downloads or replaces an update itself.
 
 If the command fails (including unavailable CDN or beta pointer), the app reports

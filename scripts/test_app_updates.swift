@@ -42,7 +42,6 @@ final class DeferredUpdate: NSObject {
         updater.setValue(false, forKey: "canCheckForUpdates")
         expectMenuEnabled(false)
         func expectFeed(_ beta: Bool) {
-            precondition(preferences.daemonChannel == (beta ? "beta" : "stable"))
             let expected = "https://cdn.tilr.dev/mac/\(beta ? "beta/" : "")\(arch)/appcast.xml"
             precondition(updates.controller.updater.feedURL?.absoluteString == expected,
                          "Sparkle feed: \(String(describing: updater.feedURL)), expected \(expected)")
