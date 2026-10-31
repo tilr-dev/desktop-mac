@@ -37,7 +37,7 @@ Tilr SHALL show the installed tilrd version and an Update tilrd button in Local 
 - **THEN** an authenticated check runs off the UI thread and shows the installed and running tilrd versions or Not running or unreachable
 - **AND** Local Server offers Update tilrd for the selected installation and shows a prompt when its protocol is incompatible
 
-#### Scenario: Update using the daemon configuration
+#### Scenario: Select the daemon update channel
 - **WHEN** Update tilrd is selected
 - **THEN** the selected installed tilrd runs update without a channel argument
 - **AND** tilrd reads the channel from server.toml; Receive RC versions controls only the Sparkle feed for Tilr.app
