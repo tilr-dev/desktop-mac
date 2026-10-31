@@ -71,6 +71,22 @@ let package = Package(name: "AppUpdateTests", platforms: [.macOS(.v14)],
                         subprocess.run(['defaults', 'delete', domain], stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL)
 
+            for release_tag in ('0.1.0-rc.2', '0.1.0', None):
+                if release_tag is None:
+                    info.pop('TilrReleaseTag', None)
+                else:
+                    info['TilrReleaseTag'] = release_tag
+                (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
+                subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
+                suite = 'dev.tilr.update-tests.' + uuid.uuid4().hex
+                try:
+                    subprocess.run([str(binary), 'display', suite, 'arm64', release_tag or '0.1.0'],
+                                   env=env, check=True)
+                finally:
+                    for domain in (suite, bundle_id):
+                        subprocess.run(['defaults', 'delete', domain], stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+
 
 
 if __name__ == '__main__':

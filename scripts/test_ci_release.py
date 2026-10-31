@@ -156,7 +156,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
             dmg = directory / name
             dmg.write_text(f'signed notarized {arch}')
             prefix = 'beta/' if channel == 'beta' else ''
-            meta = dict(version='0.3.0', build=13, arch=arch, preview=False,
+            meta = dict(release_tag='0.3.0-rc.2' if channel == 'beta' else '0.3.0', version='0.3.0', build=13, arch=arch, preview=False,
                         dmg=name, sha256=hashlib.sha256(dmg.read_bytes()).hexdigest(),
                         feed=f'https://cdn.tilr.dev/mac/{prefix}{arch}/appcast.xml', public_key='public')
             (directory / 'release.json').write_text(json.dumps(meta))
@@ -164,11 +164,22 @@ runpy.run_path(sys.argv[0], run_name='__main__')
             contents.mkdir(parents=True)
             (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
                 CFBundleIdentifier='dev.tilr.mac', CFBundleVersion='13', CFBundleShortVersionString='0.3.0',
-                SUPublicEDKey='public', TilrUpdateFeedSelection='preferences', TilrServerProtocolVersion=1)))
+                TilrReleaseTag=meta['release_tag'], SUPublicEDKey='public', TilrUpdateFeedSelection='preferences', TilrServerProtocolVersion=1)))
             helpers = contents / 'Helpers'
             helpers.mkdir()
             (helpers / 'tilrd').write_bytes(b'server')
             (helpers / 'tilr').write_bytes(b'client')
+
+    def test_different_rc_artifacts_are_rejected_before_publication(self):
+        self.assets()
+        for command in ('github', 'publish'):
+            result = self.run_helper(command, '--tag', 'v0.3.0-rc.3', '--build', '13',
+                                     '--root', str(self.root),
+                                     *(['--notes-file', str(self.root / 'notes')] if command == 'publish' else []))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('release tag differs', result.stderr)
+            self.assertFalse((self.root / 'uploaded').exists())
+            self.assertFalse((self.root / 'cdn-calls').exists())
 
     def github(self, tag='v0.3.0-rc.2'):
         return self.run_helper('github', '--tag', tag, '--build', '13', '--root', str(self.root))
@@ -183,7 +194,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         self.feed('arm64', [12], channel='beta')
         metadata = self.metadata()
         self.assertEqual(metadata.returncode, 0, metadata.stderr)
-        self.assertEqual((self.root / 'output').read_text(), 'version=0.3.0\nchannel=beta\n')
+        self.assertEqual((self.root / 'output').read_text(), 'version=0.3.0\nchannel=beta\nrelease_tag=0.3.0-rc.2\n')
         self.assertEqual((self.root / 'notes').read_text(), self.env['NOTES'])
         self.assert_build(13)
         self.assets()
@@ -231,6 +242,7 @@ assert args[0] == 'scripts/release_all.py'
 assert '--publish-only' not in args and '--publish' not in args
 version, build = args[args.index('--version') + 1], args[args.index('--build') + 1]
 assert version == '0.3.0' and build == '13'
+assert args[args.index('--release-tag') + 1] == ('0.3.0-rc.2' if os.environ['EXPECTED_CHANNEL'] == 'beta' else '0.3.0')
 assert args[args.index('--channel') + 1] == os.environ['EXPECTED_CHANNEL']
 """)
         def run_step(job, marker):
@@ -249,7 +261,7 @@ assert args[args.index('--channel') + 1] == os.environ['EXPECTED_CHANNEL']
             self.assertEqual(result.returncode, 0, result.stderr)
         run_step('app', 'ci_release.py release')
         metadata = dict(line.split('=') for line in (self.root / 'output').read_text().splitlines())
-        self.assertEqual(metadata, dict(version='0.3.0', channel=channel))
+        self.assertEqual(metadata, dict(version='0.3.0', channel=channel, release_tag=tag[1:]))
         context.update({f'steps.metadata.outputs.{key}': value for key, value in metadata.items()})
         run_step('app', 'ci_release.py build')
         build = (self.root / 'output').read_text().splitlines()[-1].split('=')[1]

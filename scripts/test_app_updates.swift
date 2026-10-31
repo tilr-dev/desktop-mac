@@ -49,7 +49,33 @@ final class DeferredUpdate: NSObject {
         }
         precondition(Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") == nil)
         precondition(ProcessInfo.processInfo.environment["TILR_UPDATE_FEED"] == "https://invalid.example/ignored.xml")
-        if mode == "active" {
+        if mode == "display" {
+            let about = About()
+            about.show(appUpdates: nil, pluginStatus: [])
+            let panel = NSApp.windows.first { $0.title == "About Tilr" }!
+            let stack = panel.contentView!.subviews.compactMap { $0 as? NSStackView }.first!
+            func texts() -> [String] {
+                stack.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }
+            }
+            precondition(texts().contains("Installed: \(CommandLine.arguments[4]) (build 1)"))
+            for (title, expected) in [("Tilr 0.1.0-rc.2", "0.1.0-rc.2"),
+                                      ("Tilr 0.1.0", "0.1.0"), ("Legacy release", "0.1.0"),
+                                      ("", "0.1.0"), ("Tilr 9.9.9-rc.1", "0.1.0")] {
+                let item = SUAppcastItem(dictionary: ["title": title, "sparkle:version": "2",
+                    "sparkle:shortVersionString": "0.1.0", "link": "https://tilr.dev/release"])!
+                precondition(item.displayVersionString == "0.1.0" && item.versionString == "2")
+                precondition(SUStandardVersionComparator.default.compareVersion(item.versionString, toVersion: "1") == .orderedDescending)
+                about.updater(updater, didFindValidUpdate: item)
+                precondition(texts().contains("Available: \(expected) (build 2)"))
+                let error = NSError(domain: SUSparkleErrorDomain, code: Int(SUError.noUpdateError.rawValue),
+                    userInfo: [SPULatestAppcastItemFoundKey: item, NSLocalizedDescriptionKey: "You're up to date!"])
+                about.updaterDidNotFindUpdate(updater, error: error)
+                precondition(texts().contains("Available: \(expected) (build 2)"))
+                precondition(texts().contains("You're up to date!"))
+            }
+            panel.close()
+            defaults.removePersistentDomain(forName: suite)
+        } else if mode == "active" {
             let previous = updates.controller!
             previous.updater.setValue(true, forKey: "sessionInProgress")
             previous.updater.setValue(DeferredUpdate(), forKey: "resumableUpdate")

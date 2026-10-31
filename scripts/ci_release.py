@@ -58,7 +58,7 @@ def release_metadata(tag, repository, sha):
     return match[1], channel, release["body"]
 
 
-def release_assets(version, build, channel, root):
+def release_assets(version, build, channel, root, release_tag=None):
     if build < 1:
         raise ValueError("Build must be a positive integer")
     assets = []
@@ -68,19 +68,21 @@ def release_assets(version, build, channel, root):
         expected = dict(version=version, build=build, arch=arch, feed=feed_for(arch, channel))
         if any(meta.get(key) != value for key, value in expected.items()):
             raise ValueError(f"Completed release metadata does not match requested release: {directory}")
+        if release_tag is not None and meta.get("release_tag") != release_tag:
+            raise ValueError("Completed release tag differs from the verified Git tag")
         assets.append(dmg)
     return assets
 
 
 def publish_cdn(tag, build, root, repository, sha, notes_file):
     version, channel, notes = release_metadata(tag, repository, sha)
-    assets = release_assets(version, build, channel, root)
+    assets = release_assets(version, build, channel, root, tag[1:])
     # Stable cannot be republished; beta retains verified partial-publication resume.
     if channel == "stable" and build <= (maximum := published_maximum()):
         raise ValueError(f"Build {build} must be greater than published build {maximum}")
     config = settings(require_build=False)
     inventories = [completed(asset.parent, version, build, arch, feed_for(arch, channel),
-                             config["TILR_UPDATE_PUBLIC_KEY"])
+                             config["TILR_UPDATE_PUBLIC_KEY"], tag[1:])
                    for arch, asset in zip(ARCHES, assets)]
     if inventories[0] != inventories[1]:
         raise ValueError("Native plugin versions/ABIs differ between architecture releases")
@@ -96,7 +98,7 @@ def publish_cdn(tag, build, root, repository, sha, notes_file):
 
 def publish_github(tag, build, root, repository, sha):
     version, channel, _ = release_metadata(tag, repository, sha)
-    assets = release_assets(version, build, channel, root)
+    assets = release_assets(version, build, channel, root, tag[1:])
     # The shared workflow owns the immutable tag and release. Never recreate either,
     # or use --clobber: a rerun must not replace artifacts from a previous publication.
     subprocess.run(["gh", "release", "upload", tag, "--repo", repository, *map(str, assets)], check=True)
@@ -130,7 +132,7 @@ def main():
         version, channel, notes = release_metadata(args.tag, os.environ["GITHUB_REPOSITORY"], sha)
         args.notes_file.write_text(notes)
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-            output.write(f"version={version}\nchannel={channel}\n")
+            output.write(f"version={version}\nchannel={channel}\nrelease_tag={args.tag[1:]}\n")
     else:
         sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
         if args.command == "publish":

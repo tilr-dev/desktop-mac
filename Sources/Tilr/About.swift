@@ -27,7 +27,8 @@ final class About: NSObject, SPUUpdaterDelegate {
             let name = NSTextField(labelWithString: "Tilr")
             name.font = .boldSystemFont(ofSize: 22)
             let bundle = Bundle.main
-            let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+            let version = bundle.object(forInfoDictionaryKey: "TilrReleaseTag") as? String
+                ?? bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
             let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
             let installed = NSTextField(labelWithString: "Installed: \(version) (build \(build))")
             available.alignment = .center
@@ -86,7 +87,12 @@ final class About: NSObject, SPUUpdaterDelegate {
     }
 
     private func found(_ item: SUAppcastItem) {
-        available.stringValue = "Available: \(item.displayVersionString) (build \(item.versionString))"
+        let numeric = item.displayVersionString
+        let title = item.title ?? ""
+        let pattern = "^Tilr " + NSRegularExpression.escapedPattern(for: numeric) + "(?:-rc\\.[1-9][0-9]*)?$"
+        let version = title.range(of: pattern, options: .regularExpression) != nil
+            ? String(title.dropFirst("Tilr ".count)) : numeric
+        available.stringValue = "Available: \(version) (build \(item.versionString))"
     }
 
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {

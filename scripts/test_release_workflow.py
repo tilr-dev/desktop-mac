@@ -80,6 +80,8 @@ class ReleaseWorkflowContract(unittest.TestCase):
             self.assertIn('persist-credentials: false', checkout)
         packaging = steps(app)[index(app, 'scripts/release_all.py')]
         self.assertIn('CHANNEL: ${{ steps.metadata.outputs.channel }}', packaging)
+        self.assertIn('RELEASE_TAG: ${{ steps.metadata.outputs.release_tag }}', packaging)
+        self.assertIn('--release-tag "$RELEASE_TAG"', packaging)
         self.assertIn('--channel "$CHANNEL"', packaging)
         publication = steps(self.jobs['publish'])[index(self.jobs['publish'], 'ci_release.py publish')]
         self.assertIn('TAG: ${{ needs.release.outputs.tag }}', publication)
