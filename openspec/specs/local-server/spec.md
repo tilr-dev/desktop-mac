@@ -19,11 +19,11 @@ Tilr SHALL bundle unchanged signed/notarized tilrd and tilr executables from the
 - **THEN** the bundled tilrd and tilr are installed into ~/.local/bin without network access or build tools, after verifying both signatures and that both report the same version
 - **AND** tilr service install starts the ordinary service and a persistent marker records that the application installed it
 - **AND** a durable pair-installation journal recovers interruptions before or between executable publication and ownership marker creation
-- **AND** application and daemon versions remain independent; daemon updates use the Receive RC versions preference to select stable or beta
+- **AND** application and daemon versions remain independent; daemon updates use the channel configured in server.toml, defaulting to stable
 
 #### Scenario: Update to the latest release at launch
 - **WHEN** the application starts with local_server enabled, including the first launch after a Sparkle application update and after installing the bundled pair
-- **THEN** after the selected daemon is ready, the application runs that tilrd's update --channel stable, or update --channel beta when Receive RC versions is on, off the UI thread without asking
+- **THEN** after the selected daemon is ready, the application runs that tilrd's update command without a channel argument, off the UI thread without asking
 - **AND** the existing credentials stay usable while the command runs; after it succeeds the application waits for the reported version to be running and rechecks it
 - **AND** an already latest daemon is left running unchanged
 - **AND** an unavailable CDN or a failed command leaves the installed pair running and is shown in Local Server without an alert, so an offline launch keeps the bundled or installed version
@@ -48,7 +48,7 @@ Tilr SHALL connect to the ordinary local tilrd on port 7890 using its default st
 - **THEN** no migration of the private service or its state is performed; reinstallation is required
 
 ### Requirement: Explicit server update controls
-Tilr SHALL show the installed tilrd version and an Update tilrd button in Local Server and SHALL update the selected ordinary daemon by running its own update command, which installs the latest tilrd and tilr of the selected channel. The application SHALL NOT consume a server update feed, compare the daemon with the bundled version or replace installed executables to update them.
+Tilr SHALL show the installed tilrd version and an Update tilrd button in Local Server and SHALL update the selected ordinary daemon by running its own update command, which installs the latest tilrd and tilr of the channel configured in server.toml, defaulting to stable. The application SHALL NOT consume a server update feed, compare the daemon with the bundled version or replace installed executables to update them.
 
 #### Scenario: Inspect and check
 - **WHEN** Local Server opens or Refresh is selected
@@ -57,8 +57,8 @@ Tilr SHALL show the installed tilrd version and an Update tilrd button in Local 
 
 #### Scenario: Select the daemon update channel
 - **WHEN** Update tilrd is selected
-- **THEN** the selected installed tilrd runs update --channel stable when Receive RC versions is off, or update --channel beta when it is on
-- **AND** the preference is read when the action starts, including changes made during the application session
+- **THEN** the selected installed tilrd runs update without a channel argument
+- **AND** tilrd reads the channel from server.toml; Receive RC versions controls only the Sparkle feed for Tilr.app
 - **AND** the command runs off the UI thread and application file operations do not replace the daemon
 
 #### Scenario: Prompt for an older daemon
