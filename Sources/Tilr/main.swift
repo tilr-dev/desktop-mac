@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if paths.contains(where: { $0.hasSuffix("/config.yml") }) { self?.reloadConfig() }
         }
         palette.run = { [weak self] in self?.perform($0.action) }
-        palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.shell.onTop == true }
+        palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.shell?.onTop == true }
         palette.title = { [weak self] in self?.title($0) ?? $0.title }
         if !config.control.socket.isEmpty {
             control = ControlServer(
@@ -269,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func perform(_ action: Action) {
+        if shell == nil && action != .quit && action != .newWindow { return }
         switch action {
         case .quit: NSApp.terminate(nil)
         case .newWindow: newWindow()
@@ -290,10 +291,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func reload() { current?.reload() }
-    @objc func toggleAllSpaces() { shell.toggleAllSpaces() }
-    @objc func moveToNextSpace() { shell.moveToNextSpace() }
+    @objc func toggleAllSpaces() { shell?.toggleAllSpaces() }
+    @objc func moveToNextSpace() { shell?.moveToNextSpace() }
 
     @objc func openPalette() {
+        if shell == nil { newWindow() }
+        guard let shell else { return }
         palette.isOpen ? palette.close() : palette.open(over: shell.window)
     }
 
@@ -768,11 +771,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func probeWindows() async {
         guard let first = shell, let page = first.current else { preconditionFailure("no initial host") }
+        precondition(!page.container.isHidden, "initial host page is hidden")
         let original = shells
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-windows-\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: url) }
         newWindow()
         let second = shell!
+        precondition(!second.current!.container.isHidden, "new host page is hidden")
         precondition(second.hostID != first.hostID && second.current !== page)
         precondition(second.current!.webView.configuration.websiteDataStore === page.webView.configuration.websiteDataStore)
         let firstFrame = first.window.frame
@@ -798,7 +803,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let state = WindowWorkspace(key: second.hostID, windows: [WindowRecord(second), WindowRecord(third)])
         state.write(to: url)
         guard let saved = WindowWorkspace.read(from: url), saved.windows.count == 2 else { preconditionFailure("workspace roundtrip") }
-        second.window.close()
+        await probeWindowAgentClose(second)
         precondition(shells.contains { $0 === first } && shells.contains { $0 === third })
         third.window.close()
         precondition(shells.count == original.count)
@@ -807,6 +812,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let restoredThird = shells.first(where: { $0.hostID == saved.windows[1].host }) else { preconditionFailure("restore window set") }
         precondition(shells.count == original.count + 2 && shell === restored)
         precondition(restored.window.frame == frame && restored.mode == .frameless && restored.onTop && restored.allSpaces)
+        precondition(!restored.current!.container.isHidden, "restored host page is hidden")
         precondition(restored.current !== page && restored.current!.webView !== page.webView)
         precondition(restoredThird.current !== restored.current)
         let storedMode = config.window.mode
@@ -826,6 +832,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             focus(page)
         }
         print("native windows: duplicate, independent presentation, close, restore and switch: ok")
+    }
+
+    /// A real stream must release its socket when its host closes, while other hosts survive.
+    @MainActor
+    func probeWindowAgentClose(_ host: Shell) async {
+        let path = "/tmp/tilr-agent-\(UUID().uuidString).sock"
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        precondition(listener >= 0)
+        defer { Darwin.close(listener); unlink(path) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.copyBytes(from: path.utf8CString.map { UInt8(bitPattern: $0) })
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        precondition(bound == 0 && listen(listener, 1) == 0)
+        let agent = host.current!.agent
+        agent.settings.socket = path
+        await withCheckedContinuation { (ready: CheckedContinuation<Void, Never>) in
+            agent.send = { detail in
+                guard detail["id"] as? String == "window-close" else { return }
+                precondition(detail["type"] as? String == "open", "agent fixture did not connect")
+                ready.resume()
+            }
+            agent.handle(["op": "open", "id": "window-close"])
+        }
+        let peer = accept(listener, nil, nil)
+        precondition(peer >= 0 && agent.connectionCount == 1)
+        defer { Darwin.close(peer) }
+        host.window.close()
+        precondition(agent.connectionCount == 0, "closed host retained agent connections")
+        let eof = await withCheckedContinuation { (closed: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global().async {
+                var byte: UInt8 = 0
+                closed.resume(returning: Darwin.read(peer, &byte, 1) == 0)
+            }
+        }
+        precondition(eof, "closed host retained its agent socket")
     }
 
     /// Regression checks for desktop geometry and the frameless drag / resize boundary.

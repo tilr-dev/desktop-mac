@@ -56,10 +56,18 @@ def main():
         if args.gui:
             config = stage / 'config'
             config.mkdir()
-            (config / 'config.yml').write_text('window: { mode: window, activate_at_launch: false }\nlocal_server: { enabled: false }\n')
+            other = stage / 'other-app'
+            other.mkdir()
+            (other / 'index.html').write_text('<html><body>Other window app</body></html>')
+            # Two configured apps exercise focus-or-create for a closed app as well as duplicates.
+            (config / 'config.yml').write_text(
+                'window: { mode: window, activate_at_launch: false }\n'
+                'local_server: { enabled: false }\n'
+                f'apps:\n  - {{ name: default, site: "{ROOT.parent / "web/site"}" }}\n'
+                f'  - {{ name: other, site: "{other}" }}\n')
             # This exact test process exits itself after probing. No pid/name-based kill.
             run(contents / 'MacOS/Tilr', '--config', config, '--no-updates', '--probe',
-                '--site', ROOT.parent / 'web/site', timeout=120)
+                timeout=120)
 
 
 if __name__ == '__main__':

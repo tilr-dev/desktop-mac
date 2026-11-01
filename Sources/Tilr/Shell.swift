@@ -203,6 +203,7 @@ final class Shell: NSObject, NSWindowDelegate {
         tab.container.frame = content.bounds
         tab.container.autoresizingMask = [.width, .height]
         content.addSubview(tab.container)
+        tab.container.isHidden = false
         window.title = Instance.title("\(tab.app.name) · \(hostID.uuidString)")
         window.identifier = NSUserInterfaceItemIdentifier(hostID.uuidString)
         tab.loadIfNeeded()
@@ -381,6 +382,7 @@ final class Shell: NSObject, NSWindowDelegate {
         if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }
         dragMonitor = nil
         current?.watcher = nil
+        current?.agent.closeAll()
         current?.nativePlugins.stop()
         closed?(self)
     }

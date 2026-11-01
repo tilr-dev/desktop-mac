@@ -6,7 +6,7 @@ Use **Apps → New Window** (cmd+N) or **New Window** in the command palette (cm
 
 Presentation commands affect the key window: window, frameless, fullscreen, always-on-top, all-desktops and next-desktop. Performance and instance storage remain shared. Dock's application-wide Space assignment still applies to every window; moving one window to another desktop is unavailable while that assignment is All Desktops.
 
-The open window set is saved atomically in `windows.json` in the instance's configuration folder. Restart restores host UUIDs, applications, desktop frames, screens, modes, always-on-top and available desktop Spaces. Disconnected screens fall back to a reachable display. Closing one window releases only that window's page and providers. Closing the final window quits as before and keeps it for the next launch.
+The open window set is saved atomically in `windows.json` in the instance's configuration folder. Restart restores host UUIDs, applications, desktop frames, screens, modes, always-on-top and available desktop Spaces. Disconnected screens fall back to a reachable display. Closing one window releases only that window's page, SSH agent streams and providers. Closing the final window quits as before and keeps it for the next launch.
 
 `window:` settings provide defaults for new windows; reloading configuration preserves existing window state. Legacy `switch.duration`, `switch.easing`, `switch.preload` and Control `slide` inputs remain accepted; switching native windows is immediate and there are no hidden app tabs to preload.
 

@@ -18,6 +18,7 @@ Tilr SHALL maintain a persistent set of native windows, each with a stable host 
 - **THEN** Tilr focuses an existing window for that application, preferring the key window, or creates one if none exists
 - **AND** Apps checks the key window's application; menus, palette and changed notifications follow that window
 - **AND** New Window in the menu or palette opens another independent page of the key window's application
+- **AND** opened and restored pages are visible, fill their host content and follow its size
 - **AND** each host UUID is visible in its window UI and lifecycle log
 
 #### Scenario: Restore independent presentation
@@ -29,7 +30,7 @@ Tilr SHALL maintain a persistent set of native windows, each with a stable host 
 
 #### Scenario: Close one host
 - **WHEN** a native window closes
-- **THEN** only its page and native resources stop and other windows remain open
+- **THEN** only its page, SSH agent streams and native resources stop and other windows remain open
 - **AND** closing the final window uses the existing termination behavior and retains the final workspace for restart
 
 #### Scenario: Frameless input
