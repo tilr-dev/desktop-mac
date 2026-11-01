@@ -7,10 +7,8 @@ import WebKit
 /// Tilr Control: how an agent (or `tilr ctl`, or `tilr mcp`) drives the running app. A server on
 /// a unix socket (`control.socket` in the config), one JSON object per line each way:
 ///
-///   { "cmd": "apps" }                               the apps (tabs) and which one is current
-///   { "cmd": "switch", "app": "Notes" }             show that app (at once; "slide": true slides
-///                                                   towards its place in the list, like switch.jump,
-///                                                   and answers "slide": true when a slide started)
+///   { "cmd": "apps" }                               the app catalog and the key window’s application
+///   { "cmd": "switch", "app": "Notes" }             focus an app window or open one; legacy slide is ignored
 ///   { "cmd": "reload" }                             reload the page
 ///   { "cmd": "snapshot", "path": "~/x.png" }        a picture of the page, as the window shows it
 ///   { "cmd": "console", "clear": false }            the page's console.* and errors, oldest first
@@ -48,8 +46,9 @@ final class ControlServer {
     let path: String
     private let tabs: () -> [Tab]
     private let current: () -> Tab?
-    /// Shows a tab: at once, or with the switch slide when the Bool is true. Returns whether a
-    /// slide started (not for the current tab, nor with switch.duration 0).
+    private let apps: () -> [Site.App]
+    private let resolve: (String) -> Tab?
+    /// Focus a native host; legacy slide selection remains accepted without animation.
     private let select: (Tab, Bool) -> Bool
     /// `control.load_timeout`: seconds a command waits for an app's first page load.
     private let loadTimeout: () -> Double
@@ -59,10 +58,13 @@ final class ControlServer {
     private var listener: NWListener?
 
     init(path: String, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab, Bool) -> Bool,
+         apps: @escaping () -> [Site.App], resolve: @escaping (String) -> Tab?,
          loadTimeout: @escaping () -> Double, debug: DebugMode, pluginManager: @escaping () async throws -> [String: Any]) {
         self.path = path
         self.tabs = tabs
         self.current = current
+        self.apps = apps
+        self.resolve = resolve
         self.select = select
         self.loadTimeout = loadTimeout
         self.debug = debug
@@ -186,15 +188,15 @@ final class ControlServer {
     private func run(_ cmd: String, _ request: [String: Any]) async throws -> [String: Any] {
         func tab() throws -> Tab {
             if let name = request["app"] as? String {
-                guard let tab = tabs().first(where: { $0.app.name == name }) else {
-                    throw Failure(message: "no app \"\(name)\"; the apps: \(tabs().map(\.app.name).joined(separator: ", "))")
+                guard let tab = resolve(name) else {
+                    throw Failure(message: "no app \"\(name)\"; the apps: \(apps().map(\.name).joined(separator: ", "))")
                 }
                 return tab
             }
             guard let tab = current() else { throw Failure(message: "no app") }
             return tab
         }
-        /// The tab with its page: one not loaded yet (switch.preload) loads now, and the command
+        /// The selected host page loads if needed, and the command
         /// waits up to control.load_timeout for a load under way (a page that failed to load
         /// does not wait).
         func page() async throws -> Tab {
@@ -205,13 +207,14 @@ final class ControlServer {
         }
         switch cmd {
         case "apps":
-            return ["apps": tabs().map { tab -> [String: Any] in
-                ["name": tab.app.name, "site": tab.app.root.path, "url": tab.webView.url?.absoluteString ?? "", "current": tab === current(),
-                 "loaded": tab.started]
+            return ["apps": apps().map { app -> [String: Any] in
+                let tab = current().flatMap { $0.app.name == app.name ? $0 : nil } ?? tabs().first { $0.app.name == app.name }
+                return ["name": app.name, "site": app.root.path, "url": tab?.webView.url?.absoluteString ?? "",
+                        "current": current()?.app.name == app.name, "loaded": tab?.started ?? false]
             }]
         case "switch":
             let tab = try tab()
-            // A slide that did not happen (the current app, switch.duration 0) answers like a plain switch.
+            // Legacy clients may still send slide; native host selection is immediate.
             let slid = select(tab, request["slide"] as? Bool ?? false)
             return slid ? ["app": tab.app.name, "slide": true] : ["app": tab.app.name]
         case "reload":

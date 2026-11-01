@@ -39,6 +39,7 @@ final class AgentHost: NSObject, WKScriptMessageHandler {
     var settings: Config.SSHAgent
 
     private var streams: [String: AgentStream] = [:]
+    var connectionCount: Int { streams.count }
     /// Resolving the socket and connecting.
     private let queue = DispatchQueue(label: "tilr.agent")
 

@@ -3,14 +3,18 @@ import WebKit
 import Sparkle
 import AppUpdates
 import Gitpm
+import ObjectiveC
 
 // Prints reach a log file or a pipe as they happen (run.sh with its output redirected), not in blocks.
 setvbuf(stdout, nil, _IOLBF, 0)
 
-/// Keeps the one window (Shell) with a tab per app in the config, the palette and the menu.
-/// ctrl+alt+← / → cycle through the tabs, ctrl+alt+1..9 jump to one.
+/// Owns native app hosts, shared services, the palette and key-window menus.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    var shell: Shell!
+    var shells: [Shell] = []
+    var activeShell: Shell?
+    var shell: Shell! { activeShell ?? shells.first }
+    var restoringWindows = false
+    var terminating = false
     var configWatcher: FolderWatcher?
     /// The defaults until config.yml is read; the last good config after that.
     var config = Config.fallback
@@ -21,24 +25,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var debug: DebugMode!
     /// `plugin_manager:` (PluginManagerHost.swift); its workspace opens on the first operation.
     var pluginManager: PluginManagerService!
-    let probing = CommandLine.arguments.contains("--probe")
+    var probing = CommandLine.arguments.contains("--probe")
     var probed = false
     var appUpdates: AppUpdates?
     private var uninstalling = false
     let about = About()
-    /// `switch.preload` as read at launch.
-    var preload: Config.Preload = .onSelect
-    /// `switch.preload` N: the background load of the other apps has been scheduled.
-    var preloadScheduled = false
-    /// `switch.preload` N: that background load, until it runs (`--probe` cancels it).
-    var preloadWork: DispatchWorkItem?
     /// Menu items whose check mark follows the shell (`updateMenu`): the Apps entries by tab,
     /// and the always-on-top commands.
     var appMenuItems: [NSMenuItem] = []
     var onTopMenuItems: [NSMenuItem] = []
+    var hostMenuItem: NSMenuItem?
 
-    var tabs: [Tab] { shell.tabs }
-    var current: Tab? { shell.current }
+    var tabs: [Tab] { shells.compactMap(\.current) }
+    var current: Tab? { shell?.current }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Release packaging enables runtime feed selection. Local builds have no update service.
@@ -54,7 +53,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // of window: applies on every config change.
         if let loaded = Config.load() { config = loaded }
         nativePluginSettings = config.nativePlugins
-        preload = config.switching.preload
         pluginManager = PluginManagerService(settings: config.pluginManager.service)
         if !probing {
             let settings = config.pluginManager.service
@@ -68,10 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     allowed: Config.isDefaultDir && !probing)
         debug = DebugMode(settings: config.debug)
         Memory.settings = config.debug
-        shell = Shell(settings: config.window)
-        shell.changed = { [weak self] _ in self?.updateMenu() }
-        // The window first, empty; the tabs' views are added to it as they are made.
-        shell.open()
+        restoreWindows(WindowWorkspace.read())
         applyConfig()
         if let appUpdates { DispatchQueue.main.async { appUpdates.start() } }
         // default.yml is ours; only the user's file matters.
@@ -79,19 +74,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if paths.contains(where: { $0.hasSuffix("/config.yml") }) { self?.reloadConfig() }
         }
         palette.run = { [weak self] in self?.perform($0.action) }
-        palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.shell.onTop == true }
+        palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.shell?.onTop == true }
         palette.title = { [weak self] in self?.title($0) ?? $0.title }
         if !config.control.socket.isEmpty {
             control = ControlServer(
                 path: Config.resolve(config.control.socket),
                 tabs: { [unowned self] in tabs },
                 current: { [unowned self] in current },
-                select: { [unowned self] tab, slide in
-                    // No slide to the current app: it is shown at once, as without "slide".
-                    if slide && jump(to: tab) { return true }
-                    shell.select(tab)
-                    return false
-                },
+                select: { [unowned self] tab, _ in focus(tab); return false },
+                apps: { [unowned self] in Site.apps(config: config) },
+                resolve: { [unowned self] name in windowForApp(name)?.current },
                 loadTimeout: { [unowned self] in config.control.loadTimeout },
                 debug: debug,
                 pluginManager: { [unowned self] in try await pluginManagerStatus() }
@@ -103,6 +95,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        saveWindows()
+        terminating = true
         control?.stop()
         tabs.forEach { $0.nativePlugins.stop() }
         Instance.terminating()
@@ -112,26 +106,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Apps
 
-    /// A tab per app in the config: repoints one whose folder moved, drops the ones that left
-    /// the config, keeps the current one current.
+    func saveWindows() {
+        guard !restoringWindows, !terminating, !shells.isEmpty else { return }
+        WindowWorkspace(key: shell?.hostID, windows: shells.map(WindowRecord.init)).write()
+    }
+
+    func restoreWindows(_ saved: WindowWorkspace?) {
+        restoringWindows = true
+        let apps = Site.apps(config: config)
+        var seen: Set<UUID> = []
+        for state in saved?.windows ?? [] where state.frame.valid && seen.insert(state.host).inserted {
+            guard let app = apps.first(where: { $0.name == state.app }) else { continue }
+            let host = openWindow(app, state: state)
+            Task { @MainActor [weak host] in await host?.restoreSpace(state.space) }
+        }
+        if shells.isEmpty, let app = apps.first { openWindow(app) }
+        if let host = shells.first(where: { $0.hostID == saved?.key }) { focus(host.current!) }
+        restoringWindows = false
+        saveWindows()
+    }
+
+    @discardableResult
+    func openWindow(_ app: Site.App, state: WindowRecord? = nil) -> Shell {
+        let host = Shell(settings: config.window, hostID: state?.host ?? UUID())
+        shells.append(host)
+        if let state { host.restore(state) }
+        host.changed = { [weak self, weak host] _ in
+            guard let self, let host else { return }
+            if host.window.isKeyWindow { activeShell = host }
+            updateMenu()
+            saveWindows()
+        }
+        host.stateChanged = { [weak self] in self?.saveWindows() }
+        host.closed = { [weak self] host in
+            guard let self else { return }
+            // Keep the final workspace across the existing last-window termination policy.
+            if shells.count == 1 { saveWindows() }
+            shells.removeAll { $0 === host }
+            if activeShell === host { activeShell = shells.first }
+            saveWindows()
+            updateMenu()
+            print("host \(host.hostID): closed")
+        }
+        // Attach before callbacks can persist a newly visible host.
+        host.attach(makeTab(app))
+        host.open()
+        if activeShell == nil || host.window.isKeyWindow { activeShell = host }
+        print("host \(host.hostID): opened \(app.name)")
+        saveWindows()
+        return host
+    }
+
+    func focus(_ tab: Tab) {
+        guard let host = shells.first(where: { $0.current === tab }) else { return }
+        activeShell = host
+        host.window.makeKeyAndOrderFront(nil)
+        host.window.makeFirstResponder(tab.webView)
+        updateMenu()
+        saveWindows()
+    }
+
+    @discardableResult
+    func windowForApp(_ name: String) -> Shell? {
+        if let shell, shell.current?.app.name == name { return shell }
+        if let host = shells.first(where: { $0.current?.app.name == name }) { return host }
+        guard let app = Site.apps(config: config).first(where: { $0.name == name }) else { return nil }
+        return openWindow(app)
+    }
+
     func syncTabs() {
         let apps = Site.apps(config: config)
-        shell.settings = config.window
-        let kept = apps.map { app in
-            if let tab = tabs.first(where: { $0.app.name == app.name }) {
-                if tab.app.root != app.root { tab.show(app) }
-                tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
-                tab.agent.settings = config.sshAgent
-                return tab
-            }
-            return makeTab(app)
+        if !shells.contains(where: { host in apps.contains { $0.name == host.current?.app.name } }), let app = apps.first {
+            openWindow(app)
         }
-        for tab in tabs where !kept.contains(where: { $0 === tab }) { tab.nativePlugins.stop() }
-        // Selecting loads the current tab; the others load per switch.preload.
-        shell.setTabs(kept)
-        if preload == .atLaunch { kept.forEach { $0.loadIfNeeded() } }
+        for host in shells {
+            guard let tab = host.current else { continue }
+            guard let app = apps.first(where: { $0.name == tab.app.name }) else { host.window.close(); continue }
+            if tab.app.root != app.root { tab.show(app) }
+            tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
+            tab.agent.settings = config.sshAgent
+        }
         buildMenu()
-        if apps.count > 1 { print("apps:", apps.map(\.name)) }
+        saveWindows()
     }
 
     /// A tab for `app`, its page not loaded yet (`Tab.loadIfNeeded`).
@@ -142,59 +198,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       collector: debug.collector)
         tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
         tab.didLoad = { [weak self] in self?.loaded($0) }
-        tab.didFailLoad = { [weak self] in self?.schedulePreload(after: $0) }
         return tab
     }
 
-    /// `switch.next` and `switch.previous`: the next or previous tab in config order, wrapping around.
+    /// Application selection follows configured order; it focuses or creates native hosts.
     func step(_ delta: Int) {
-        guard let current, let index = tabs.firstIndex(where: { $0 === current }), tabs.count > 1 else { return }
-        let next = tabs[(index + delta + tabs.count) % tabs.count]
-        shell.select(next, direction: delta, switching: config.switching)
-        print("app:", next.app.name)
+        let apps = Site.apps(config: config)
+        guard let current, let index = apps.firstIndex(where: { $0.name == current.app.name }), !apps.isEmpty,
+              let host = windowForApp(apps[(index + delta + apps.count) % apps.count].name) else { return }
+        focus(host.current!)
     }
 
     @objc func nextApp() { step(1) }
     @objc func previousApp() { step(-1) }
-
-    /// `switch.jump` + N: slides towards the chosen tab's place in the list.
     @objc func switchApp(_ sender: NSMenuItem) {
-        guard let tab = sender.representedObject as? Tab else { return }
-        jump(to: tab)
+        guard let name = sender.representedObject as? String, let host = windowForApp(name) else { return }
+        focus(host.current!)
     }
 
-    /// Slides to `tab` from the side of its place in the list (`switch.jump`, `ctl switch` with slide).
-    /// Returns whether a slide started: none to the current tab, none with `switch.duration` 0.
-    @discardableResult
-    func jump(to tab: Tab) -> Bool {
-        guard let current, tab !== current,
-              let from = tabs.firstIndex(where: { $0 === current }), let to = tabs.firstIndex(where: { $0 === tab })
-        else { return false }
-        shell.select(tab, direction: to > from ? 1 : -1, switching: config.switching)
-        print("app:", tab.app.name)
-        return shell.sliding
-    }
-
-    @objc func closeWindow() { shell.window.close() }
-
-    /// switch.preload N: the other apps load N seconds after the first page on screen is done,
-    /// loaded or failed; once.
-    func schedulePreload(after tab: Tab) {
-        guard case .after(let seconds) = preload, !preloadScheduled, tab === current else { return }
-        preloadScheduled = true
-        let work = DispatchWorkItem { [weak self] in
-            self?.preloadWork = nil
-            self?.tabs.forEach { $0.loadIfNeeded() }
-        }
-        preloadWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    @objc func closeWindow() { shell?.window.close() }
+    @objc func newWindow() {
+        guard let app = current?.app ?? Site.apps(config: config).first else { return }
+        let host = openWindow(app)
+        focus(host.current!)
     }
 
     func loaded(_ tab: Tab) {
-        schedulePreload(after: tab)
         guard probing, !probed, tab === tabs.first else { return }
         probed = true
         Task { @MainActor in
+            await probeWindows()
             do { _ = try await tab.nativePlugins.request(service: "browser", body: ["action": "probe"]) }
             catch {
                 print("native browser probe FAILED:", error.localizedDescription)
@@ -204,7 +237,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await probeReloadHistory()
             await probePagePlumbing()
             await probeWeb(tab)
-            await probeLazyTabs()
             await probePluginManager()
             probePalette()
             await probeSpaces()
@@ -227,13 +259,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applyConfig() {
         palette.commands = config.controlPlane.commands
-        print("config:", config.controlPlane.commands.map(\.title), "switch in \(config.switching.duration)s")
+        if !palette.commands.contains(where: { $0.action == .newWindow }) {
+            palette.commands.append(Config.Command(title: "New Window", action: .newWindow, key: nil))
+        }
+        print("config:", config.controlPlane.commands.map(\.title))
         syncTabs()
     }
 
     func perform(_ action: Action) {
+        if shell == nil && action != .quit && action != .newWindow { return }
         switch action {
         case .quit: NSApp.terminate(nil)
+        case .newWindow: newWindow()
         case .fullscreen: shell.set(.fullscreen)
         case .window: shell.set(.window)
         case .frameless: shell.set(.frameless)
@@ -252,10 +289,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func reload() { current?.reload() }
-    @objc func toggleAllSpaces() { shell.toggleAllSpaces() }
-    @objc func moveToNextSpace() { shell.moveToNextSpace() }
+    @objc func toggleAllSpaces() { shell?.toggleAllSpaces() }
+    @objc func moveToNextSpace() { shell?.moveToNextSpace() }
 
     @objc func openPalette() {
+        if shell == nil { newWindow() }
+        guard let shell else { return }
         palette.isOpen ? palette.close() : palette.open(over: shell.window)
     }
 
@@ -270,10 +309,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shortcuts live in the main menu rather than in a key monitor, so every plain key reaches
     /// the terminal. The Edit menu is what makes ⌘C / ⌘V work inside the web view. The
     /// Commands menu mirrors the config's control plane, with each command's key. The Apps menu
-    /// lists the tabs; the current one is checked.
+    /// lists open pages; the key window is checked.
     @objc func showAbout() {
         let plugins = tabs.flatMap { tab in
-            // An app not loaded yet (switch.preload) has not started its providers: nothing to report.
+            // A page not yet loaded has not started its providers.
             tab.nativePlugins.status().filter { $0["state"] as? String != "pending" }.map { entry in
                 let id = entry["id"] as? String ?? "Unknown"
                 if let version = entry["version"] as? String {
@@ -313,7 +352,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await LocalServerHost.shared.removeForAppUninstall(settings: self.config.localServer)
                 }, stop: {
                     self.configWatcher = nil
-                    self.preloadWork?.cancel()
                     LocalServerHost.shared.stop()
                     self.control?.stop()
                     self.tabs.forEach { $0.webView.stopLoading(); $0.nativePlugins.stop() }
@@ -345,8 +383,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The check marks of the Apps entries and the always-on-top commands; what changes when the
     /// window becomes key, a tab is selected or a toggle flips. The menu itself is built per config.
     func updateMenu() {
-        for item in appMenuItems { item.state = item.representedObject as? Tab === current ? .on : .off }
-        for item in onTopMenuItems { item.state = shell.onTop ? .on : .off }
+        hostMenuItem?.title = shell.map { "Host: \($0.hostID.uuidString)" } ?? "No open host"
+        for item in appMenuItems { item.state = item.representedObject as? String == current?.app.name ? .on : .off }
+        for item in onTopMenuItems { item.state = shell?.onTop == true ? .on : .off }
     }
 
     /// The whole main menu, on each config change (the apps, the commands, the shortcuts).
@@ -375,10 +414,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return entry
         }
         onTopMenuItems = zip(plane.commands, commands).filter { $0.0.action == .alwaysOnTop }.map(\.1)
-        let apps = tabs.enumerated().map { index, tab in
+        let apps = Site.apps(config: config).enumerated().map { index, app in
             // switch.jump + 1..9; a tenth tab and beyond has no key.
-            let entry = item(tab.app.name, #selector(switchApp(_:)), index < 9 ? String(index + 1) : "", switching.jump.modifiers)
-            entry.representedObject = tab
+            let entry = item(app.name, #selector(switchApp(_:)), index < 9 ? String(index + 1) : "", switching.jump.modifiers)
+            entry.representedObject = app.name
             return entry
         }
         appMenuItems = apps
@@ -423,9 +462,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("Show on All Desktops", #selector(toggleAllSpaces), "a", [.command, .shift]),
             item("Move to Next Desktop", #selector(moveToNextSpace), "s", [.command, .shift]),
         ])
+        let hostLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        hostMenuItem = hostLabel
         submenu("Apps", [
+            hostLabel,
             item("Next App", #selector(nextApp), switching.next.key, switching.next.modifiers),
             item("Previous App", #selector(previousApp), switching.previous.key, switching.previous.modifiers),
+            item("New Window", #selector(newWindow), "n"),
             item("Close Window", #selector(closeWindow), "w"),
             .separator(),
         ] + apps)
@@ -720,103 +763,167 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return 'ready ' + JSON.stringify(r) + ' identities ' + (ok ? 'ok, ' + bytes.length + ' bytes' : 'FAILED ' + JSON.stringify(a));
             """, contentWorld: .page) as? String
         print("ssh agent:", agent ?? "FAILED js error")
-        // Several apps: switching must land on the next tab in config order, in the one window,
-        // in every mode; the pages must then be at rest with only the current one showing.
-        if tabs.count > 1 {
-            /// Only the current page is visible, fills the window and follows its size; the rest
-            /// are hidden and do not (switch: resizing hidden pages is WebContent work), no slide left.
-            func unmoved(_ tab: Tab) -> Bool {
-                tab.container.layer.map { CATransform3DIsIdentity($0.transform) && $0.animation(forKey: "slide") == nil } ?? false
-            }
-            func settled() -> Bool {
-                !shell.sliding && tabs.allSatisfy { tab in
-                    tab === current
-                        ? tab.container.frame == shell.content.bounds && !tab.container.isHidden
-                            && tab.container.autoresizingMask == [.width, .height] && unmoved(tab)
-                            && tab.webView.frame == tab.container.bounds
-                        : tab.container.isHidden && tab.container.autoresizingMask == [] && unmoved(tab)
-                }
-            }
-            shell.select(tab)
-            for mode in [Mode.fullscreen, .window, .frameless] {
-                shell.set(mode)
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                nextApp()
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                print("\(mode) next app:", current?.app.name ?? "none", current === tabs[1] && settled() ? "ok" : "FAILED")
-                previousApp()
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                print("\(mode) previous app:", current?.app.name ?? "none", current === tab && settled() ? "ok" : "FAILED",
-                      "windows:", NSApp.windows.filter(\.isVisible).count == 1 ? "one" : "FAILED \(NSApp.windows.filter(\.isVisible).count)")
-            }
-            shell.set(config.window.mode)
-            try? await Task.sleep(nanoseconds: 200_000_000)
-        }
     }
 
-    /// `--probe`, lazy loading (switch.preload): an app that is listed but not selected has no
-    /// page, no folder watcher and no started native providers; selecting it loads it. A second
-    /// app (a temporary folder) is added next to the config's for the check and removed after.
+    /// Observe activation requests without stealing focus from the person running the probe.
     @MainActor
-    func probeLazyTabs() async {
-        guard Site.devURL == nil, let first = current else { return print("lazy tabs: skipped (dev server)") }
-        if preload == .onSelect {
-            precondition(tabs.allSatisfy { $0 === first || !$0.started }, "switch.preload false loaded an unselected app")
+    func probeBackgroundFocus(_ page: Tab) {
+        let method = class_getInstanceMethod(NSApplication.self, #selector(NSApplication.activate(ignoringOtherApps:)))!
+        var activations = 0
+        let observe: @convention(block) (NSApplication, Bool) -> Void = { _, _ in activations += 1 }
+        let replacement = imp_implementationWithBlock(observe)
+        let original = method_setImplementation(method, replacement)
+        let wasProbing = probing
+        probing = false
+        defer {
+            probing = wasProbing
+            method_setImplementation(method, original)
+            imp_removeBlock(replacement)
         }
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-lazy-\(UUID().uuidString)")
-        try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        try! "<html><body>lazy</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
-        // switch.preload N must not load the temporary app behind the check's back: no
-        // background load from here on (the probe quits after).
-        preloadScheduled = true
-        preloadWork?.cancel()
-        preloadWork = nil
-        let original = tabs
-        let extra = makeTab(Site.App(name: "lazy-probe", root: root))
-        shell.setTabs(original + [extra])
-        buildMenu()
-        let pending = extra.nativePlugins.status().allSatisfy { $0["state"] as? String == "pending" }
-        precondition(current === first && !extra.started && extra.webView.url == nil && extra.watcher == nil && pending,
-                     "an unselected app loaded its page")
-        shell.select(extra, direction: 1, switching: config.switching)
-        precondition(extra.started && extra.watcher != nil, "selecting an app did not load it")
-        await extra.firstLoad(within: config.control.loadTimeout)
-        let body = try? await extra.webView.evaluateJavaScript("document.body.textContent") as? String
-        precondition(extra.isLoaded && extra.webView.url == extra.pageURL && body == "lazy", "the selected app's page did not load")
-        // A hidden page does not follow a window resize; it gets the new size when shown, at once
-        // or at the end of a slide.
-        shell.select(first)
-        let frame = shell.window.frame
-        shell.window.setFrame(frame.insetBy(dx: 30, dy: 20), display: true)
-        precondition(first.container.frame == shell.content.bounds && first.webView.frame == first.container.bounds,
-                     "the current page did not follow the window")
-        precondition(extra.container.isHidden && extra.container.frame != shell.content.bounds, "a hidden page followed the window")
-        shell.select(extra)
-        precondition(extra.container.frame == shell.content.bounds && extra.container.autoresizingMask == [.width, .height]
-                     && extra.webView.frame == extra.container.bounds
-                     && first.container.isHidden && first.container.autoresizingMask == [], "a shown page has the old size")
-        shell.window.setFrame(frame, display: true)
-        shell.select(first, direction: -1, switching: config.switching)
-        // During the slide the pages' layers move, never a view frame (no geometry update for WebKit).
-        if config.switching.duration > 0 {
-            let frames = (first.container.frame, extra.container.frame, first.webView.frame, extra.webView.frame)
-            try? await Task.sleep(nanoseconds: UInt64(config.switching.duration / 2 * 1_000_000_000))
-            precondition(shell.sliding && !first.container.isHidden && !extra.container.isHidden
-                         && first.container.layer?.animation(forKey: "slide") != nil
-                         && frames == (first.container.frame, extra.container.frame, first.webView.frame, extra.webView.frame),
-                         "a slide moved view frames or is not under way")
+        focus(page)
+        precondition(activations == 0, "window focus requested application activation")
+        precondition(current === page, "background focus did not select the host")
+        print("native windows: background focus preserves application activation")
+    }
+
+    /// Integration probe: real duplicate pages, independent hosts and durable restoration.
+    @MainActor
+    func probeWindows() async {
+        guard let first = shell, let page = first.current else { preconditionFailure("no initial host") }
+        probeBackgroundFocus(page)
+        precondition(!page.container.isHidden, "initial host page is hidden")
+        var screenState = WindowRecord(first)
+        screenState.screen = 1
+        screenState.frame = WindowRecord.Frame(NSRect(x: 100, y: 100, width: 500, height: 300))
+        let left = NSRect(x: 0, y: 0, width: 1024, height: 768)
+        let right = NSRect(x: 1024, y: 0, width: 1024, height: 768)
+        let moved = screenState.restoredFrame(displays: [(id: 1, frame: right), (id: 2, frame: left)], fallback: left)
+        precondition(right.contains(moved), "rearranged displays lost saved screen identity")
+        let fallback = screenState.restoredFrame(displays: [(id: 2, frame: right)], fallback: right)
+        precondition(right.contains(fallback), "disconnected screen produced an unreachable host")
+        let original = shells
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-windows-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        newWindow()
+        let second = shell!
+        precondition(!second.current!.container.isHidden, "new host page is hidden")
+        precondition(second.hostID != first.hostID && second.current !== page)
+        precondition((second.window.tabbedWindows?.count ?? 0) <= 1 && (first.window.tabbedWindows?.count ?? 0) <= 1, "native hosts became tabs")
+        precondition(second.current!.webView.configuration.websiteDataStore === page.webView.configuration.websiteDataStore)
+        let firstFrame = first.window.frame
+        let firstMode = first.mode
+        let firstOnTop = first.onTop
+        second.set(.window)
+        let frame = NSRect(x: 80, y: 100, width: 540, height: 380)
+        second.window.setFrame(frame, display: true)
+        await probeNativeFullscreen(second, desktop: frame)
+        second.set(.frameless)
+        if !second.onTop { second.toggleOnTop() }
+        second.toggleAllSpaces()
+        precondition(first.window.frame == firstFrame && first.mode == firstMode && first.onTop == firstOnTop)
+        precondition(second.window.frame == frame && second.mode == .frameless && second.onTop)
+        focus(second.current!)
+        precondition(current === second.current && windowForApp(page.app.name) === second)
+        precondition(appMenuItems.contains { $0.state == .on && $0.representedObject as? String == page.app.name })
+        precondition(hostMenuItem?.title.contains(second.hostID.uuidString) == true)
+        // The palette command uses the same dispatcher as all configured command rows.
+        guard let command = palette.commands.first(where: { $0.action == .newWindow }) else { preconditionFailure("no New Window palette command") }
+        palette.run(command)
+        let third = shell!
+        precondition(third !== second && third !== first)
+        let state = WindowWorkspace(key: second.hostID, windows: [WindowRecord(second), WindowRecord(third)])
+        state.write(to: url)
+        guard let saved = WindowWorkspace.read(from: url), saved.windows.count == 2 else { preconditionFailure("workspace roundtrip") }
+        await probeWindowAgentClose(second)
+        precondition(shells.contains { $0 === first } && shells.contains { $0 === third })
+        third.window.close()
+        precondition(shells.count == original.count)
+        restoreWindows(saved)
+        guard let restored = shells.first(where: { $0.hostID == saved.windows[0].host }),
+              let restoredThird = shells.first(where: { $0.hostID == saved.windows[1].host }) else { preconditionFailure("restore window set") }
+        precondition(shells.count == original.count + 2 && shell === restored)
+        precondition(restored.window.frame == frame && restored.mode == .frameless && restored.onTop && restored.allSpaces)
+        precondition(!restored.current!.container.isHidden, "restored host page is hidden")
+        precondition(restored.current !== page && restored.current!.webView !== page.webView)
+        precondition(restoredThird.current !== restored.current)
+        let storedMode = config.window.mode
+        config.window.mode = .fullscreen
+        syncTabs()
+        precondition(restored.mode == .frameless && restored.window.frame == frame, "config reset a live host")
+        config.window.mode = storedMode
+        restored.window.close()
+        restoredThird.window.close()
+        focus(page)
+        if let other = Site.apps(config: config).first(where: { $0.name != page.app.name }) {
+            let count = shells.count
+            let opened = windowForApp(other.name)!
+            focus(opened.current!)
+            precondition(current?.app.name == other.name && windowForApp(other.name) === opened)
+            if shells.count > count { opened.window.close() }
+            focus(page)
         }
-        try? await Task.sleep(nanoseconds: UInt64((config.switching.duration * 2 + 0.1) * 1_000_000_000))
-        precondition(!shell.sliding && first.container.frame == shell.content.bounds && !first.container.isHidden
-                     && first.container.autoresizingMask == [.width, .height] && first.webView.frame == first.container.bounds
-                     && CATransform3DIsIdentity(first.container.layer?.transform ?? CATransform3DIdentity)
-                     && CATransform3DIsIdentity(extra.container.layer?.transform ?? CATransform3DIdentity)
-                     && extra.container.isHidden, "a slide did not settle at the window's size")
-        shell.setTabs(original)
-        extra.nativePlugins.stop()
-        buildMenu()
-        print("lazy tabs: unselected app not loaded, loads on select, hidden page not resized: ok")
+        print("native windows: duplicate, independent presentation, close, restore and switch: ok")
+    }
+
+    /// Exercise the native-fullscreen delegate contract without depending on desktop activation.
+    @MainActor
+    func probeNativeFullscreen(_ host: Shell, desktop: NSRect) async {
+        host.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: host.window))
+        host.window.setFrame((host.window.screen ?? NSScreen.main!).frame, display: true)
+        host.windowDidEnterFullScreen(Notification(name: NSWindow.didEnterFullScreenNotification, object: host.window))
+        let state = WindowRecord(host)
+        precondition(state.mode == .fullscreen && state.frame.rect == desktop, "native fullscreen lost presentation or desktop frame")
+        host.window.setFrame(desktop, display: true)
+        host.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: host.window))
+        let restored = openWindow(host.current!.app, state: state)
+        precondition(restored.mode == .fullscreen && restored.savedFrame == desktop)
+        restored.set(.window)
+        precondition(restored.window.frame == desktop, "restored fullscreen lost desktop geometry")
+        restored.window.close()
+        focus(host.current!)
+    }
+
+    /// A real stream must release its socket when its host closes, while other hosts survive.
+    @MainActor
+    func probeWindowAgentClose(_ host: Shell) async {
+        let path = "/tmp/tilr-agent-\(UUID().uuidString).sock"
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        precondition(listener >= 0)
+        defer { Darwin.close(listener); unlink(path) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.copyBytes(from: path.utf8CString.map { UInt8(bitPattern: $0) })
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        precondition(bound == 0 && listen(listener, 1) == 0)
+        let agent = host.current!.agent
+        agent.settings.socket = path
+        await withCheckedContinuation { (ready: CheckedContinuation<Void, Never>) in
+            agent.send = { detail in
+                guard detail["id"] as? String == "window-close" else { return }
+                precondition(detail["type"] as? String == "open", "agent fixture did not connect")
+                ready.resume()
+            }
+            agent.handle(["op": "open", "id": "window-close"])
+        }
+        let peer = accept(listener, nil, nil)
+        precondition(peer >= 0 && agent.connectionCount == 1)
+        defer { Darwin.close(peer) }
+        host.window.close()
+        precondition(agent.connectionCount == 0, "closed host retained agent connections")
+        let eof = await withCheckedContinuation { (closed: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global().async {
+                var byte: UInt8 = 0
+                closed.resume(returning: Darwin.read(peer, &byte, 1) == 0)
+            }
+        }
+        precondition(eof, "closed host retained its agent socket")
     }
 
     /// Regression checks for desktop geometry and the frameless drag / resize boundary.
