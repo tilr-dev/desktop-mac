@@ -11,7 +11,7 @@ Tilr development SHALL use Swift Package/AppKit without an Xcode project and exe
 #### Scenario: Run a check
 - **WHEN** run.sh --test or --test --probe runs
 - **THEN** it uses dev.tilr.mac.test config, its own socket/PID/storage/window and a .test bundle identifier to avoid inheriting the user's Dock Space assignment
-- **AND** probe checks page plumbing, native events, bounded console serialization, PNG snapshot, palette, app switching/sliding, lazy tabs, window frame/hit boundaries and desktop movement, then exits
+- **AND** probe checks page plumbing, native events, bounded console serialization, PNG snapshot, palette, app window switching, duplicate windows, host close and workspace restoration, window frame/hit boundaries and desktop movement, then exits
 - **AND** tests address the isolated socket through --socket or TILR_CONTROL and never restart/kill the user's Tilr without explicit authorization
 - **AND** native package development requires macOS, Python 3, Xcode/Command Line Tools with Swift 6; TypeScript/plugin development requires Node >=22.18, while plain HTML/CSS/JS requires no npm
 - **AND** scripts/build-gitpm.sh builds the static UniFFI XCFramework/generated bindings from local gitpm sources when they are newer, using cargo and rustup targets; without sources it keeps an installed pinned gitpm release; run.sh and release_all.py invoke it and generated artifacts remain gitignored

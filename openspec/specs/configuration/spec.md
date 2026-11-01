@@ -23,8 +23,8 @@ Tilr SHALL merge YAML maps key by key, replace lists and scalar values as a whol
 
 #### Scenario: Settings with launch-only lifetime
 - **WHEN** a valid config is reloaded
-- **THEN** window mode and activation, preload policy, control socket and console capture/entry limit, native plugin directory/enabled/trust/timeout, web refresh mode and inspectability retain their launch-time values
-- **AND** window geometry settings, menus/shortcuts, app list/sites, plugin-manager workspace/catalog, native plugin options, browser reloadable settings and local-server enabled state are reapplied according to their individual lifetimes
+- **THEN** activation policy, control socket and console capture/entry limit, native plugin directory/enabled/trust/timeout, web refresh mode and inspectability retain their launch-time values
+- **AND** window settings become defaults for new windows without resetting existing hosts; menus/shortcuts, app list/sites, plugin-manager workspace/catalog, native plugin options, browser reloadable settings and local-server enabled state are reapplied according to their individual lifetimes
 
 ### Requirement: Separate application instances
 Tilr SHALL isolate a non-default config directory's web storage, profile storage, process identity and window title from the default instance.
