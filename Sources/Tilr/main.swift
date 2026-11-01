@@ -788,6 +788,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let second = shell!
         precondition(!second.current!.container.isHidden, "new host page is hidden")
         precondition(second.hostID != first.hostID && second.current !== page)
+        precondition((second.window.tabbedWindows?.count ?? 0) <= 1 && (first.window.tabbedWindows?.count ?? 0) <= 1, "native hosts became tabs")
         precondition(second.current!.webView.configuration.websiteDataStore === page.webView.configuration.websiteDataStore)
         let firstFrame = first.window.frame
         let firstMode = first.mode
@@ -847,14 +848,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Exercise the native-fullscreen delegate contract without depending on desktop activation.
     @MainActor
     func probeNativeFullscreen(_ host: Shell, desktop: NSRect) async {
-        let center = NotificationCenter.default
-        center.post(name: NSWindow.willEnterFullScreenNotification, object: host.window)
+        host.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: host.window))
         host.window.setFrame((host.window.screen ?? NSScreen.main!).frame, display: true)
-        center.post(name: NSWindow.didEnterFullScreenNotification, object: host.window)
+        host.windowDidEnterFullScreen(Notification(name: NSWindow.didEnterFullScreenNotification, object: host.window))
         let state = WindowRecord(host)
         precondition(state.mode == .fullscreen && state.frame.rect == desktop, "native fullscreen lost presentation or desktop frame")
         host.window.setFrame(desktop, display: true)
-        center.post(name: NSWindow.didExitFullScreenNotification, object: host.window)
+        host.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: host.window))
         let restored = openWindow(host.current!.app, state: state)
         precondition(restored.mode == .fullscreen && restored.savedFrame == desktop)
         restored.set(.window)

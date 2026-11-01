@@ -186,6 +186,7 @@ final class Shell: NSObject, NSWindowDelegate {
         window.delegate = self
         window.backgroundColor = .black
         window.isReleasedWhenClosed = false
+        window.tabbingMode = .disallowed
         content.wantsLayer = true
         content.clipsToBounds = true
         content.layer?.backgroundColor = NSColor.black.cgColor
