@@ -149,7 +149,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("host \(host.hostID): closed")
         }
         // Attach before callbacks can persist a newly visible host.
-        host.attach(makeTab(app))
+        let primaryHost = shells.first(where: { $0 === host || $0.current?.app.name == app.name }) === host
+        host.attach(makeTab(app, hostID: host.hostID, primaryHost: primaryHost))
         host.open()
         if activeShell == nil || host.window.isKeyWindow { activeShell = host }
         print("host \(host.hostID): opened \(app.name)")
@@ -191,11 +192,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// A tab for `app`, its page not loaded yet (`Tab.loadIfNeeded`).
-    func makeTab(_ app: Site.App) -> Tab {
+    func makeTab(_ app: Site.App, hostID: UUID, primaryHost: Bool) -> Tab {
         // Control is read at launch: a tab made later still follows that choice.
         let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser, native: nativePluginSettings,
                       sshAgent: config.sshAgent, watchLatency: config.watch.latency, inspectable: config.debug.inspectable, web: config.web,
-                      collector: debug.collector)
+                      collector: debug.collector, hostID: hostID, primaryHost: primaryHost)
         tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
         tab.didLoad = { [weak self] in self?.loaded($0) }
         return tab
@@ -786,11 +787,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         print("native windows: background focus preserves application activation")
     }
 
+    /// Read identity from a real main page after event-based navigation completion.
+    @MainActor
+    func probeHostIdentity(_ host: Shell, primary: Bool, reload: Bool = false) async {
+        let page = host.current!
+        if reload {
+            // This later document-start script must already see the native identity.
+            page.webView.configuration.userContentController.addUserScript(WKUserScript(source: """
+                window.__tilrHostAtStart = window.__tilrHost;
+                """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            page.reload()
+        }
+        await page.firstLoad(within: config.control.loadTimeout)
+        precondition(page.isLoaded, "host identity probe page failed to load")
+        let valid = try? await page.webView.evaluateJavaScript("""
+            (() => {
+              const identity = window.__tilrHost;
+              const descriptor = Object.getOwnPropertyDescriptor(window, '__tilrHost');
+              return identity?.host === '\(host.hostID.uuidString)'
+                && identity.primary === \(primary ? "true" : "false")
+                && Object.isFrozen(identity) && descriptor.writable === false
+                && descriptor.configurable === false
+                && (\(reload ? "true" : "false") ? window.__tilrHostAtStart === identity : true);
+            })()
+            """) as? Bool
+        precondition(valid == true, "runtime host identity is missing, mutable or inconsistent")
+    }
+
     /// Integration probe: real duplicate pages, independent hosts and durable restoration.
     @MainActor
     func probeWindows() async {
         guard let first = shell, let page = first.current else { preconditionFailure("no initial host") }
         probeBackgroundFocus(page)
+        await probeHostIdentity(first, primary: true)
+        await probeHostIdentity(first, primary: true, reload: true)
         precondition(!page.container.isHidden, "initial host page is hidden")
         var screenState = WindowRecord(first)
         screenState.screen = 1
@@ -808,6 +838,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let second = shell!
         precondition(!second.current!.container.isHidden, "new host page is hidden")
         precondition(second.hostID != first.hostID && second.current !== page)
+        await probeHostIdentity(second, primary: false)
         precondition((second.window.tabbedWindows?.count ?? 0) <= 1 && (first.window.tabbedWindows?.count ?? 0) <= 1, "native hosts became tabs")
         precondition(second.current!.webView.configuration.websiteDataStore === page.webView.configuration.websiteDataStore)
         let firstFrame = first.window.frame
@@ -846,6 +877,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         precondition(!restored.current!.container.isHidden, "restored host page is hidden")
         precondition(restored.current !== page && restored.current!.webView !== page.webView)
         precondition(restoredThird.current !== restored.current)
+        await probeHostIdentity(restored, primary: false)
+        await probeHostIdentity(restoredThird, primary: false)
         let storedMode = config.window.mode
         config.window.mode = .fullscreen
         syncTabs()

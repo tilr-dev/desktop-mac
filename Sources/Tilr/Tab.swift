@@ -85,7 +85,8 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// `web`: how the page renders (`web.high_refresh_rate`).
     /// `collector`: debug mode's script (Debug.swift), nil while off.
     init(app: Site.App, control: Config.Control?, browser: Config.Browser, native: Config.NativePlugins, sshAgent: Config.SSHAgent,
-         watchLatency: Double, inspectable: Bool, web: Config.Web, collector: String? = nil) {
+         watchLatency: Double, inspectable: Bool, web: Config.Web, collector: String? = nil,
+         hostID: UUID = UUID(), primaryHost: Bool = true) {
         self.app = app
         self.watchLatency = watchLatency
         let catchesConsole = control?.consoleCapture == true
@@ -104,6 +105,12 @@ final class Tab: NSObject, WKNavigationDelegate {
             highRefreshRate = false
         }
         let controller = configuration.userContentController
+        controller.addUserScript(WKUserScript(source: """
+            Object.defineProperty(window, '__tilrHost', {
+              value: Object.freeze({ host: '\(hostID.uuidString)', primary: \(primaryHost ? "true" : "false") }),
+              writable: false, configurable: false
+            });
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         if catchesConsole, let control {
             controller.addUserScript(WKUserScript(source: ConsoleRelay.script(entryMax: control.consoleEntryMax),
                                                   injectionTime: .atDocumentStart, forMainFrameOnly: false))
