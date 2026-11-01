@@ -1,0 +1,57 @@
+# Shared setup of the CI jobs: Python, the toolchain, SwiftPM caches and, unless gitpm is 'false',
+# the gitpm release in gitpm.pin. The .build cache is per job and per Swift toolchain: build
+# products of another toolchain are never restored.
+name: Mac CI setup
+description: Python, Swift toolchain, SwiftPM download and .build caches, pinned gitpm
+inputs:
+  job:
+    description: Name of the calling job; part of the .build cache key
+    required: true
+  build-paths:
+    description: SwiftPM .build directories the job builds into, one per line
+    default: .build
+  gitpm:
+    description: "'true' installs the plugin manager release in gitpm.pin"
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.13'
+
+    - name: Toolchain
+      id: toolchain
+      shell: bash
+      run: |
+        xcodebuild -version
+        swift --version
+        echo "swift=$(swift --version 2>&1 | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/Library/Caches/org.swift.swiftpm
+        key: swiftpm-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}
+
+    # Pull requests and queue groups only restore: their caches are scoped to their own ref and
+    # would evict main's. Nightly, manual and release branch runs save a fresh .build under the
+    # commit, so restores follow main instead of freezing at the first save.
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+      with:
+        path: ${{ inputs.build-paths }}
+        key: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}-${{ github.sha }}
+        restore-keys: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-
+
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+      with:
+        path: ${{ inputs.build-paths }}
+        key: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}-${{ github.sha }}
+        restore-keys: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-
+
+    # The gitpm release in gitpm.pin, verified; no gitpm sources or Rust toolchain.
+    - name: Plugin manager (gitpm)
+      if: inputs.gitpm == 'true'
+      shell: bash
+      run: python3 scripts/fetch_gitpm.py
