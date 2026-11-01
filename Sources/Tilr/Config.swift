@@ -133,15 +133,6 @@ struct Config: Decodable {
         case easeIn = "ease-in"
         case easeOut = "ease-out"
         case linear
-
-        var function: CAMediaTimingFunction {
-            switch self {
-            case .easeInOut: CAMediaTimingFunction(name: .easeInEaseOut)
-            case .easeIn: CAMediaTimingFunction(name: .easeIn)
-            case .easeOut: CAMediaTimingFunction(name: .easeOut)
-            case .linear: CAMediaTimingFunction(name: .linear)
-            }
-        }
     }
 
     /// The command palette: `hotkey` opens it, `commands` are its rows, top to bottom.

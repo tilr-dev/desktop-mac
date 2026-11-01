@@ -30,8 +30,6 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     /// A page finished loading.
     var didLoad: ((Tab) -> Void)?
-    /// A page failed to load (`didFail`, `didFailProvisionalNavigation`).
-    var didFailLoad: ((Tab) -> Void)?
 
     struct ConsoleEntry {
         /// Seconds since 1970.
@@ -327,7 +325,6 @@ final class Tab: NSObject, WKNavigationDelegate {
     private func loadFailed() {
         guard !webView.isLoading else { return }
         loadEnded = true
-        didFailLoad?(self)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

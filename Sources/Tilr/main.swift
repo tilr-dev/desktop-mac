@@ -3,6 +3,7 @@ import WebKit
 import Sparkle
 import AppUpdates
 import Gitpm
+import ObjectiveC
 
 // Prints reach a log file or a pipe as they happen (run.sh with its output redirected), not in blocks.
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -24,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var debug: DebugMode!
     /// `plugin_manager:` (PluginManagerHost.swift); its workspace opens on the first operation.
     var pluginManager: PluginManagerService!
-    let probing = CommandLine.arguments.contains("--probe")
+    var probing = CommandLine.arguments.contains("--probe")
     var probed = false
     var appUpdates: AppUpdates?
     private var uninstalling = false
@@ -159,7 +160,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func focus(_ tab: Tab) {
         guard let host = shells.first(where: { $0.current === tab }) else { return }
         activeShell = host
-        if !restoringWindows && !probing { NSApp.activate(ignoringOtherApps: true) }
         host.window.makeKeyAndOrderFront(nil)
         host.window.makeFirstResponder(tab.webView)
         updateMenu()
@@ -216,8 +216,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         focus(host.current!)
     }
 
-    @discardableResult
-    func jump(to tab: Tab) -> Bool { focus(tab); return false }
     @objc func closeWindow() { shell?.window.close() }
     @objc func newWindow() {
         guard let app = current?.app ?? Site.apps(config: config).first else { return }
@@ -767,10 +765,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         print("ssh agent:", agent ?? "FAILED js error")
     }
 
+    /// Observe activation requests without stealing focus from the person running the probe.
+    @MainActor
+    func probeBackgroundFocus(_ page: Tab) {
+        let method = class_getInstanceMethod(NSApplication.self, #selector(NSApplication.activate(ignoringOtherApps:)))!
+        var activations = 0
+        let observe: @convention(block) (NSApplication, Bool) -> Void = { _, _ in activations += 1 }
+        let replacement = imp_implementationWithBlock(observe)
+        let original = method_setImplementation(method, replacement)
+        let wasProbing = probing
+        probing = false
+        defer {
+            probing = wasProbing
+            method_setImplementation(method, original)
+            imp_removeBlock(replacement)
+        }
+        focus(page)
+        precondition(activations == 0, "window focus requested application activation")
+        precondition(current === page, "background focus did not select the host")
+        print("native windows: background focus preserves application activation")
+    }
+
     /// Integration probe: real duplicate pages, independent hosts and durable restoration.
     @MainActor
     func probeWindows() async {
         guard let first = shell, let page = first.current else { preconditionFailure("no initial host") }
+        probeBackgroundFocus(page)
         precondition(!page.container.isHidden, "initial host page is hidden")
         var screenState = WindowRecord(first)
         screenState.screen = 1
