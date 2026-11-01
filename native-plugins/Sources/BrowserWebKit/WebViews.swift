@@ -179,9 +179,11 @@ final class WebViewHost: NSObject {
     func view(_ id: String) -> ChildView? { views[id] }
 }
 
-/// WebKit-specific mouse notification; placement and clipping live in SDK Views.
+/// WebKit-specific mouse notification; placement and clipping live in SDK Views. Like the app's
+/// page, it takes the first click in an inactive window (`pressed` fires, the page gets it).
 final class ChildWebView: WKWebView {
     var pressed: (() -> Void)?
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { pressed?(); super.mouseDown(with: event) }
     override func rightMouseDown(with event: NSEvent) { pressed?(); super.rightMouseDown(with: event) }
     override func otherMouseDown(with event: NSEvent) { pressed?(); super.otherMouseDown(with: event) }

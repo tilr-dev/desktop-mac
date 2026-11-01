@@ -4,6 +4,13 @@ import WebKit
 /// One app inside the shell's window: a web view showing the app's folder as `tilr://<name>/`
 /// (see Site), or the dev server, plus the folder watcher that reloads it. The Shell keeps the
 /// tabs and shows one at a time; there is no tab bar, switching is by shortcut.
+/// The app's page. A click in an inactive Tilr window reaches the page at once (a drag of a
+/// layout window's header starts on that first press) instead of only activating the window:
+/// WebKit's own `acceptsFirstMouse` says yes only over a selection or a scroller.
+final class PageWebView: WKWebView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 final class Tab: NSObject, WKNavigationDelegate {
     private(set) var app: Site.App
     let site: SiteSchemeHandler
@@ -112,7 +119,7 @@ final class Tab: NSObject, WKNavigationDelegate {
         controller.add(agent, name: AgentHost.name)
         controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
         controller.addScriptMessageHandler(performanceBridge, contentWorld: .page, name: PerformanceBridge.name)
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = PageWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         localServer.tab = self
@@ -206,7 +213,7 @@ final class Tab: NSObject, WKNavigationDelegate {
         agent.closeAll()
         performanceBridge.reset()
         isLoaded = false
-        let next = WKWebView(frame: old.frame, configuration: old.configuration)
+        let next = PageWebView(frame: old.frame, configuration: old.configuration)
         next.navigationDelegate = self
         next.underPageBackgroundColor = old.underPageBackgroundColor
         next.isInspectable = old.isInspectable

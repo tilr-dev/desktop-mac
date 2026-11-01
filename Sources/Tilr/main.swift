@@ -464,6 +464,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tab.siteChanged([index.path])
         await loaded()
         precondition(tab.webView !== placeholder, "Placeholder history survived installation")
+        precondition(placeholder.acceptsFirstMouse(for: nil) && tab.webView.acceptsFirstMouse(for: nil),
+                     "A page view does not take the first click in an inactive window")
         cleanHistory()
         let page = tab.webView
         _ = try? await page.evaluateJavaScript("localStorage.setItem('reload-probe', 'saved'); window.probeMarker = true")
@@ -489,7 +491,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         precondition(saved == "saved", "Replacing WebView lost persistent storage")
         _ = try? await tab.webView.evaluateJavaScript("localStorage.removeItem('reload-probe')")
         cleanHistory()
-        print("reload history: index edit, manual reload, placeholder transitions, persistent storage: ok")
+        print("reload history: index edit, manual reload, placeholder transitions, persistent storage, first click on a replaced view: ok")
     }
 
     /// `--probe`, the page's plumbing on a temporary app: the scheme handler (files, directories,
@@ -532,6 +534,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tab.watcher = nil
         await loaded()
         check(tab.webView.isInspectable == config.debug.inspectable, "debug.inspectable not applied")
+        // A click in an inactive window reaches the page (a header drag starts on the first press).
+        check(tab.webView.acceptsFirstMouse(for: nil), "the page view does not take the first click in an inactive window")
 
         // Scheme handler.
         let served = await js("""
@@ -637,7 +641,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch { check(false, "snapshot: \(error)") }
         let header = (try? Data(contentsOf: png))?.prefix(8)
         check(header == Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), "snapshot is not a PNG")
-        print("page plumbing: scheme handler, double reload, native events, console relay and its bounded serialization, high refresh rate switch, plugin host settings, snapshot PNG: ok")
+        print("page plumbing: first click, scheme handler, double reload, native events, console relay and its bounded serialization, high refresh rate switch, plugin host settings, snapshot PNG: ok")
     }
 
     /// `--probe`, web part: reports what loaded, clicks through the header's clock menu from JS and,
