@@ -292,6 +292,7 @@ private func probeDiscard(settings: BrowserSettings, host real: TLRPluginHost) a
     views.receive(["op": "place", "id": "d1"].merging(place(true)) { $1 })
     guard let view = views.view("d1") else { throw PluginFailure(message: "discard: view not made") }
     try await settle(view)
+    try check(view.webView.acceptsFirstMouse(for: nil), "first mouse: a browser view does not take the first click in an inactive window")
     views.receive(["op": "navigate", "id": "d1", "url": html("two")])
     try await Task.sleep(nanoseconds: 100_000_000)
     try await settle(view)
