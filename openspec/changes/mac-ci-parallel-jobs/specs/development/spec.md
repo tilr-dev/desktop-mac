@@ -41,8 +41,12 @@ The CI workflow SHALL run probe, release script tests, native plugin tests, app 
 - **THEN** the Intel build runs, and the mac job fails if it was skipped
 
 ### Requirement: Cached SwiftPM builds in CI
-Each CI job that builds Swift packages SHALL restore SwiftPM's download cache and its `.build` directory, keyed by the job, the runner, the Swift toolchain and the `Package.resolved` files, so a pull request with a warm cache rebuilds only what changed.
+Each CI job that builds Swift packages SHALL restore SwiftPM's download cache and its `.build` directory, keyed by the job, the runner, the Swift toolchain and the `Package.resolved` files, so a pull request with a warm cache rebuilds only what changed. Nightly, manual and release branch runs SHALL save `.build` under their commit; pull requests and merge queue groups SHALL only restore it.
 
 #### Scenario: Toolchain changes
 - **WHEN** the runner image ships a different Swift toolchain
 - **THEN** the `.build` cache key changes and the job does not reuse build products of the old toolchain
+
+#### Scenario: Main moves on
+- **WHEN** the nightly run builds a newer main than the cached `.build`
+- **THEN** it saves a new `.build` cache, and later pull requests restore the newest one

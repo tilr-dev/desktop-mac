@@ -255,9 +255,20 @@ class CiWorkflowContract(unittest.TestCase):
         setup = SETUP.read_text()
         self.assertIn("path: ~/Library/Caches/org.swift.swiftpm", setup)
         self.assertIn("path: ${{ inputs.build-paths }}", setup)
-        key = re.search(r"\n        key: (build-.*)\n", setup).group(1)
-        for part in ("inputs.job", "runner.os", "runner.arch", "steps.toolchain.outputs.swift", "hashFiles('Package.resolved'"):
-            self.assertIn(part, key)
+        keys = re.findall(r"\n        key: (build-.*)\n        restore-keys: (build-.*)\n", setup)
+        self.assertEqual(len(keys), 2)
+        for key, restore in keys:
+            for part in ("inputs.job", "runner.os", "runner.arch", "steps.toolchain.outputs.swift", "hashFiles('Package.resolved'"):
+                self.assertIn(part, key)
+            # A key without the commit is hit exactly forever after the first save, and never saved again.
+            self.assertTrue(key.endswith("-${{ github.sha }}"), key)
+            self.assertTrue(key.startswith(restore), restore)
+            self.assertNotIn("github.sha", restore)
+        # Pull requests and queue groups only restore: their saves are scoped to their ref and evict main's.
+        saving = setup.split("uses: actions/cache@")[2]
+        self.assertIn("if: github.event_name != 'pull_request' && github.event_name != 'merge_group'", saving)
+        restoring = setup.split("uses: actions/cache/restore@")[1]
+        self.assertIn("if: github.event_name == 'pull_request' || github.event_name == 'merge_group'", restoring)
         self.assertIn("swift --version 2>&1 | shasum", setup)
         for action in re.findall(r"uses: (\S+)", self.text + setup):
             if not action.startswith("./"):

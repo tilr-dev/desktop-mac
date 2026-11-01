@@ -33,10 +33,21 @@ runs:
         path: ~/Library/Caches/org.swift.swiftpm
         key: swiftpm-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}
 
+    # Pull requests and queue groups only restore: their caches are scoped to their own ref and
+    # would evict main's. Nightly, manual and release branch runs save a fresh .build under the
+    # commit, so restores follow main instead of freezing at the first save.
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
       with:
         path: ${{ inputs.build-paths }}
-        key: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}
+        key: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}-${{ github.sha }}
+        restore-keys: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-
+
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+      with:
+        path: ${{ inputs.build-paths }}
+        key: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}-${{ github.sha }}
         restore-keys: build-${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-
 
     # The gitpm release in gitpm.pin, verified; no gitpm sources or Rust toolchain.
