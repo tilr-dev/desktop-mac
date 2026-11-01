@@ -80,7 +80,7 @@ struct Config: Decodable {
         }
     }
 
-    /// Switching between the apps (the window's tabs).
+    /// App focus shortcuts and accepted legacy tab-switch settings.
     struct Switching: Decodable {
         var duration: Double
         var easing: Easing
@@ -88,7 +88,7 @@ struct Config: Decodable {
         var previous: Shortcut
         /// Modifiers only; with 1..9 they jump to the window at that place in `apps`.
         var jump: Shortcut
-        /// When the apps that are not on screen load their page. At launch.
+        /// Legacy preload input, ignored by native windows.
         var preload: Preload
     }
 
@@ -378,7 +378,7 @@ struct Config: Decodable {
 
         window:
           # fullscreen covers the screen with the Dock and the menu bar hidden; window has a title
-          # bar; frameless has none. The mode at launch; the Commands menu switches it later.
+          # bar; frameless has none. Defaults for new windows; saved hosts keep their mode.
           mode: window
           # Frameless mode: a drag that starts within this many points from the top moves the window.
           drag_height: 32
@@ -395,23 +395,17 @@ struct Config: Decodable {
           # Seconds between desktop membership checks during a move.
           space_move_interval: 0.05
 
-        # Switching between the apps: the new page slides into the window, the old one slides out.
+        # Select an app by focusing its window, or opening one when none exists.
         switch:
-          # Seconds; 0 switches without an animation.
+          # Legacy animation settings are accepted but ignored by native windows.
           duration: 0.3
-          # ease-in-out, ease-in, ease-out or linear.
           easing: ease-in-out
           # Modifiers: cmd, shift, alt (opt), ctrl. Keys: a letter, a digit, left, right, up, down.
           next: ctrl+alt+right
           previous: ctrl+alt+left
-          # Modifiers only: with 1..9 they jump to the app at that place in apps.
+          # Modifiers only: with 1..9 they select the app at that place in apps.
           jump: ctrl+alt
-          # When the apps not on screen load their page (each loaded app is a WebContent process):
-          #   false  an app loads when it is first selected;
-          #   true   every app loads at launch;
-          #   N      seconds after the first app's page has finished loading, the rest load in
-          #          the background (an app selected earlier loads at once).
-          # At launch; apps added later load when selected (true: at once).
+          # Legacy preload setting; ignored. Each native window loads its own page.
           preload: 2
 
         # Watching the apps' folders (a change reloads the page) and config.yml (a save reloads
@@ -432,6 +426,8 @@ struct Config: Decodable {
             - title: Exit
               action: quit
               key: cmd+q
+            - title: New Window
+              action: new-window
             - title: Full Screen
               action: fullscreen
               key: cmd+1
@@ -455,7 +451,7 @@ struct Config: Decodable {
           socket: \(shownDir)/control.sock
           # Console messages kept per app for the console command.
           console: 500
-          # Seconds a command for an app whose page is not loaded yet (switch.preload) waits for
+          # Seconds a command for an app whose window page is loading waits for
           # it to load before running anyway.
           load_timeout: 10
           # Catch the page's console for the console command (a script in every frame). At launch.
@@ -636,6 +632,7 @@ struct Config: Decodable {
 
 enum Action: String, Decodable {
     case quit, fullscreen, window, frameless, reload, debug
+    case newWindow = "new-window"
     case alwaysOnTop = "always-on-top"
     case allDesktops = "all-desktops"
     case nextDesktop = "next-desktop"

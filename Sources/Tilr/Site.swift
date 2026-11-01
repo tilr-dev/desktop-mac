@@ -24,7 +24,7 @@ enum Site {
     static let devURL: URL? = (argument("--url") ?? ProcessInfo.processInfo.environment["TILR_URL"])
         .flatMap(URL.init(string:))
 
-    /// The apps to show, in tab order. Never empty.
+    /// The application catalog, in menu/shortcut order. Never empty.
     static func apps(config: Config) -> [App] {
         if let dir = argument("--site") { return [App(name: "default", root: URL(fileURLWithPath: (dir as NSString).expandingTildeInPath, isDirectory: true))] }
         if devURL != nil { return [App(name: "default", root: fallback)] }

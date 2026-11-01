@@ -8,16 +8,12 @@ final class PageWebView: WKWebView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// One app inside the shell's window: a web view showing the app's folder as `tilr://<name>/`
-/// (see Site), or the dev server, plus the folder watcher that reloads it. The Shell keeps the
-/// tabs and shows one at a time; there is no tab bar, switching is by shortcut.
+/// One native window’s full application page, bridges, session and folder watcher.
 final class Tab: NSObject, WKNavigationDelegate {
     private(set) var app: Site.App
     let site: SiteSchemeHandler
     private(set) var webView: WKWebView
-    /// What the Shell stacks, shows, hides and slides: a plain layer-backed view the web view
-    /// fills. A slide moves this view's layer, never a view frame, so WebKit sees no geometry
-    /// change (no per-frame view-frame update to the WebContent process).
+    /// The host content container, filled by the page web view.
     let container = NSView()
     /// Separately installed native providers, scoped to this app/tab.
     var nativePlugins: NativePluginSession!
@@ -29,7 +25,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// `watch.latency`: seconds FSEvents gathers the folder's changes.
     private let watchLatency: Double
     /// The page has been asked to load (`loadIfNeeded`): until then the web view is blank,
-    /// the folder unwatched and the native providers not started (`switch.preload`).
+    /// the folder unwatched and the native providers not started.
     private(set) var started = false
 
     /// A page finished loading.
@@ -159,7 +155,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     }
 
     /// Loads the page the first time: starts the native providers, watches the folder and
-    /// navigates. The tab being selected, `switch.preload`, or a control command needs the page.
+    /// navigates. A native host or a control command needs the page.
     func loadIfNeeded() {
         guard !started else { return }
         started = true
