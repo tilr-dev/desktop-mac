@@ -1,9 +1,6 @@
 import AppKit
 import WebKit
 
-/// One app inside the shell's window: a web view showing the app's folder as `tilr://<name>/`
-/// (see Site), or the dev server, plus the folder watcher that reloads it. The Shell keeps the
-/// tabs and shows one at a time; there is no tab bar, switching is by shortcut.
 /// The app's page. A click in an inactive Tilr window reaches the page at once (a drag of a
 /// layout window's header starts on that first press) instead of only activating the window:
 /// WebKit's own `acceptsFirstMouse` says yes only over a selection or a scroller.
@@ -11,6 +8,9 @@ final class PageWebView: WKWebView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// One app inside the shell's window: a web view showing the app's folder as `tilr://<name>/`
+/// (see Site), or the dev server, plus the folder watcher that reloads it. The Shell keeps the
+/// tabs and shows one at a time; there is no tab bar, switching is by shortcut.
 final class Tab: NSObject, WKNavigationDelegate {
     private(set) var app: Site.App
     let site: SiteSchemeHandler
