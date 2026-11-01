@@ -1,0 +1,3 @@
+- [x] Specify host routing and native shell commands.
+- [x] Implement Control and native window operations.
+- [x] Exercise commands in the application integration probe.

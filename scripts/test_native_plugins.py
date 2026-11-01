@@ -25,6 +25,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gui', action='store_true')
     parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--shell-control', action='store_true', help='run only the native shell Control GUI probe on a minimal page')
     parser.add_argument('--configuration', choices=['debug', 'release'], default='debug')
     args = parser.parse_args()
     env = os.environ.copy()
@@ -33,7 +34,8 @@ def main():
     swift = ['swift', 'build', '--build-system', 'native', '--package-path', ROOT, '--disable-sandbox', '--skip-update', '-c', args.configuration]
     if not args.skip_build:
         run(*swift, env=env)
-        run('python3', REPO / 'scripts/plugin.py', 'build', '--configuration', args.configuration)
+        if not args.shell_control:
+            run('python3', REPO / 'scripts/plugin.py', 'build', '--configuration', args.configuration)
     binary = Path(run(*swift, '--show-bin-path', env=env, capture_output=True, text=True).stdout.strip()) / 'Tilr'
     packages = REPO / 'dist' / platform.machine()
     with tempfile.TemporaryDirectory(prefix='tilr-native-check-') as temp:
@@ -52,21 +54,23 @@ def main():
             shutil.copytree(package, contents / 'PlugIns' / package.name)
         shutil.copy2(ROOT / 'placeholder.html', contents / 'Resources/placeholder.html')
         run('codesign', '--force', '--sign', '-', '--entitlements', ROOT / 'Tilr.entitlements', app)
-        run('python3', REPO / 'scripts/test_plugins.py', '--app', app, '--packages', packages, '-v')
-        if args.gui:
+        if not args.shell_control:
+            run('python3', REPO / 'scripts/test_plugins.py', '--app', app, '--packages', packages, '-v')
+        if args.gui or args.shell_control:
             config = stage / 'config'
             config.mkdir()
             other = stage / 'other-app'
             other.mkdir()
             (other / 'index.html').write_text('<html><body>Other window app</body></html>')
+            site = other if args.shell_control else ROOT.parent / 'web/site'
             # Two configured apps exercise focus-or-create for a closed app as well as duplicates.
             (config / 'config.yml').write_text(
                 'window: { mode: window, activate_at_launch: false }\n'
                 'local_server: { enabled: false }\n'
-                f'apps:\n  - {{ name: default, site: "{ROOT.parent / "web/site"}" }}\n'
+                f'apps:\n  - {{ name: default, site: "{site}" }}\n'
                 f'  - {{ name: other, site: "{other}" }}\n')
             # This exact test process exits itself after probing. No pid/name-based kill.
-            run(contents / 'MacOS/Tilr', '--config', config, '--no-updates', '--probe',
+            run(contents / 'MacOS/Tilr', '--config', config, '--no-updates', '--probe-shell-control' if args.shell_control else '--probe',
                 timeout=120)
 
 
