@@ -25,6 +25,8 @@ Tilr SHALL maintain a persistent set of native windows, each with a stable host 
 - **WHEN** Tilr restarts after two windows of the same application have been moved or changed independently
 - **THEN** both hosts and their application, desktop frames, screens, modes, Space placement and always-on-top state are restored
 - **AND** window and frameless modes preserve desktop size and position; fullscreen covers the selected screen with Dock/menu bar hidden
+- **AND** native fullscreen entered with the green button records fullscreen mode without overwriting desktop geometry
+- **AND** rearranged connected displays restore onto the recorded screen identity
 - **AND** unavailable screens use a reachable fallback and unavailable private Space APIs leave placement unsupported
 - **AND** first launch without usable saved state creates one window for the default application using window configuration defaults
 

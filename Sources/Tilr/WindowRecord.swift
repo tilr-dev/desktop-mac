@@ -28,10 +28,23 @@ struct WindowRecord: Codable {
         app = shell.current!.app.name
         frame = Frame(shell.savedFrame)
         screen = shell.window.screen.flatMap(Self.screenID)
-        mode = shell.mode
+        mode = shell.savedMode
         space = Spaces.of(shell.window).first
         allSpaces = shell.allSpaces
         onTop = shell.onTop
+    }
+
+    /// Project a desktop frame onto its saved screen, or a reachable fallback screen.
+    func restoredFrame(displays: [(id: UInt32?, frame: NSRect)], fallback: NSRect?) -> NSRect {
+        let target = screen.flatMap { identity in displays.first { $0.id == identity }?.frame }
+            ?? fallback ?? displays.first?.frame
+        var result = frame.rect
+        if let target, target.intersection(result).width < 80 || target.intersection(result).height < 40 {
+            result.origin = target.origin
+            result.size.width = min(result.width, target.width)
+            result.size.height = min(result.height, target.height)
+        }
+        return result
     }
 
     static func screenID(_ screen: NSScreen) -> UInt32? {

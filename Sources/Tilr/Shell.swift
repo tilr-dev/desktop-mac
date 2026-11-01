@@ -174,6 +174,8 @@ final class Shell: NSObject, NSWindowDelegate {
     var stateChanged: (() -> Void)?
     var closed: ((Shell) -> Void)?
     private var applyingMode = false
+    private var nativeFullscreen = false
+    var savedMode: Mode { nativeFullscreen || window.styleMask.contains(.fullScreen) ? .fullscreen : mode }
 
     init(settings: Config.Windows, hostID: UUID = UUID()) {
         self.hostID = hostID
@@ -213,14 +215,9 @@ final class Shell: NSObject, NSWindowDelegate {
     var savedFrame: NSRect { desktopFrame ?? window.frame }
 
     func restore(_ state: WindowRecord) {
-        let screens = NSScreen.screens
-        let screen = screens.first { WindowRecord.screenID($0) == state.screen } ?? NSScreen.main
-        var frame = state.frame.rect
-        if !screens.contains(where: { $0.visibleFrame.intersection(frame).width >= 80 && $0.visibleFrame.intersection(frame).height >= 40 }), let screen {
-            frame.origin = screen.visibleFrame.origin
-            frame.size.width = min(frame.width, screen.visibleFrame.width)
-            frame.size.height = min(frame.height, screen.visibleFrame.height)
-        }
+        let frame = state.restoredFrame(displays: NSScreen.screens.map {
+            (id: WindowRecord.screenID($0), frame: $0.visibleFrame)
+        }, fallback: NSScreen.main?.visibleFrame)
         window.setFrame(frame, display: false)
         desktopFrame = frame
         mode = state.mode
@@ -367,15 +364,29 @@ final class Shell: NSObject, NSWindowDelegate {
     func windowDidChangeScreen(_ notification: Notification) { stateChanged?() }
     private func geometryChanged() {
         guard !applyingMode else { return }
+        if mode != .fullscreen && !nativeFullscreen && !window.styleMask.contains(.fullScreen) { desktopFrame = window.frame }
+        stateChanged?()
+    }
+
+    func windowWillEnterFullScreen(_ notification: Notification) {
         if mode != .fullscreen { desktopFrame = window.frame }
+        nativeFullscreen = true
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) { stateChanged?() }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        nativeFullscreen = false
         stateChanged?()
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
+        nativeFullscreen = false
         if let next = pending {
             pending = nil
             set(next)
         }
+        stateChanged?()
     }
 
     func windowWillClose(_ notification: Notification) {

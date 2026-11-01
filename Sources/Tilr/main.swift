@@ -229,6 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard probing, !probed, tab === tabs.first else { return }
         probed = true
         Task { @MainActor in
+            await probeWindows()
             do { _ = try await tab.nativePlugins.request(service: "browser", body: ["action": "probe"]) }
             catch {
                 print("native browser probe FAILED:", error.localizedDescription)
@@ -238,7 +239,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await probeReloadHistory()
             await probePagePlumbing()
             await probeWeb(tab)
-            await probeWindows()
             await probePluginManager()
             probePalette()
             await probeSpaces()
@@ -772,6 +772,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func probeWindows() async {
         guard let first = shell, let page = first.current else { preconditionFailure("no initial host") }
         precondition(!page.container.isHidden, "initial host page is hidden")
+        var screenState = WindowRecord(first)
+        screenState.screen = 1
+        screenState.frame = WindowRecord.Frame(NSRect(x: 100, y: 100, width: 500, height: 300))
+        let left = NSRect(x: 0, y: 0, width: 1024, height: 768)
+        let right = NSRect(x: 1024, y: 0, width: 1024, height: 768)
+        let moved = screenState.restoredFrame(displays: [(id: 1, frame: right), (id: 2, frame: left)], fallback: left)
+        precondition(right.contains(moved), "rearranged displays lost saved screen identity")
+        let fallback = screenState.restoredFrame(displays: [(id: 2, frame: right)], fallback: right)
+        precondition(right.contains(fallback), "disconnected screen produced an unreachable host")
         let original = shells
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-windows-\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -786,6 +795,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         second.set(.window)
         let frame = NSRect(x: 80, y: 100, width: 540, height: 380)
         second.window.setFrame(frame, display: true)
+        await probeNativeFullscreen(second, desktop: frame)
         second.set(.frameless)
         if !second.onTop { second.toggleOnTop() }
         second.toggleAllSpaces()
@@ -832,6 +842,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             focus(page)
         }
         print("native windows: duplicate, independent presentation, close, restore and switch: ok")
+    }
+
+    /// Exercise the native-fullscreen delegate contract without depending on desktop activation.
+    @MainActor
+    func probeNativeFullscreen(_ host: Shell, desktop: NSRect) async {
+        let center = NotificationCenter.default
+        center.post(name: NSWindow.willEnterFullScreenNotification, object: host.window)
+        host.window.setFrame((host.window.screen ?? NSScreen.main!).frame, display: true)
+        center.post(name: NSWindow.didEnterFullScreenNotification, object: host.window)
+        let state = WindowRecord(host)
+        precondition(state.mode == .fullscreen && state.frame.rect == desktop, "native fullscreen lost presentation or desktop frame")
+        host.window.setFrame(desktop, display: true)
+        center.post(name: NSWindow.didExitFullScreenNotification, object: host.window)
+        let restored = openWindow(host.current!.app, state: state)
+        precondition(restored.mode == .fullscreen && restored.savedFrame == desktop)
+        restored.set(.window)
+        precondition(restored.window.frame == desktop, "restored fullscreen lost desktop geometry")
+        restored.window.close()
+        focus(host.current!)
     }
 
     /// A real stream must release its socket when its host closes, while other hosts survive.
