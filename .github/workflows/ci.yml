@@ -1,5 +1,7 @@
-# Builds both architectures, runs the script, SDK and native plugin tests and the app's
-# --probe self-check in a test instance. No secrets: safe for pull requests from forks.
+# Pull requests, merge queue groups, release branch pushes, manual and nightly runs on main. Parallel
+# jobs; `mac` is their aggregate and the check the main ruleset requires. The Intel build runs on
+# every event but pull requests. No push to main: the merge queue has checked the merged result.
+# No secrets: safe for pull requests from forks.
 name: CI
 
 on:
@@ -7,7 +9,9 @@ on:
   pull_request:
     branches: [main, 'release/**']
   push:
-    branches: [main, 'release/**']
+    branches: ['release/**']
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -22,64 +26,19 @@ defaults:
     shell: bash  # -eo pipefail: a failing probe fails the step through tee
 
 jobs:
-  mac:
+  # Builds Tilr.app (arm64, release) and runs the self-check in a test instance.
+  probe:
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: ./.github/actions/mac-setup
         with:
-          python-version: '3.13'
+          job: probe
 
-      - name: Toolchain
-        run: |
-          xcodebuild -version
-          swift --version
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/Library/Caches/org.swift.swiftpm
-          key: swiftpm-${{ hashFiles('Package.resolved', 'native-plugins/**/Package.resolved') }}
-
-      # The gitpm release in gitpm.pin, verified; no gitpm sources or Rust toolchain.
-      - name: Plugin manager (gitpm)
-        run: python3 scripts/fetch_gitpm.py
-
-      - name: Build Intel (x86_64)
-        run: swift build -c release --arch x86_64 --scratch-path .build/ci-x86_64
-
-      - name: Server protocol integration tests
-        run: |
-          swiftc Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
-          "$RUNNER_TEMP/test-server-installation"
-
-      - name: App update preference integration tests
-        run: python3 scripts/test_app_updates.py
-
-      - name: Release script tests
-        working-directory: scripts
-        run: |
-          swift package resolve --package-path ..
-          for t in test_ci_release test_deltas test_fetch_gitpm test_fetch_server test_local_server test_packaging test_plugin_inventory test_publish test_release_all test_release_workflow test_server_release test_signing test_sparkle_key; do
-            python3 -m unittest -v "$t"
-          done
-          python3 test_footprint.py
-          python3 test_performance_adapter.py
-          python3 test_performance_sampler.py
-
-      - name: Native plugin SDK tests
-        working-directory: native-plugins
-        run: |
-          swift test --disable-sandbox
-          swift test --disable-sandbox --package-path SDK
-
-      - name: Native plugin packages
-        run: python3 scripts/test_native_plugins.py
-
-      # Builds Tilr.app (arm64, release) and runs the self-check in a test instance.
       - name: Probe
         run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
 
@@ -134,3 +93,117 @@ jobs:
             /Library/Logs/DiagnosticReports/Tilr*.ips
             ~/Library/Application Support/dev.tilr.mac.test/*.log
           if-no-files-found: ignore
+
+  release-tests:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/mac-setup
+        with:
+          job: release-tests
+
+      - name: Release script tests
+        working-directory: scripts
+        run: |
+          swift package resolve --package-path ..
+          for t in test_ci_release test_deltas test_fetch_gitpm test_fetch_server test_local_server test_packaging test_plugin_inventory test_publish test_release_all test_release_workflow test_server_release test_signing test_sparkle_key; do
+            python3 -m unittest -v "$t"
+          done
+          python3 test_footprint.py
+          python3 test_performance_adapter.py
+          python3 test_performance_sampler.py
+
+  native-plugins:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/mac-setup
+        with:
+          job: native-plugins
+          build-paths: |
+            .build
+            native-plugins/.build
+            native-plugins/SDK/.build
+
+      - name: Native plugin SDK tests
+        working-directory: native-plugins
+        run: |
+          swift test --disable-sandbox
+          swift test --disable-sandbox --package-path SDK
+
+      # The packages test builds Tilr with --skip-update: resolve its dependencies first.
+      - name: Native plugin packages
+        run: |
+          swift package resolve
+          python3 scripts/test_native_plugins.py
+
+  app-tests:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/mac-setup
+        with:
+          job: app-tests
+          gitpm: 'false'
+
+      - name: Server protocol integration tests
+        run: |
+          swiftc Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
+          "$RUNNER_TEMP/test-server-installation"
+
+      - name: App update preference integration tests
+        run: python3 scripts/test_app_updates.py
+
+  x86_64:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/mac-setup
+        with:
+          job: x86_64
+
+      - name: Build Intel (x86_64)
+        run: swift build -c release --arch x86_64 --scratch-path .build/ci-x86_64
+
+  # Required by the main ruleset. Runs whatever the jobs end with: a job skipped because a need
+  # failed would pass as success. Only the Intel build may be skipped, and only on pull requests.
+  mac:
+    if: always()
+    needs: [probe, release-tests, native-plugins, app-tests, x86_64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          optional = {"x86_64"} if os.environ["EVENT"] == "pull_request" else set()
+          failed = []
+          for job, need in json.loads(os.environ["NEEDS"]).items():
+              result = need["result"]
+              print(f"{job}: {result}")
+              if result != "success" and not (result == "skipped" and job in optional):
+                  failed.append(job)
+          if failed:
+              sys.exit(f"Not passed: {', '.join(failed)}")
+          EOF
