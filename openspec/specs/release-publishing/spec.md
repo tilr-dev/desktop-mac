@@ -9,8 +9,8 @@ Define verified immutable app/server publication, update compatibility, delta ge
 Release tools SHALL use existing authorized CI credentials without printing secrets, storing them in Git, creating replacement certificates to bypass restrictions or changing blanket key permissions.
 
 #### Scenario: Check release access
-- **WHEN** release_all.py --check runs in the CI build job
-- **THEN** it verifies required build tools, the configured identity/private key, notarization profile, temporary real signing and disk-image creation without creating a release or requiring the Sparkle private key
+- **WHEN** the CI build job runs release_all.py to package a release
+- **THEN** it first verifies required build tools, the configured identity/private key, notarization profile, temporary real signing and disk-image creation before packaging, without requiring the Sparkle private key
 - **AND** the CI publisher uses scoped Sparkle/R2 access without Apple signing private keys, notarization login, compilation or image creation
 - **AND** release configuration comes from the runner environment; no local setup command or local credentials configuration file is required
 - **AND** all app architectures share the Sparkle public key, separate from Developer ID credentials; CDN access uses R2 S3 keys through the AWS CLI
