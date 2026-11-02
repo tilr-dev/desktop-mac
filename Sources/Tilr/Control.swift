@@ -39,11 +39,22 @@ import WebKit
 /// `windows.list`, and whatever other plugins provide. That is the whole control surface: a
 /// plugin that provides a service is driven the same way, with nothing added here.
 ///
-/// Every command takes `"app"` (an app's name; the current one by default) and `"id"` (echoed).
+/// Native windows: `{ "cmd": "shell", "op": "list" }` returns `windows` with host, app,
+/// frame {x,y,width,height}, screen ID (or null), key and space (Space IDs).
+/// `open` takes app and optional frame and always creates a new host; `close` and `focus`
+/// require host; `move` requires host and frame. Frames are AppKit screen points (bottom-left
+/// origin), with finite coordinates and positive sizes. Move leaves desktop fullscreen for
+/// window mode; native fullscreen must be exited first. Focus does not activate Tilr.
+/// Every command takes `"host"` (stable native UUID), `"app"` and `"id"` (echoed).
+/// Host selects an exact page; unknown hosts and mismatching apps fail. Without host, app
+/// selects its most recently key window (or opens one); omitted app uses the key host.
+/// Instance-wide commands validate host without changing scope. `apps` includes host IDs.
 /// The reply is `{ "id", "ok": true, …result }` or `{ "id", "ok": false, "error": "…" }`. Values
 /// cross as JSON: a result the page cannot stringify comes back as a string.
 final class ControlServer {
     let path: String
+    private let shells: () -> [Shell]
+    private let openWindow: (Site.App, NSRect?) -> Shell
     private let tabs: () -> [Tab]
     private let current: () -> Tab?
     private let apps: () -> [Site.App]
@@ -57,9 +68,11 @@ final class ControlServer {
     private let pluginManager: () async throws -> [String: Any]
     private var listener: NWListener?
 
-    init(path: String, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab, Bool) -> Bool,
+    init(path: String, shells: @escaping () -> [Shell], openWindow: @escaping (Site.App, NSRect?) -> Shell, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab, Bool) -> Bool,
          apps: @escaping () -> [Site.App], resolve: @escaping (String) -> Tab?,
          loadTimeout: @escaping () -> Double, debug: DebugMode, pluginManager: @escaping () async throws -> [String: Any]) {
+        self.shells = shells
+        self.openWindow = openWindow
         self.path = path
         self.tabs = tabs
         self.current = current
@@ -185,8 +198,20 @@ final class ControlServer {
     }
 
     @MainActor
-    private func run(_ cmd: String, _ request: [String: Any]) async throws -> [String: Any] {
+    func run(_ cmd: String, _ request: [String: Any]) async throws -> [String: Any] {
+        // Validate explicit addressing even for instance-wide commands.
+        let selected: Shell?
+        if let value = request["host"] {
+            guard let id = value as? String, let host = shells().first(where: { $0.hostID.uuidString.caseInsensitiveCompare(id) == .orderedSame }) else {
+                throw Failure(message: "unknown host: \(value)")
+            }
+            if let app = request["app"] as? String, host.current?.app.name != app {
+                throw Failure(message: "host \(host.hostID) does not show app \(app)")
+            }
+            selected = host
+        } else { selected = nil }
         func tab() throws -> Tab {
+            if let selected, let tab = selected.current { return tab }
             if let name = request["app"] as? String {
                 guard let tab = resolve(name) else {
                     throw Failure(message: "no app \"\(name)\"; the apps: \(apps().map(\.name).joined(separator: ", "))")
@@ -206,11 +231,14 @@ final class ControlServer {
             return tab
         }
         switch cmd {
+        case "shell":
+            return try shellCommand(request, selected: selected)
         case "apps":
             return ["apps": apps().map { app -> [String: Any] in
                 let tab = current().flatMap { $0.app.name == app.name ? $0 : nil } ?? tabs().first { $0.app.name == app.name }
                 return ["name": app.name, "site": app.root.path, "url": tab?.webView.url?.absoluteString ?? "",
-                        "current": current()?.app.name == app.name, "loaded": tab?.started ?? false]
+                        "current": current()?.app.name == app.name, "loaded": tab?.started ?? false,
+                        "hosts": shells().filter { $0.current?.app.name == app.name }.map { $0.hostID.uuidString }]
             }]
         case "switch":
             let tab = try tab()
@@ -268,7 +296,56 @@ final class ControlServer {
         case "plugin-manager":
             return try await pluginManager()
         default:
-            throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug, browser, plugin-manager")
+            throw Failure(message: "unknown cmd \"\(cmd)\"; one of shell, apps, switch, reload, snapshot, console, eval, call, debug, browser, plugin-manager")
+        }
+    }
+
+    @MainActor
+    private func shellCommand(_ request: [String: Any], selected: Shell?) throws -> [String: Any] {
+        func describe(_ host: Shell) -> [String: Any] {
+            let frame = host.window.frame
+            return ["host": host.hostID.uuidString, "app": host.current?.app.name ?? "",
+                    "frame": ["x": frame.origin.x, "y": frame.origin.y, "width": frame.width, "height": frame.height],
+                    "screen": host.window.screen.flatMap(WindowRecord.screenID).map { $0 as Any } ?? NSNull(),
+                    "key": host.window.isKeyWindow, "space": Spaces.of(host.window)]
+        }
+        func frame() throws -> NSRect {
+            guard let values = request["frame"] as? [String: Any] else { throw Failure(message: "shell: frame is required") }
+            func number(_ key: String) throws -> Double {
+                guard let n = values[key] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite else {
+                    throw Failure(message: "shell: frame.\(key) must be a finite number")
+                }
+                return n.doubleValue
+            }
+            let rect = try NSRect(x: number("x"), y: number("y"), width: number("width"), height: number("height"))
+            guard rect.size.width > 0, rect.size.height > 0 else { throw Failure(message: "shell: frame size must be positive") }
+            return rect
+        }
+        func move(_ host: Shell, _ frame: NSRect) throws {
+            guard !host.window.styleMask.contains(.fullScreen) else { throw Failure(message: "shell: leave native fullscreen before moving the window") }
+            if host.mode == .fullscreen { host.set(.window) }
+            host.window.setFrame(frame, display: true)
+            host.stateChanged?()
+        }
+        switch request["op"] as? String {
+        case "list": return ["windows": shells().map(describe)]
+        case "open":
+            guard selected == nil else { throw Failure(message: "shell open: host is not accepted") }
+            guard let name = request["app"] as? String, let app = apps().first(where: { $0.name == name }) else {
+                throw Failure(message: "shell open: a configured app is required")
+            }
+            let geometry = try request["frame"].map { _ in try frame() }
+            let host = openWindow(app, geometry)
+            return describe(host)
+        case "close", "focus", "move":
+            guard let host = selected else { throw Failure(message: "shell: host is required") }
+            switch request["op"] as? String {
+            case "close": host.window.close(); return ["host": host.hostID.uuidString]
+            case "focus": if let tab = host.current { _ = select(tab, false) }
+            default: try move(host, frame())
+            }
+            return describe(host)
+        default: throw Failure(message: "shell: op must be list, open, close, focus or move")
         }
     }
 

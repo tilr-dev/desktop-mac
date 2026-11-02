@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var debug: DebugMode!
     /// `plugin_manager:` (PluginManagerHost.swift); its workspace opens on the first operation.
     var pluginManager: PluginManagerService!
-    var probing = CommandLine.arguments.contains("--probe")
+    var probing = CommandLine.arguments.contains("--probe") || CommandLine.arguments.contains("--probe-shell-control")
     var probed = false
     var appUpdates: AppUpdates?
     private var uninstalling = false
@@ -79,6 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !config.control.socket.isEmpty {
             control = ControlServer(
                 path: Config.resolve(config.control.socket),
+                shells: { [unowned self] in shells },
+                openWindow: { [unowned self] app, frame in openWindow(app, frame: frame) },
                 tabs: { [unowned self] in tabs },
                 current: { [unowned self] in current },
                 select: { [unowned self] tab, _ in focus(tab); return false },
@@ -127,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @discardableResult
-    func openWindow(_ app: Site.App, state: WindowRecord? = nil) -> Shell {
+    func openWindow(_ app: Site.App, state: WindowRecord? = nil, frame: NSRect? = nil) -> Shell {
         let host = Shell(settings: config.window, hostID: state?.host ?? UUID())
         shells.append(host)
         if let state { host.restore(state) }
@@ -151,7 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Attach before callbacks can persist a newly visible host.
         let primaryHost = shells.first(where: { $0 === host || $0.current?.app.name == app.name }) === host
         host.attach(makeTab(app, hostID: host.hostID, primaryHost: primaryHost))
+        if frame != nil { host.mode = .window }
         host.open()
+        if let frame { host.window.setFrame(frame, display: true) }
         if activeShell == nil || host.window.isKeyWindow { activeShell = host }
         print("host \(host.hostID): opened \(app.name)")
         saveWindows()
@@ -170,6 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     func windowForApp(_ name: String) -> Shell? {
         if let shell, shell.current?.app.name == name { return shell }
+        for window in NSApp.orderedWindows {
+            if let host = shells.first(where: { $0.window === window && $0.current?.app.name == name }) { return host }
+        }
         if let host = shells.first(where: { $0.current?.app.name == name }) { return host }
         guard let app = Site.apps(config: config).first(where: { $0.name == name }) else { return nil }
         return openWindow(app)
@@ -228,6 +235,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard probing, !probed, tab === tabs.first else { return }
         probed = true
         Task { @MainActor in
+            await probeShellControl()
+            if CommandLine.arguments.contains("--probe-shell-control") {
+                control?.stop()
+                Instance.terminating()
+                exit(EXIT_SUCCESS)
+            }
             await probeWindows()
             do { _ = try await tab.nativePlugins.request(service: "browser", body: ["action": "probe"]) }
             catch {
@@ -785,6 +798,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         precondition(activations == 0, "window focus requested application activation")
         precondition(current === page, "background focus did not select the host")
         print("native windows: background focus preserves application activation")
+    }
+
+    /// Exercise the same dispatcher used by socket requests against real native windows.
+    @MainActor
+    func probeShellControl() async {
+        guard let control, let initial = shell, let page = initial.current else { preconditionFailure("no Control host") }
+        do {
+            let count = shells.count
+            let rect: [String: Any] = ["x": 90, "y": 120, "width": 540, "height": 380]
+            let opened = try await control.run("shell", ["op": "open", "app": page.app.name, "frame": rect])
+            guard let id = opened["host"] as? String, let host = shells.first(where: { $0.hostID.uuidString == id }) else { preconditionFailure("open did not return a host") }
+            precondition(shells.count == count + 1 && host !== initial && host.current !== page)
+            precondition(host.window.frame == NSRect(x: 90, y: 120, width: 540, height: 380))
+            let listed = try await control.run("shell", ["op": "list"])["windows"] as! [[String: Any]]
+            precondition(listed.count == count + 1)
+            precondition(listed.contains { $0["host"] as? String == id && $0["app"] as? String == page.app.name && $0["space"] is [UInt64] && $0["key"] is Bool && $0["frame"] is [String: Any] })
+            _ = try await control.run("shell", ["op": "focus", "host": id])
+            precondition(current === host.current)
+            let catalog = try await control.run("apps", [:])["apps"] as! [[String: Any]]
+            let ids = catalog.first { $0["name"] as? String == page.app.name }?["hosts"] as! [String]
+            precondition(ids.contains(id) && ids.contains(initial.hostID.uuidString))
+            _ = try await control.run("eval", ["host": id, "js": "globalThis.__controlHostProbe = 781"])
+            let isolated = try await control.run("eval", ["host": initial.hostID.uuidString, "js": "typeof globalThis.__controlHostProbe"])
+            precondition(isolated["value"] as? String == "undefined")
+            let routed = try await control.run("eval", ["app": page.app.name, "js": "globalThis.__controlHostProbe"])
+            precondition((routed["value"] as? NSNumber)?.intValue == 781)
+            let before = initial.window.frame
+            _ = try await control.run("shell", ["op": "move", "host": id, "frame": ["x": 110, "y": 130, "width": 560, "height": 400]])
+            precondition(host.window.frame == NSRect(x: 110, y: 130, width: 560, height: 400) && initial.window.frame == before)
+            for (cmd, request): (String, [String: Any]) in [
+                ("apps", ["host": "missing"]), ("plugin-manager", ["host": "missing"]),
+                ("eval", ["host": id, "app": "not-this-app", "js": "1"]),
+                ("shell", ["op": "close"]), ("shell", ["op": "focus", "host": "missing"]),
+                ("shell", ["op": "open", "app": page.app.name, "frame": ["x": 0, "y": 0, "width": -1, "height": 10]]),
+                ("shell", ["op": "move", "host": id, "frame": ["x": true, "y": 0, "width": 10, "height": 10]])
+            ] {
+                do { _ = try await control.run(cmd, request); preconditionFailure("invalid request succeeded: \(cmd)") }
+                catch { precondition(!error.localizedDescription.isEmpty) }
+            }
+            precondition(shells.count == count + 1)
+            _ = try await control.run("shell", ["op": "close", "host": id])
+            precondition(shells.count == count && shells.contains { $0 === initial })
+            focus(page)
+            print("shell control: open/list/focus/move/close, host isolation, app routing and invalid requests: ok")
+        } catch { preconditionFailure("shell control: \(error)") }
     }
 
     /// Read identity from a real main page after event-based navigation completion.
