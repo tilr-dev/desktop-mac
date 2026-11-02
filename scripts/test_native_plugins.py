@@ -112,6 +112,17 @@ def main():
                 # This exact test process exits itself after probing. No pid/name-based kill.
                 run(contents / 'MacOS/Tilr', '--config', config, '--no-updates', '--probe-handoff' if args.handoff else '--probe-shell-control' if args.shell_control else '--probe',
                     timeout=120)
+            if args.handoff:
+                # The scheme handler rejects this missing file directly, without
+                # any HTTP stack, network permission or connection timing involved.
+                failed = subprocess.run(
+                    [str(contents / 'MacOS/Tilr'), '--config', str(config), '--no-updates',
+                     '--probe-handoff', '--url', 'tilr://default/handoff-probe-missing.html'],
+                    capture_output=True, text=True, timeout=120)
+                diagnostic = 'source: navigation failed:'
+                if failed.returncode == 0 or diagnostic not in failed.stdout + failed.stderr:
+                    raise AssertionError(f'Expected explicit source navigation failure: {failed.stdout}\n{failed.stderr}')
+                print('layout handoff: source navigation failure is explicit: ok')
 
 
 if __name__ == '__main__':

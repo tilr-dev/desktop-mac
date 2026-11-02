@@ -95,6 +95,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // window.activate_at_launch false (the test instance): the user's app keeps the focus.
         if config.window.activateAtLaunch { NSApp.activate(ignoringOtherApps: true) }
+        // This probe validates navigation failures too; didFinish cannot start it.
+        if CommandLine.arguments.contains("--probe-handoff") {
+            probed = true
+            Task { @MainActor in
+                await probeHandoff()
+                control?.stop()
+                Instance.terminating()
+                exit(EXIT_SUCCESS)
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -240,12 +250,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard probing, !probed, tab === tabs.first else { return }
         probed = true
         Task { @MainActor in
-            if CommandLine.arguments.contains("--probe-handoff") {
-                await probeHandoff()
-                control?.stop()
-                Instance.terminating()
-                exit(EXIT_SUCCESS)
-            }
             await probeShellControl()
             if CommandLine.arguments.contains("--probe-shell-control") {
                 control?.stop()

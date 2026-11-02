@@ -21,7 +21,8 @@ extension AppDelegate {
             for (role, tab) in [("source", source), ("target", target)] {
                 await tab.firstLoad(within: config.control.loadTimeout)
                 guard tab.isLoaded, tab.loadError == nil else {
-                    let reason = tab.loadError ?? (tab.loadEnded ? "navigation failed" : "navigation timed out")
+                    let reason = tab.loadError.map { "navigation failed: \($0)" }
+                        ?? (tab.loadEnded ? "navigation failed" : "navigation timed out")
                     throw NSError(domain: "HandoffProbe", code: 1,
                                   userInfo: [NSLocalizedDescriptionKey: "\(role): \(reason)"])
                 }
