@@ -10,6 +10,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LocalServerIntegrationTests(unittest.TestCase):
+    def test_config_file_bridge(self):
+        with tempfile.TemporaryDirectory(prefix="tilr-config-") as temp:
+            binary = Path(temp) / "test-config-files"
+            subprocess.run(["swiftc", str(ROOT / "Sources/Tilr/ConfigFiles.swift"),
+                            str(ROOT / "scripts/test_config_files.swift"), "-o", str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, check=True)
+            self.assertIn("config file validation and IO tests passed", result.stdout)
+
+    def test_trusted_config_webkit_bridge(self):
+        with tempfile.TemporaryDirectory(prefix="tilr-config-bridge-") as temp:
+            binary = Path(temp) / "test-config-bridge"
+            subprocess.run(["swiftc", str(ROOT / "Sources/Tilr/ConfigFiles.swift"),
+                            str(ROOT / "Sources/Tilr/ConfigBridge.swift"),
+                            str(ROOT / "Sources/Tilr/FolderWatcher.swift"),
+                            str(ROOT / "scripts/test_config_bridge.swift"), "-o", str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, check=True, timeout=30)
+            self.assertIn("trusted config WebKit bridge tests passed", result.stdout)
+
     def test_application_uninstall(self):
         with tempfile.TemporaryDirectory(prefix="tilr-uninstall-") as temp:
             binary = Path(temp) / "test-uninstall"

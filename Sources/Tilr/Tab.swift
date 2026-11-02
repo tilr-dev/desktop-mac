@@ -20,6 +20,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
     let agent: AgentHost
     private let localServer = LocalServerBridge()
+    private let configBridge = ConfigBridge()
     private let performanceBridge = PerformanceBridge()
     var watcher: FolderWatcher?
     /// `watch.latency`: seconds FSEvents gathers the folder's changes.
@@ -118,12 +119,14 @@ final class Tab: NSObject, WKNavigationDelegate {
         }
         if let collector { controller.addUserScript(WKUserScript(source: collector, injectionTime: .atDocumentStart, forMainFrameOnly: true)) }
         controller.add(agent, name: AgentHost.name)
+        controller.addScriptMessageHandler(configBridge, contentWorld: .page, name: ConfigBridge.name)
         controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
         controller.addScriptMessageHandler(performanceBridge, contentWorld: .page, name: PerformanceBridge.name)
         webView = PageWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         localServer.tab = self
+        configBridge.tab = self
         performanceBridge.tab = self
         nativePlugins = NativePluginSession(tab: self, settings: native, browser: browser, inspectable: inspectable,
                                            highRefreshRate: web.highRefreshRate)
@@ -276,7 +279,10 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// Dispatches a CustomEvent on the page's `window` (what the web views report through).
     func send(event: String, detail: [String: Any]) {
         guard started, let json = Self.json(detail) else { return }
-        webView.callAsyncJavaScript(Self.dispatch, arguments: ["name": event, "detail": json], in: nil, in: .page) { [weak self] result in
+        let configEvent = event == "tilr:config"
+        if configEvent && (webView.url?.scheme != "tilr" || webView.url?.host != app.origin.host) { return }
+        let source = configEvent ? "if (location.protocol !== 'tilr:' || location.hostname !== host) return; " + Self.dispatch : Self.dispatch
+        webView.callAsyncJavaScript(source, arguments: ["name": event, "detail": json, "host": app.origin.host ?? ""], in: nil, in: .page) { [weak self] result in
             if case .failure(let error) = result, let self { print("\(app.name) \(event):", error.localizedDescription) }
         }
     }

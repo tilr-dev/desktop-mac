@@ -69,9 +69,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restoreWindows(WindowWorkspace.read())
         applyConfig()
         if let appUpdates { DispatchQueue.main.async { appUpdates.start() } }
-        // default.yml is ours; only the user's file matters.
+        // Reload application settings and report direct config file changes to page plugins.
         configWatcher = FolderWatcher(Config.dir, latency: config.watch.latency) { [weak self] paths in
-            if paths.contains(where: { $0.hasSuffix("/config.yml") }) { self?.reloadConfig() }
+            guard let self else { return }
+            let names = ConfigFiles(directory: Config.dir).changedNames(paths)
+            if names.contains("config.yml") { reloadConfig() }
+            for name in names {
+                tabs.forEach { $0.send(event: "tilr:config", detail: ["name": name]) }
+            }
         }
         palette.run = { [weak self] in self?.perform($0.action) }
         palette.isOn = { [weak self] in $0.action == .alwaysOnTop && self?.shell?.onTop == true }
