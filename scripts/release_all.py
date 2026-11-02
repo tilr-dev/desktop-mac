@@ -136,15 +136,12 @@ def main():
     parser.add_argument("--build", type=int)
     parser.add_argument("--channel", choices=["stable", "beta"], default="stable")
     parser.add_argument("--resume", action="store_true", help="Reuse matching completed builds")
-    parser.add_argument("--check", action="store_true", help="Check runner access without building a release")
     args = parser.parse_args()
-    if not args.check and (not args.version or not re.fullmatch(r"\d+(\.\d+){0,2}", args.version) or not args.build or args.build < 1):
-        parser.error("Provide numeric --version and positive --build, or use --check")
+    if not args.version or not re.fullmatch(r"\d+(\.\d+){0,2}", args.version) or not args.build or args.build < 1:
+        parser.error("Provide numeric --version and positive --build")
     config = settings()
     (ROOT / "build").mkdir(exist_ok=True)
     preflight(config, publish=False)
-    if args.check:
-        return
     outputs = execute(args.version, args.build, args.channel, config, resume=args.resume, release_tag=args.release_tag)
     success("Both notarized builds are ready.")
     for output in outputs:
