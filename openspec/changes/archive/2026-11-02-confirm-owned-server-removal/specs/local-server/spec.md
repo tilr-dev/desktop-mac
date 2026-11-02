@@ -27,4 +27,3 @@ Tilr SHALL preserve ordinary daemon user state, sessions, token and logs when lo
 - **WHEN** the user answers Yes to the tilrd removal question
 - **THEN** Tilr unregisters ordinary startup and removes the selected tilrd executable
 - **AND** independently installed clients and ordinary daemon state, token, logs and existing running sessions remain untouched
-
