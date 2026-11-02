@@ -229,9 +229,14 @@ final class Tab {
         let credentialsBeforeCancel = try await credentials(host)
         host.confirmRemove()
         expect(removalQuestions == 1)
+        // Uninstall marks the host busy synchronously, before its asynchronous work.
+        expect(!host.busy)
         for (url, data) in snapshot { expect(try Data(contentsOf: url) == data) }
         expect(updates() == commandsBeforeCancel)
         expect(try await credentials(host) == credentialsBeforeCancel)
+        expect(!host.busy)
+        for (url, data) in snapshot { expect(try Data(contentsOf: url) == data) }
+        expect(updates() == commandsBeforeCancel)
 
         removalAnswer = .alertSecondButtonReturn
         await withCheckedContinuation { continuation in

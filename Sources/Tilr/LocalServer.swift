@@ -22,7 +22,7 @@ final class LocalServerHost: NSObject {
     }
     private(set) var status = "Local server is not enabled in this instance."
     private var starting = false
-    private var busy = false
+    private(set) var busy = false
     private var result: Result<[String: String]?, Error> = .success(nil)
     private var waiting: [(Result<[String: String]?, Error>) -> Void] = []
     private var installation: ServerInstallation?

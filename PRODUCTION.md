@@ -280,12 +280,17 @@ staged binaries. Closing Tilr leaves terminal sessions running.
 ### Removal
 
 `local_server.enabled: false` disables application integration and leaves the
-shared daemon running. Remove Local Server is available only for a daemon whose
-path matches the application installation marker. It delegates startup removal
-to `tilr service uninstall`, removes the installed pair and marker, and preserves
-default daemon state, token and logs. The ordinary service command leaves the
-running daemon and panes until it exits; launchd forgets its definition at login.
-A pre-existing installation is left untouched.
+shared daemon running. Remove Local Server asks **Remove the local server?**
+for an application-installed pair with a matching installation marker. **Cancel**
+leaves the installation unchanged; **Remove** delegates startup removal to
+`tilr service uninstall`, removes the installed pair and marker, and preserves
+default daemon state, token and logs. The dialog explains that the running daemon
+remains until it exits and state, token and logs are kept. For an independently
+installed daemon, **Remove tilrd?** asks for consent: **No** keeps the installation
+unchanged; **Yes** removes its startup registration and selected executable,
+keeping independently installed terminal clients. Removing startup registration
+leaves the running daemon and panes until it exits; launchd forgets its definition
+at login.
 
 The server plugin receives credentials only through its trusted top-level
 `tilr://` bridge; remote profiles/defaults are preserved. External site folders
