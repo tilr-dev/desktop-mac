@@ -97,7 +97,7 @@ extension PluginManagerService {
         }
         func args(_ allowed: String = "") throws -> CommandArguments { try .init(arguments, allowed: allowed) }
         // Preflight only commands that actually invoke Git. Do not run Apple's Git stub.
-        let gitCommands: Set<String> = ["install", "installFromCatalog", "download", "downloadFromCatalog", "check", "update", "updateAll", "updateAllPlan", "rollback", "restore", "uninstall", "uninstallPlan", "uninstallRefusal", "fork", "forkPackages", "forkSource", "authCheck", "init", "commit", "setRemote", "catalogUpdate", "catalogRegister", "repositoryPackages", "editRepositoryDependency"]
+        let gitCommands: Set<String> = ["install", "installFromCatalog", "download", "downloadFromCatalog", "check", "update", "updateAll", "updateAllPlan", "rollback", "restore", "uninstall", "uninstallPlan", "uninstallRefusal", "fork", "forkPackages", "forkSource", "authCheck", "init", "commit", "setRemote", "catalogUpdate", "catalogRegister", "repositoryPackages", "editRepositoryDependency", "link", "replaceResolve"]
         switch command {
         case "open":
             _ = try args(); body = { _ = try $0.openManager(); return NSNull() }

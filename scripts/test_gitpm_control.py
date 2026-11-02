@@ -207,6 +207,8 @@ def main():
         # rather than entering a library Git subprocess (or Apple's installation stub).
         with App(executable, config, control, git_path='') as app:
             for command, arguments in [
+                    ('link', {'package': str(source)}),
+                    ('replaceResolve', {'original': PACKAGE_ID, 'replacement': MISSING_ID}),
                     ('repositoryPackages', {'directory': str(source)}),
                     ('editRepositoryDependency', {'directory': str(source), 'package': PACKAGE_ID,
                                                    'edit': {'type': 'remove', 'dependency': MISSING_ID}})]:
