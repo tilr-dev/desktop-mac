@@ -121,6 +121,13 @@ update, runs the installed `tilrd update` using the channel in `server.toml`. A 
 tilrd release therefore reaches users without a Tilr release, and no pin update or
 bot pull request exists. PR CI does not acquire the server.
 
+When changing the server protocol, release Tilr.app with the new
+`TilrServerProtocolVersion` first. Only after that compatible app has been released
+may tilrd using the new protocol be released. Tilr silently runs `tilrd update` at
+launch, and the server protocol is only known after installation (the CDN manifest
+does not include it). Releasing tilrd first could therefore replace a working
+daemon with one that the installed app cannot use.
+
 Desktop release tools do not publish server feeds or server update binaries.
 Installed apps delegate server updates to `tilrd update`.
 
