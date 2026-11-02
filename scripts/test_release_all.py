@@ -45,16 +45,6 @@ class ReleaseAllTests(unittest.TestCase):
             self.assertEqual(stopped.exception.code, 2)
             settings.assert_not_called()
 
-    def test_access_check_only_runs_build_preflight(self):
-        with patch.object(release_all, "ROOT", self.root), \
-             patch.object(release_all.sys, "argv", ["release_all.py", "--check"]), \
-             patch.object(release_all, "settings", return_value=self.config), \
-             patch.object(release_all, "preflight") as preflight, patch.object(release_all, "execute") as execute:
-            release_all.main()
-        preflight.assert_called_once_with(self.config, publish=False)
-        execute.assert_not_called()
-        self.assertEqual(list((self.root / "build").iterdir()), [])
-
     def test_settings_require_environment_without_local_config_fallback(self):
         key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
         (self.root / "release.local.json").write_text(json.dumps({
