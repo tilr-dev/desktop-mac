@@ -20,12 +20,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var config = Config.fallback
     var nativePluginSettings = Config.fallback.nativePlugins
     let palette = Palette()
+    let handoffs = HandoffCoordinator()
     var control: ControlServer?
     /// Compatibility settings and JSON export for the single Performance collector.
     var debug: DebugMode!
     /// `plugin_manager:` (PluginManagerHost.swift); its workspace opens on the first operation.
     var pluginManager: PluginManagerService!
-    var probing = CommandLine.arguments.contains("--probe") || CommandLine.arguments.contains("--probe-shell-control")
+    var probing = CommandLine.arguments.contains("--probe") || CommandLine.arguments.contains("--probe-shell-control") || CommandLine.arguments.contains("--probe-handoff")
     var probed = false
     var appUpdates: AppUpdates?
     private var uninstalling = false
@@ -55,8 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nativePluginSettings = config.nativePlugins
         pluginManager = PluginManagerService(settings: config.pluginManager.service)
         if !probing {
-            let settings = config.pluginManager.service
-            Task { await Self.syncPluginDist(settings) }
+            let service = pluginManager!
+            Task { await Self.syncPluginDist(service) }
         }
         LocalServerHost.shared.didUpdate = { [weak self] in
             self?.tabs.forEach { $0.send(event: "tilr-local-server-ready", detail: [:]) }
@@ -88,12 +89,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 resolve: { [unowned self] name in windowForApp(name)?.current },
                 loadTimeout: { [unowned self] in config.control.loadTimeout },
                 debug: debug,
+                gitpm: { [unowned self] command, args in try await pluginManager.execute(command: command, arguments: args) },
                 pluginManager: { [unowned self] in try await pluginManagerStatus() }
             )
             control?.start()
         }
         // window.activate_at_launch false (the test instance): the user's app keeps the focus.
         if config.window.activateAtLaunch { NSApp.activate(ignoringOtherApps: true) }
+        // This probe validates navigation failures too; didFinish cannot start it.
+        if CommandLine.arguments.contains("--probe-handoff") {
+            probed = true
+            Task { @MainActor in
+                await probeHandoff()
+                control?.stop()
+                Instance.terminating()
+                exit(EXIT_SUCCESS)
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -142,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.stateChanged = { [weak self] in self?.saveWindows() }
         host.closed = { [weak self] host in
             guard let self else { return }
+            if let tab = host.current { handoffs.leaving(tab) }
             // Keep the final workspace across the existing last-window termination policy.
             if shells.count == 1 { saveWindows() }
             shells.removeAll { $0 === host }
@@ -204,6 +217,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser, native: nativePluginSettings,
                       sshAgent: config.sshAgent, watchLatency: config.watch.latency, inspectable: config.debug.inspectable, web: config.web,
                       collector: debug.collector, hostID: hostID, primaryHost: primaryHost)
+        handoffs.shells = { [weak self] in self?.shells ?? [] }
+        handoffs.socketPath = { [weak self] in self?.config.control.socket ?? "" }
+        tab.handoffBridge.coordinator = handoffs
         tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
         tab.didLoad = { [weak self] in self?.loaded($0) }
         return tab

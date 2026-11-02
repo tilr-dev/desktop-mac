@@ -43,7 +43,12 @@ version)
         echo "tilrd $(cat "$state/running") at local"
     else echo 'tilrd is not running at local'; fi;;
 token) test -f "$state/running"; cat "$state/token";;
-service) test "$2" = install; cp "$state/installed" "$state/running";;
+service)
+    case "$2" in
+    install) cp "$state/installed" "$state/running";;
+    uninstall) rm "$state/registered";;
+    *) exit 1;;
+    esac;;
 *) exit 1;;
 esac
 ''')
@@ -60,6 +65,7 @@ esac
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("local server enable-disable-enable passed", result.stdout)
             self.assertIn("local server daemon updates and protocol recovery passed", result.stdout)
+            self.assertIn("local server removal confirmation passed", result.stdout)
 
 
 if __name__ == "__main__":

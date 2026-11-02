@@ -63,9 +63,9 @@ at build time, whose protocol must equal `TilrServerProtocolVersion` in `Info.pl
    that its GitHub Release is a published prerelease for RC or a regular release
    for stable, and that it has no assets. `ci_release.py publish` validates both
    completed receipts, manifest-selected DMG paths and SHA-256 values, channel,
-   public key and matching plugin inventories before any CDN writes. For stable it rechecks
-   that the build exceeds all published stable and beta builds; beta retains verified
-   partial-publication resume. It prepares both
+   public key and matching plugin inventories before any CDN writes. Stable and beta
+   support verified partial-publication resume with the same build and identical bytes.
+   It prepares both
    feeds, then uses the existing immutable publisher with appcast last and public
    feed readback. The same app artifacts go to beta for RC or stable for a pushed
    stable tag, without an approval prompt. No delta patches: the runner has no DMG history.
@@ -73,14 +73,21 @@ at build time, whose protocol must equal `TilrServerProtocolVersion` in `Info.pl
    `ci_release.py github` validates both manifests again and attaches their unchanged
    DMGs. The title becomes `Tilr X.Y.Z-rc.N (<build>)` for RC or
    `Tilr X.Y.Z (<build>)` for stable; the body, tag and prerelease status remain
-   unchanged. Existing stable assets or a build not newer than a stable feed stop
+   unchanged. Existing release assets, a newer published build or conflicting bytes stop
    before CDN uploads, feed changes or GitHub Release changes.
    Only this job has `contents: write` on `GITHUB_TOKEN`; the shared workflow uses
    a GitHub App token for candidate tags and GitHub Releases. No publication step creates or
    moves an existing tag, deletes a release, or replaces existing assets.
    If publication fails partway through, completed CDN uploads or GitHub assets
-   remain published. Inspect the failure before releasing again; a new fix push
-   produces a fresh candidate and build instead of overwriting published files.
+   remain published. For partial stable publication with no GitHub DMGs attached,
+   use **Re-run failed jobs** to repeat the `publish` job with the same build and
+   artifact bytes; no new patch release is needed. This completes missing CDN/feed
+   publication and attaches both DMGs while preserving matching published files.
+   A failure after one GitHub DMG was attached still stops on existing assets.
+   **Re-run all jobs** on the tag reruns `app`, allocating the highest currently
+   published build across stable and beta plus one and rebuilding, signing and
+   notarizing fresh artifacts. After partial CDN publication this produces N+1,
+   rather than completing build N; existing GitHub assets still stop publication.
 
 `scripts/ci-apple-keychain.sh` imports the Apple keys into a temporary keychain (notarytool
 profile `tilr-ci` from an App Store Connect API key) and removes it at the end of the job.
@@ -291,12 +298,17 @@ staged binaries. Closing Tilr leaves terminal sessions running.
 ### Removal
 
 `local_server.enabled: false` disables application integration and leaves the
-shared daemon running. Remove Local Server is available only for a daemon whose
-path matches the application installation marker. It delegates startup removal
-to `tilr service uninstall`, removes the installed pair and marker, and preserves
-default daemon state, token and logs. The ordinary service command leaves the
-running daemon and panes until it exits; launchd forgets its definition at login.
-A pre-existing installation is left untouched.
+shared daemon running. Remove Local Server asks **Remove the local server?**
+for an application-installed pair with a matching installation marker. **Cancel**
+leaves the installation unchanged; **Remove** delegates startup removal to
+`tilr service uninstall`, removes the installed pair and marker, and preserves
+default daemon state, token and logs. The dialog explains that the running daemon
+remains until it exits and state, token and logs are kept. For an independently
+installed daemon, **Remove tilrd?** asks for consent: **No** keeps the installation
+unchanged; **Yes** removes its startup registration and selected executable,
+keeping independently installed terminal clients. Removing startup registration
+leaves the running daemon and panes until it exits; launchd forgets its definition
+at login.
 
 The server plugin receives credentials only through its trusted top-level
 `tilr://` bridge; remote profiles/defaults are preserved. External site folders

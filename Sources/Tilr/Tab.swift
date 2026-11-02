@@ -20,6 +20,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
     let agent: AgentHost
     private let localServer = LocalServerBridge()
+    let handoffBridge = HandoffBridge()
     private let performanceBridge = PerformanceBridge()
     var watcher: FolderWatcher?
     /// `watch.latency`: seconds FSEvents gathers the folder's changes.
@@ -57,6 +58,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     private(set) var loadEnded = false {
         didSet { if loadEnded { wake() } }
     }
+    private(set) var loadError: String?
     /// `firstLoad` callers, resumed when the load ends (loaded or failed) or their time is up.
     private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
@@ -119,11 +121,13 @@ final class Tab: NSObject, WKNavigationDelegate {
         if let collector { controller.addUserScript(WKUserScript(source: collector, injectionTime: .atDocumentStart, forMainFrameOnly: true)) }
         controller.add(agent, name: AgentHost.name)
         controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
+        controller.addScriptMessageHandler(handoffBridge, contentWorld: .page, name: HandoffBridge.name)
         controller.addScriptMessageHandler(performanceBridge, contentWorld: .page, name: PerformanceBridge.name)
         webView = PageWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         localServer.tab = self
+        handoffBridge.tab = self
         performanceBridge.tab = self
         nativePlugins = NativePluginSession(tab: self, settings: native, browser: browser, inspectable: inspectable,
                                            highRefreshRate: web.highRefreshRate)
@@ -194,6 +198,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     private func navigate() {
         isLoaded = false
         loadEnded = false
+        loadError = nil
         let url = pageURL
         if webView.url == url {
             webView.reloadFromOrigin()
@@ -212,6 +217,7 @@ final class Tab: NSObject, WKNavigationDelegate {
         old.stopLoading()
         nativePlugins.pageDidNavigate()
         agent.closeAll()
+        handoffBridge.coordinator?.leaving(self)
         performanceBridge.reset()
         isLoaded = false
         let next = PageWebView(frame: old.frame, configuration: old.configuration)
@@ -315,26 +321,29 @@ final class Tab: NSObject, WKNavigationDelegate {
         loadEnded = false
         nativePlugins.pageDidNavigate()
         agent.closeAll()
+        handoffBridge.coordinator?.leaving(self)
         performanceBridge.reset()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         isLoaded = !webView.isLoading
-        loadFailed()
+        loadFailed(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         isLoaded = !webView.isLoading && webView.url != nil
-        loadFailed()
+        loadFailed(error)
     }
 
     /// A navigation failed: unless another one is already under way, the load has ended.
-    private func loadFailed() {
+    private func loadFailed(_ error: Error) {
         guard !webView.isLoading else { return }
+        loadError = error.localizedDescription
         loadEnded = true
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        handoffBridge.coordinator?.leaving(self)
         isLoaded = false
     }
 

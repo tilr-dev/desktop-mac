@@ -42,6 +42,9 @@ jobs:
       - name: Probe
         run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
 
+      - name: Gitpm Control socket integration
+        run: python3 scripts/test_gitpm_control.py --skip-build --configuration release
+
       # ReportCrash writes the .ips a while after the crash: wait for it, print the faulting thread.
       - name: Crash report
         if: failure()
