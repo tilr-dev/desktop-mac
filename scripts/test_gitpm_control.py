@@ -207,6 +207,12 @@ def main():
         # rather than entering a library Git subprocess (or Apple's installation stub).
         with App(executable, config, control, git_path='') as app:
             for command, arguments in [
+                    ('syncDistPlan', {}),
+                    ('syncDist', {}),
+                    ('enable', {'id': PACKAGE_ID}),
+                    ('disable', {'id': PACKAGE_ID}),
+                    ('forget', {'id': PACKAGE_ID}),
+                    ('replace', {'original': PACKAGE_ID, 'replacement': MISSING_ID}),
                     ('link', {'package': str(source)}),
                     ('replaceResolve', {'original': PACKAGE_ID, 'replacement': MISSING_ID}),
                     ('repositoryPackages', {'directory': str(source)}),
