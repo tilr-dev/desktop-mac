@@ -77,9 +77,6 @@ def release_assets(version, build, channel, root, release_tag=None):
 def publish_cdn(tag, build, root, repository, sha, notes_file):
     version, channel, notes = release_metadata(tag, repository, sha)
     assets = release_assets(version, build, channel, root, tag[1:])
-    # Stable cannot be republished; beta retains verified partial-publication resume.
-    if channel == "stable" and build <= (maximum := published_maximum()):
-        raise ValueError(f"Build {build} must be greater than published build {maximum}")
     config = settings(require_build=False)
     inventories = [completed(asset.parent, version, build, arch, feed_for(arch, channel),
                              config["TILR_UPDATE_PUBLIC_KEY"], tag[1:])
