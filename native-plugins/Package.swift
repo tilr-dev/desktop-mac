@@ -16,5 +16,6 @@ let package = Package(
         ]),
         .target(name: "NativeAudio", dependencies: [.product(name: "TilrPluginABI", package: "SDK")]),
         .testTarget(name: "NativeAudioTests", dependencies: ["NativeAudio", .product(name: "TilrPluginABI", package: "SDK")]),
+        .testTarget(name: "BrowserWebKitTests", dependencies: ["BrowserWebKit"]),
     ]
 )

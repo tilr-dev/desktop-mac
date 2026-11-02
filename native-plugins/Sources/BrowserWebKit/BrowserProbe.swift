@@ -83,17 +83,22 @@ func probeBrowserAutomation(settings: BrowserSettings, host: TLRPluginHost? = ni
 
 /// A host for the probe's own views: the real one's store identifiers (the default store is
 /// made once per process from them), a view container of the probe's, the events kept.
-private final class ProbeHost: NSObject, TLRPluginHost {
+@MainActor
+private final class ProbeHost: NSObject, @preconcurrency TLRPluginHost {
     let real: TLRPluginHost
     let viewContainer: NSView
-    var events: [[String: Any]] = []
+    let reports = BrowserProbeReports()
+    var events: [[String: Any]] {
+        get { reports.events }
+        set { reports.events = newValue }
+    }
     init(real: TLRPluginHost, container: NSView) { self.real = real; viewContainer = container }
     var origin: String { real.origin }
     var configuration: [String: Any] { [:] }
     var storageIdentifier: UUID? { real.storageIdentifier }
     func persistentIdentifier(_ identifier: UUID) -> UUID { real.persistentIdentifier(identifier) }
     func resolveSiteURL(_ url: URL) -> URL? { nil }
-    func emit(_ event: String, detail: [String: Any]) { events.append(detail) }
+    func emit(_ event: String, detail: [String: Any]) { reports.receive(detail) }
 }
 
 /// A page reload: a view made with a `key` is parked and adopted by the next page's `create`
@@ -315,7 +320,8 @@ private func probeDiscard(settings: BrowserSettings, host real: TLRPluginHost) a
     try check(dropped == nil, "discard: the dropped WKWebView is still alive 2 s after the discard")
     let listed = views.browserList().first { $0["id"] as? String == "d1" }
     try check(listed?["discarded"] as? Bool == true && listed?["url"] as? String == url, "discard: browser list \(String(describing: listed))")
-    try check(last("d1")?["discarded"] as? Bool == true && last("d1")?["canGoBack"] as? Bool == true, "discard: no report with discarded: true, got \(String(describing: last("d1")))")
+    let discardReport = await host.reports.discardedReport("d1", timeout: settings.automationTimeout)
+    try check(discardReport?["discarded"] as? Bool == true && discardReport?["canGoBack"] as? Bool == true, "discard: no report with discarded: true, got \(String(describing: last("d1")))")
     try check(pictured(view), "discard: no picture of the page")
     // Shown again: back with its history and scroll, script state new.
     let shown = Date()
