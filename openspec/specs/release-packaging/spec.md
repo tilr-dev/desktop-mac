@@ -13,11 +13,11 @@ The release workflow SHALL separate credential setup, building, verification and
 - **THEN** it acquires the latest stable upstream server release without compilation or signing, installs the pinned gitpm release without compiling it, and builds both DMGs, and its publish job publishes those same files as an RC to beta after a release/X.Y push or to stable from the stable tag vX.Y.Z pushed by Dan using bin/release, without rebuilding them in the publish job
 - **AND** release_all.py packages explicit CI version/build inputs without publication, local build reservations or a saved last-release selection
 
-#### Scenario: Default commands
+#### Scenario: CI packaging inputs
 - **WHEN** the CI build job invokes release_all.py
 - **THEN** explicit version/build/channel inputs package both architectures without publishing; CI provisions credentials separately
 
-#### Scenario: Saved stable upload selection
+#### Scenario: CI stable publication selection
 - **WHEN** the CI publisher selects stable
 - **THEN** it uses the verified workflow tag and explicit metadata rather than a saved local upload selection
 
@@ -32,7 +32,7 @@ The release workflow SHALL separate credential setup, building, verification and
 ### Requirement: Persistent release numbering
 CI SHALL allocate monotonically increasing application builds from published appcasts, independently of marketing-version changes and local history.
 
-#### Scenario: Inspect or reserve
+#### Scenario: CI build allocation
 - **WHEN** CI resolves a release build
 - **THEN** it inspects all stable and beta appcasts and passes one explicit build to packaging without writing a local reservation
 
