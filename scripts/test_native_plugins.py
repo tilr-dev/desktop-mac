@@ -17,6 +17,40 @@ ROOT = Path(__file__).resolve().parent.parent
 REPO = ROOT / 'native-plugins'
 
 
+def delayed_handoff_site(site, stage):
+    """Hold runtime publication until the probe reads it, after didFinish.
+
+    The first read returns undefined and releases boot in a microtask. The old
+    probe fails that read; an event-based waiter subscribes before boot resumes.
+    This creates the ordering directly, without a clock delay.
+    """
+    target = stage / 'delayed-runtime'
+    shutil.copytree(site, target)
+    runtime = target / 'runtime.js'
+    script = runtime.read_text()
+    marker = 'window.tilr = {'
+    if script.count(marker) != 1:
+        raise ValueError('Expected one runtime publication in runtime.js')
+    gate = """
+window.__handoffBootGate = new Promise(release => {
+  Object.defineProperty(window, 'tilr', {
+    configurable: true,
+    get() { release(); return undefined; },
+    set(value) {
+      Object.defineProperty(window, 'tilr', { value, writable: true, configurable: true });
+      window.__handoffBootReleased = true;
+    }
+  });
+});
+"""
+    # Install before module evaluation: the probe may read before boot reaches
+    # the publication line. Keep that release rather than waiting for a second read.
+    index = target / 'index.html'
+    index.write_text('<script>' + gate + '</script>' + index.read_text())
+    runtime.write_text(script.replace(marker, 'await window.__handoffBootGate;\n' + marker))
+    return target
+
+
 def run(*args, **kwargs):
     return subprocess.run([str(a) for a in args], check=True, **kwargs)
 
@@ -67,15 +101,17 @@ def main():
             other.mkdir()
             (other / 'index.html').write_text('<html><body>Other window app</body></html>')
             site = args.site.resolve() if args.handoff else other if args.shell_control else ROOT.parent / 'web/site'
-            # Two configured apps exercise focus-or-create for a closed app as well as duplicates.
-            (config / 'config.yml').write_text(
-                'window: { mode: window, activate_at_launch: false }\n'
-                'local_server: { enabled: false }\n'
-                f'apps:\n  - {{ name: default, site: "{site}" }}\n'
-                f'  - {{ name: other, site: "{other}" }}\n')
-            # This exact test process exits itself after probing. No pid/name-based kill.
-            run(contents / 'MacOS/Tilr', '--config', config, '--no-updates', '--probe-handoff' if args.handoff else '--probe-shell-control' if args.shell_control else '--probe',
-                timeout=120)
+            sites = [site, delayed_handoff_site(site, stage)] if args.handoff else [site]
+            for site in sites:
+                # Two configured apps exercise focus-or-create for a closed app as well as duplicates.
+                (config / 'config.yml').write_text(
+                    'window: { mode: window, activate_at_launch: false }\n'
+                    'local_server: { enabled: false }\n'
+                    f'apps:\n  - {{ name: default, site: "{site}" }}\n'
+                    f'  - {{ name: other, site: "{other}" }}\n')
+                # This exact test process exits itself after probing. No pid/name-based kill.
+                run(contents / 'MacOS/Tilr', '--config', config, '--no-updates', '--probe-handoff' if args.handoff else '--probe-shell-control' if args.shell_control else '--probe',
+                    timeout=120)
 
 
 if __name__ == '__main__':

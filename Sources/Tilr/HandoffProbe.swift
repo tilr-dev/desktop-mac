@@ -10,7 +10,6 @@ extension AppDelegate {
         let second = openWindow(source.app)
         guard let target = second.current else { preconditionFailure("handoff: no target") }
         defer { if shells.contains(where: { $0 === second }) { second.window.close() } }
-        await target.firstLoad(within: config.control.loadTimeout)
         func js(_ tab: Tab, _ body: String, _ args: [String: Any] = [:]) async throws -> Any {
             try await withCheckedThrowingContinuation { continuation in
                 tab.webView.callAsyncJavaScript(body, arguments: args, in: nil, in: .page) { result in
@@ -19,6 +18,34 @@ extension AppDelegate {
             }
         }
         do {
+            for (role, tab) in [("source", source), ("target", target)] {
+                await tab.firstLoad(within: config.control.loadTimeout)
+                guard tab.isLoaded, tab.loadError == nil else {
+                    let reason = tab.loadError ?? (tab.loadEnded ? "navigation failed" : "navigation timed out")
+                    throw NSError(domain: "HandoffProbe", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "\(role): \(reason)"])
+                }
+                _ = try await js(tab, """
+                    // Navigation completion does not await module top-level awaits.
+                    // Subscribe and check in one JS turn so publication cannot be missed.
+                    await new Promise((resolve, reject) => {
+                      const finish = error => {
+                        clearTimeout(timer);
+                        window.removeEventListener('tilr:ready', ready);
+                        if (error) reject(error); else resolve();
+                      };
+                      const ready = () => {
+                        if (!window.tilr) return;
+                        window.removeEventListener('tilr:ready', ready);
+                        window.tilr.root.inject(['layout'], () => finish());
+                      };
+                      const timer = setTimeout(() => finish(new Error(role + ': runtime/layout readiness timed out')), timeout);
+                      window.addEventListener('tilr:ready', ready);
+                      ready();
+                    });
+                    return true;
+                    """, ["role": role, "timeout": config.control.loadTimeout * 1000])
+            }
             let listed = try await js(source, """
                 const list = await webkit.messageHandlers.tilrHandoff.postMessage({op:'shell.list'});
                 return list.windows.some(row => row.host === to) && list.windows.some(row => row.host === window.__tilrHost.host);
@@ -26,8 +53,6 @@ extension AppDelegate {
             precondition(listed == true, "handoff picker could not list native hosts through Control socket")
             for tab in [source, target] {
                 _ = try await js(tab, """
-                    if (!window.tilr) throw new Error('Handoff probe requires a runtime site');
-                    await new Promise(resolve => window.tilr.root.inject(['layout'], () => resolve()));
                     window.tilr.root.get('windows').register('handoff-probe', {
                       open: 'never', title: 'Handoff probe', mount(host, win) {
                         const text = document.createElement('div'); text.textContent = win.config.content;

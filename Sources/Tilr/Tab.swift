@@ -58,6 +58,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     private(set) var loadEnded = false {
         didSet { if loadEnded { wake() } }
     }
+    private(set) var loadError: String?
     /// `firstLoad` callers, resumed when the load ends (loaded or failed) or their time is up.
     private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
@@ -197,6 +198,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     private func navigate() {
         isLoaded = false
         loadEnded = false
+        loadError = nil
         let url = pageURL
         if webView.url == url {
             webView.reloadFromOrigin()
@@ -325,17 +327,18 @@ final class Tab: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         isLoaded = !webView.isLoading
-        loadFailed()
+        loadFailed(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         isLoaded = !webView.isLoading && webView.url != nil
-        loadFailed()
+        loadFailed(error)
     }
 
     /// A navigation failed: unless another one is already under way, the load has ended.
-    private func loadFailed() {
+    private func loadFailed(_ error: Error) {
         guard !webView.isLoading else { return }
+        loadError = error.localizedDescription
         loadEnded = true
     }
 

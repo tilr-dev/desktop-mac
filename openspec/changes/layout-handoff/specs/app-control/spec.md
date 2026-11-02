@@ -7,6 +7,12 @@ The shell SHALL relay revisioned one-use handoff offers between trusted loaded p
 - **WHEN** a trusted page sends `handoff.offer {ticket, payload, targetHost}` and the target restores `handoff.accept {ticket, payload}` and acknowledges it
 - **THEN** the source receives `handoff.commit {ticket}` and the target retains the restored window
 
+#### Scenario: Probe waits for runtime initialization
+- **WHEN** either page finishes navigation before its asynchronous runtime boot completes
+- **THEN** the handoff probe waits for runtime publication and the layout service on both pages before moving a window
+- **AND** a navigation failure or readiness deadline fails the probe explicitly instead of continuing with an unready page
+- **AND** the standalone handoff probe uses a composed runtime site; the general native GUI probe remains usable with the legacy site
+
 #### Scenario: Page disappears
 - **WHEN** the target closes or navigates before acknowledgement
 - **THEN** the relay sends `handoff.cancel` to surviving pages, rejects the initiating call and rejects late acknowledgements

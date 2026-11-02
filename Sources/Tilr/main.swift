@@ -253,7 +253,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(EXIT_SUCCESS)
             }
             await probeWindows()
-            await probeHandoff()
             do { _ = try await tab.nativePlugins.request(service: "browser", body: ["action": "probe"]) }
             catch {
                 print("native browser probe FAILED:", error.localizedDescription)
