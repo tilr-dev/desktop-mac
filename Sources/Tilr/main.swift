@@ -20,12 +20,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var config = Config.fallback
     var nativePluginSettings = Config.fallback.nativePlugins
     let palette = Palette()
+    let handoffs = HandoffCoordinator()
     var control: ControlServer?
     /// Compatibility settings and JSON export for the single Performance collector.
     var debug: DebugMode!
     /// `plugin_manager:` (PluginManagerHost.swift); its workspace opens on the first operation.
     var pluginManager: PluginManagerService!
-    var probing = CommandLine.arguments.contains("--probe") || CommandLine.arguments.contains("--probe-shell-control")
+    var probing = CommandLine.arguments.contains("--probe") || CommandLine.arguments.contains("--probe-shell-control") || CommandLine.arguments.contains("--probe-handoff")
     var probed = false
     var appUpdates: AppUpdates?
     private var uninstalling = false
@@ -142,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.stateChanged = { [weak self] in self?.saveWindows() }
         host.closed = { [weak self] host in
             guard let self else { return }
+            if let tab = host.current { handoffs.leaving(tab) }
             // Keep the final workspace across the existing last-window termination policy.
             if shells.count == 1 { saveWindows() }
             shells.removeAll { $0 === host }
@@ -204,6 +206,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tab = Tab(app: app, control: config.control.socket.isEmpty ? nil : config.control, browser: config.browser, native: nativePluginSettings,
                       sshAgent: config.sshAgent, watchLatency: config.watch.latency, inspectable: config.debug.inspectable, web: config.web,
                       collector: debug.collector, hostID: hostID, primaryHost: primaryHost)
+        handoffs.shells = { [weak self] in self?.shells ?? [] }
+        handoffs.socketPath = { [weak self] in self?.config.control.socket ?? "" }
+        tab.handoffBridge.coordinator = handoffs
         tab.nativePlugins.configure(browser: config.browser, options: config.nativePlugins.options)
         tab.didLoad = { [weak self] in self?.loaded($0) }
         return tab
@@ -235,6 +240,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard probing, !probed, tab === tabs.first else { return }
         probed = true
         Task { @MainActor in
+            if CommandLine.arguments.contains("--probe-handoff") {
+                await probeHandoff()
+                control?.stop()
+                Instance.terminating()
+                exit(EXIT_SUCCESS)
+            }
             await probeShellControl()
             if CommandLine.arguments.contains("--probe-shell-control") {
                 control?.stop()
@@ -242,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(EXIT_SUCCESS)
             }
             await probeWindows()
+            await probeHandoff()
             do { _ = try await tab.nativePlugins.request(service: "browser", body: ["action": "probe"]) }
             catch {
                 print("native browser probe FAILED:", error.localizedDescription)

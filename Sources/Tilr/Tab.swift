@@ -20,6 +20,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
     let agent: AgentHost
     private let localServer = LocalServerBridge()
+    let handoffBridge = HandoffBridge()
     private let performanceBridge = PerformanceBridge()
     var watcher: FolderWatcher?
     /// `watch.latency`: seconds FSEvents gathers the folder's changes.
@@ -119,11 +120,13 @@ final class Tab: NSObject, WKNavigationDelegate {
         if let collector { controller.addUserScript(WKUserScript(source: collector, injectionTime: .atDocumentStart, forMainFrameOnly: true)) }
         controller.add(agent, name: AgentHost.name)
         controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
+        controller.addScriptMessageHandler(handoffBridge, contentWorld: .page, name: HandoffBridge.name)
         controller.addScriptMessageHandler(performanceBridge, contentWorld: .page, name: PerformanceBridge.name)
         webView = PageWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         localServer.tab = self
+        handoffBridge.tab = self
         performanceBridge.tab = self
         nativePlugins = NativePluginSession(tab: self, settings: native, browser: browser, inspectable: inspectable,
                                            highRefreshRate: web.highRefreshRate)
@@ -212,6 +215,7 @@ final class Tab: NSObject, WKNavigationDelegate {
         old.stopLoading()
         nativePlugins.pageDidNavigate()
         agent.closeAll()
+        handoffBridge.coordinator?.leaving(self)
         performanceBridge.reset()
         isLoaded = false
         let next = PageWebView(frame: old.frame, configuration: old.configuration)
@@ -315,6 +319,7 @@ final class Tab: NSObject, WKNavigationDelegate {
         loadEnded = false
         nativePlugins.pageDidNavigate()
         agent.closeAll()
+        handoffBridge.coordinator?.leaving(self)
         performanceBridge.reset()
     }
 
@@ -335,6 +340,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        handoffBridge.coordinator?.leaving(self)
         isLoaded = false
     }
 
