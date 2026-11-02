@@ -14,6 +14,7 @@ final class HandoffCoordinator {
         let target: Tab
         let reply: (Any?, String?) -> Void
         var acknowledged = false
+        var replied = false
         let timeout: DispatchWorkItem
     }
 
@@ -68,15 +69,23 @@ final class HandoffCoordinator {
                 guard let self, self.pending[ticket] != nil else { reply(nil, "Handoff cancelled"); return }
                 if let error { self.cancel(ticket, reason: error); reply(nil, error); return }
                 self.send(item.target, ["op": "handoff.commit", "ticket": ticket]) { [weak self] error in
-                    guard let self, let active = self.pending.removeValue(forKey: ticket) else { reply(nil, "Handoff cancelled"); return }
-                    active.timeout.cancel()
+                    guard let self, let active = self.pending[ticket] else { reply(nil, "Handoff cancelled"); return }
                     if let error {
-                        self.send(item.target, ["op": "handoff.cancel", "ticket": ticket]) { _ in }
-                        active.reply(nil, error)
+                        self.cancel(ticket, reason: error)
                         reply(nil, error)
-                    } else { active.reply(["ticket": ticket], nil); reply(["accepted": true], nil) }
+                    } else {
+                        // Keep the lease until the source has written the shared commit decision.
+                        // Navigation in the reply/continuation gap still cancels provisional DOM.
+                        self.pending[ticket]?.replied = true
+                        active.reply(["ticket": ticket], nil)
+                        reply(["accepted": true], nil)
+                    }
                 }
             }
+        case "handoff.finalized":
+            guard item.source === tab, item.replied else { reply(nil, "Handoff is not ready to finalize"); return }
+            pending.removeValue(forKey: ticket)?.timeout.cancel()
+            reply(["accepted": true], nil)
         case "handoff.reject", "handoff.cancel":
             guard item.target === tab || item.source === tab else { reply(nil, "Handoff belongs to another page"); return }
             cancel(ticket, reason: body["error"] as? String ?? "Handoff cancelled")
@@ -92,7 +101,7 @@ final class HandoffCoordinator {
         item.timeout.cancel()
         send(item.target, ["op": "handoff.cancel", "ticket": ticket]) { _ in }
         send(item.source, ["op": "handoff.cancel", "ticket": ticket]) { _ in }
-        item.reply(nil, reason)
+        if !item.replied { item.reply(nil, reason) }
     }
 
     func leaving(_ tab: Tab) {

@@ -14,3 +14,9 @@ The shell SHALL relay revisioned one-use handoff offers between trusted loaded p
 #### Scenario: Untrusted origin or other application
 - **WHEN** an embedded page, foreign origin or another application's host attempts a transfer
 - **THEN** the relay rejects it without dispatching the payload
+
+
+#### Scenario: Commit completion lease
+- **WHEN** both commit event callbacks finish but the source has not confirmed its shared-store decision with `handoff.finalized`
+- **THEN** the relay retains the pending lease and cancels provisional windows on page departure or expiration
+- **AND** it never replies to an already resolved offer a second time
