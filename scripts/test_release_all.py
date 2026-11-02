@@ -9,7 +9,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 import release_all
 
 
@@ -44,6 +44,23 @@ class ReleaseAllTests(unittest.TestCase):
                 release_all.main()
             self.assertEqual(stopped.exception.code, 2)
             settings.assert_not_called()
+
+    def test_ci_packaging_runs_build_preflight_before_execute(self):
+        calls = Mock()
+        with patch.object(release_all.sys, "argv", ["release_all.py", "--version", "0.1.0",
+                                                   "--build", "1", "--channel", "beta"]), \
+             patch.object(release_all, "ROOT", self.root), \
+             patch.object(release_all, "settings", return_value=self.config), \
+             patch.object(release_all, "preflight") as preflight, \
+             patch.object(release_all, "execute", return_value=[]) as execute, \
+             redirect_stdout(io.StringIO()):
+            calls.attach_mock(preflight, "preflight")
+            calls.attach_mock(execute, "execute")
+            release_all.main()
+        self.assertEqual(calls.mock_calls, [
+            call.preflight(self.config, publish=False),
+            call.execute("0.1.0", 1, "beta", self.config, resume=False, release_tag=None),
+        ])
 
     def test_settings_require_environment_without_local_config_fallback(self):
         key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
