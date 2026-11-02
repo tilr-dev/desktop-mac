@@ -22,4 +22,3 @@ Stable CI publication SHALL stop before any CDN upload, feed change or GitHub Re
 - **AND** the publish job is repeated using the same completed build and identical bytes while the GitHub Release has no assets
 - **THEN** publication verifies and preserves existing immutable downloads and matching appcasts, completes any missing architecture and attaches both unchanged DMGs to the GitHub Release
 - **AND** a newer published build or conflicting bytes stops the repeated job before any CDN, appcast or GitHub Release mutation
-
