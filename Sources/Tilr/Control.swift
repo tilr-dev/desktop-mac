@@ -1,5 +1,6 @@
 import AppKit
 import ImageIO
+import Gitpm
 import Network
 import UniformTypeIdentifiers
 import WebKit
@@ -33,6 +34,9 @@ import WebKit
 ///   { "cmd": "plugin-manager" }                     read-only: { workspace, catalog, open, git: "ok" or why not,
 ///                                                   plugins: [{ id, source, version, commit, enabled, previous?, forkOf? }] }
 ///                                                   (state.json, the workspace is not opened; error: { kind, message })
+///   { "cmd": "gitpm", "command": "list", "args": {} }  embedded gitpm; { result: JSON }, or
+///                                                   error: { code, kind, message, id?, lostWork, plugins }
+///                                                   See docs/gitpm-control.md for all commands and arguments.
 ///
 /// `call` runs a method of a service of the page's cordis root (`window.tilr.root.get(service)`):
 /// `plugins.list / toggle / reload`, `layout.list / open / close / float / tile`,
@@ -65,12 +69,13 @@ final class ControlServer {
     private let loadTimeout: () -> Double
     private let debug: DebugMode
     /// `plugin-manager`: the plugin manager's state (PluginManagerHost.swift).
+    private let gitpm: (String, [String: Any]) async throws -> Any
     private let pluginManager: () async throws -> [String: Any]
     private var listener: NWListener?
 
     init(path: String, shells: @escaping () -> [Shell], openWindow: @escaping (Site.App, NSRect?) -> Shell, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab, Bool) -> Bool,
          apps: @escaping () -> [Site.App], resolve: @escaping (String) -> Tab?,
-         loadTimeout: @escaping () -> Double, debug: DebugMode, pluginManager: @escaping () async throws -> [String: Any]) {
+         loadTimeout: @escaping () -> Double, debug: DebugMode, gitpm: @escaping (String, [String: Any]) async throws -> Any, pluginManager: @escaping () async throws -> [String: Any]) {
         self.shells = shells
         self.openWindow = openWindow
         self.path = path
@@ -81,6 +86,7 @@ final class ControlServer {
         self.select = select
         self.loadTimeout = loadTimeout
         self.debug = debug
+        self.gitpm = gitpm
         self.pluginManager = pluginManager
     }
 
@@ -179,6 +185,8 @@ final class ControlServer {
         Task { @MainActor in
             do {
                 send(try await self.run(cmd, request), ok: true)
+            } catch let failure as PluginManagerFailure {
+                send(["error": failure.controlJSON], ok: false)
             } catch {
                 send(["error": Self.describe(error)], ok: false)
             }
@@ -293,10 +301,25 @@ final class ControlServer {
             return try await page().nativePlugins.request(service: service, body: request["request"] as? [String: Any] ?? [:])
         case "browser":
             return try await page().nativePlugins.request(service: "browser", body: request)
+        case "gitpm":
+            guard Set(request.keys).isSubset(of: ["cmd", "id", "host", "app", "command", "args"]) else {
+                throw PluginManagerFailure(kind: "invalid_argument", message: "gitpm: unexpected request fields")
+            }
+            guard let command = request["command"] as? String else {
+                throw PluginManagerFailure(kind: "invalid_argument", message: "gitpm: command is required")
+            }
+            let arguments: [String: Any]
+            if let value = request["args"] {
+                guard let object = value as? [String: Any] else {
+                    throw PluginManagerFailure(kind: "invalid_argument", message: "gitpm: args must be an object")
+                }
+                arguments = object
+            } else { arguments = [:] }
+            return ["result": try await gitpm(command, arguments)]
         case "plugin-manager":
             return try await pluginManager()
         default:
-            throw Failure(message: "unknown cmd \"\(cmd)\"; one of shell, apps, switch, reload, snapshot, console, eval, call, debug, browser, plugin-manager")
+            throw Failure(message: "unknown cmd \"\(cmd)\"; one of shell, apps, switch, reload, snapshot, console, eval, call, debug, browser, plugin-manager, gitpm")
         }
     }
 

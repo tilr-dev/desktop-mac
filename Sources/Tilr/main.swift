@@ -56,8 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nativePluginSettings = config.nativePlugins
         pluginManager = PluginManagerService(settings: config.pluginManager.service)
         if !probing {
-            let settings = config.pluginManager.service
-            Task { await Self.syncPluginDist(settings) }
+            let service = pluginManager!
+            Task { await Self.syncPluginDist(service) }
         }
         LocalServerHost.shared.didUpdate = { [weak self] in
             self?.tabs.forEach { $0.send(event: "tilr-local-server-ready", detail: [:]) }
@@ -89,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 resolve: { [unowned self] name in windowForApp(name)?.current },
                 loadTimeout: { [unowned self] in config.control.loadTimeout },
                 debug: debug,
+                gitpm: { [unowned self] command, args in try await pluginManager.execute(command: command, arguments: args) },
                 pluginManager: { [unowned self] in try await pluginManagerStatus() }
             )
             control?.start()
