@@ -56,6 +56,7 @@ extension AppDelegate {
                 _ = try await js(tab, """
                     window.tilr.root.get('windows').register('handoff-probe', {
                       open: 'never', title: 'Handoff probe', mount(host, win) {
+                        const header = document.createElement('div'); header.setAttribute('data-window-drag', ''); header.textContent = 'Probe'; host.append(header);
                         const text = document.createElement('div'); text.textContent = win.config.content;
                         text.dataset.handoffProbe = win.id; host.append(text); return () => text.remove();
                       }
@@ -79,6 +80,42 @@ extension AppDelegate {
                 catch { return !!window.tilr.root.get('layout').get(id); }
                 """, ["id": id]) as? Bool
             precondition(invalid == true, "invalid handoff lost source")
+
+            // Exercise the drag ticket through the real native relay, with only WebKit's text fallback.
+            let dragText = try await js(source, """
+                const layout = window.tilr.root.get('layout'); layout.float(id);
+                const header = document.querySelector('[data-window="' + id + '"] [data-window-drag]');
+                header.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true, button:0}));
+                const dataTransfer = new DataTransfer();
+                header.dispatchEvent(new DragEvent('dragstart', {bubbles:true, cancelable:true, dataTransfer}));
+                window.__dragDone = new Promise(resolve => {
+                  const observer = new MutationObserver(() => {
+                    if (!layout.get(id)) { observer.disconnect(); resolve(true); }
+                  });
+                  observer.observe(document.body, {subtree:true, childList:true});
+                });
+                await webkit.messageHandlers.tilrHandoff.postMessage({op:'shell.list'});
+                return dataTransfer.getData('text/plain');
+                """, ["id": id]) as? String
+            guard let dragText, dragText.hasPrefix("tilr-window:") else { preconditionFailure("drag did not encode a ticket") }
+            _ = try await js(target, """
+                const canvas = document.querySelector('.tilr-canvas'); const box = canvas.getBoundingClientRect();
+                const dataTransfer = new DataTransfer(); dataTransfer.setData('text/plain', text);
+                canvas.dispatchEvent(new DragEvent('drop', {bubbles:true, cancelable:true, dataTransfer, clientX:box.x+70, clientY:box.y+90}));
+                return true;
+                """, ["text": dragText])
+            let dragGone = try await js(source, "return await window.__dragDone") as? Bool
+            let positioned = try await js(target, """
+                const layout = window.tilr.root.get('layout');
+                const matches = () => { const row = layout.get(id); return row?.rect.x === 70 && row.rect.y === 90; };
+                if (matches()) return true;
+                return await new Promise(resolve => {
+                  const observer = new MutationObserver(() => { if (matches()) { observer.disconnect(); resolve(true); } });
+                  observer.observe(document.body, {subtree:true, childList:true, attributes:true});
+                });
+                """, ["id": id]) as? Bool
+            precondition(dragGone == true && positioned == true, "drag handoff lost source or drop coordinates")
+            _ = try await js(target, "return await window.tilr.root.get('layout').handoff(id, to)", ["id": id, "to": first.hostID.uuidString])
 
             for closes in [false, true] {
                 _ = try await js(target, """
@@ -119,7 +156,7 @@ extension AppDelegate {
                 }
             }
             _ = try await js(source, "window.tilr.root.get('layout').close(id); return true", ["id": id])
-            print("layout handoff: real-page move, identity/content, invalid host, expiration, late ack and closed target: ok")
+            print("layout handoff: real-page move, drag text fallback/position, identity/content, invalid host, expiration, late ack and closed target: ok")
         } catch { preconditionFailure("layout handoff probe: \(error)") }
     }
 }

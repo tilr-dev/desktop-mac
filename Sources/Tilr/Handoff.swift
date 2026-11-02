@@ -6,12 +6,21 @@ import WebKit
 final class HandoffCoordinator {
     var shells: () -> [Shell] = { [] }
     var socketPath: () -> String = { "" }
+    private struct Offered {
+        let source: Tab
+        let body: [String: Any]
+        let reply: (Any?, String?) -> Void
+        let timeout: DispatchWorkItem
+    }
+    private var offered: [String: Offered] = [:]
     private var used = Set<String>()
     private var revisions: [String: Int64] = [:]
     private var pending: [String: Pending] = [:]
     private struct Pending {
         let source: Tab
         let target: Tab
+        let targetHost: String
+        let position: [String: Any]?
         let reply: (Any?, String?) -> Void
         var acknowledged = false
         var replied = false
@@ -31,12 +40,38 @@ final class HandoffCoordinator {
             return
         }
         guard let ticket = body["ticket"] as? String, !ticket.isEmpty else { reply(nil, "Missing handoff ticket"); return }
+        if op == "handoff.accept" {
+            guard let offer = offered[ticket],
+                  let target = shells().first(where: { $0.current === tab }),
+                  tab !== offer.source, tab.app.name == offer.source.app.name, tab.isLoaded,
+                  let position = body["position"] as? [String: Any],
+                  let x = position["x"] as? NSNumber, let y = position["y"] as? NSNumber,
+                  CFGetTypeID(x) != CFBooleanGetTypeID(), CFGetTypeID(y) != CFBooleanGetTypeID(),
+                  x.doubleValue.isFinite, y.doubleValue.isFinite else {
+                reply(nil, "Invalid drop or unavailable handoff ticket"); return
+            }
+            offered.removeValue(forKey: ticket)?.timeout.cancel()
+            var body = offer.body
+            body["targetHost"] = target.hostID.uuidString
+            var payload = body["payload"] as? [String: Any] ?? [:]
+            payload["position"] = position
+            body["payload"] = payload
+            receive(body, from: offer.source, reply: offer.reply)
+            reply(["accepted": true], nil)
+            return
+        }
+        if op == "handoff.dragend" {
+            // A successful drop has already claimed the offer; it must finish independently.
+            if let offer = offered[ticket] {
+                guard offer.source === tab else { reply(nil, "Handoff belongs to another page"); return }
+                cancel(ticket, reason: "Drag cancelled")
+            }
+            reply(["accepted": true], nil)
+            return
+        }
         if op == "handoff.offer" {
-            guard used.insert(ticket).inserted else { reply(nil, "Handoff ticket already used"); return }
+            guard !used.contains(ticket), offered[ticket] == nil else { reply(nil, "Handoff ticket already used"); return }
             guard let source = shells().first(where: { $0.current === tab }),
-                  let host = body["targetHost"] as? String,
-                  let target = shells().first(where: { $0.hostID.uuidString.caseInsensitiveCompare(host) == .orderedSame })?.current,
-                  target !== tab, target.app.name == tab.app.name, target.isLoaded,
                   let payload = body["payload"] as? [String: Any],
                   payload["sourceHost"] as? String == source.hostID.uuidString,
                   let id = payload["id"] as? String, !id.isEmpty,
@@ -46,16 +81,33 @@ final class HandoffCoordinator {
                   number.doubleValue <= 9_007_199_254_740_991 else {
                 reply(nil, "Invalid handoff payload or unavailable target host"); return
             }
+            guard let host = body["targetHost"] as? String else {
+                let timeout = DispatchWorkItem { [weak self] in self?.cancel(ticket, reason: "Handoff timed out") }
+                offered[ticket] = Offered(source: tab, body: body, reply: reply, timeout: timeout)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+                return
+            }
+            used.insert(ticket)
+            guard let target = shells().first(where: { $0.hostID.uuidString.caseInsensitiveCompare(host) == .orderedSame })?.current,
+                  target !== tab, target.app.name == tab.app.name, target.isLoaded else {
+                reply(nil, "Invalid handoff payload or unavailable target host"); return
+            }
             let revision = number.int64Value
             let key = "\(source.hostID.uuidString):\(id)"
             guard revision > (revisions[key] ?? 0) else { reply(nil, "Stale handoff revision"); return }
             revisions[key] = revision
             let timeout = DispatchWorkItem { [weak self] in self?.cancel(ticket, reason: "Handoff timed out") }
-            pending[ticket] = Pending(source: tab, target: target, reply: reply, timeout: timeout)
+            pending[ticket] = Pending(source: tab, target: target, targetHost: host, position: payload["position"] as? [String: Any], reply: reply, timeout: timeout)
             DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
             send(target, ["op": "handoff.accept", "ticket": ticket, "payload": payload]) { [weak self] error in
                 if let error { self?.cancel(ticket, reason: error) }
             }
+            return
+        }
+        if op == "handoff.cancel", let offer = offered[ticket] {
+            guard offer.source === tab else { reply(nil, "Handoff belongs to another page"); return }
+            cancel(ticket, reason: "Handoff cancelled")
+            reply(["accepted": true], nil)
             return
         }
         guard let item = pending[ticket] else { reply(nil, "Handoff ticket is no longer pending"); return }
@@ -77,7 +129,9 @@ final class HandoffCoordinator {
                         // Keep the lease until the source has written the shared commit decision.
                         // Navigation in the reply/continuation gap still cancels provisional DOM.
                         self.pending[ticket]?.replied = true
-                        active.reply(["ticket": ticket], nil)
+                        var result: [String: Any] = ["ticket": ticket, "targetHost": active.targetHost]
+                        if let position = active.position { result["position"] = position }
+                        active.reply(result, nil)
                         reply(["accepted": true], nil)
                     }
                 }
@@ -97,6 +151,12 @@ final class HandoffCoordinator {
     /// The production expiration path is also callable by the probe without waiting for time.
     func cancel(_ ticket: String, reason: String) {
         dispatchPrecondition(condition: .onQueue(.main))
+        if let offer = offered.removeValue(forKey: ticket) {
+            used.insert(ticket)
+            offer.timeout.cancel()
+            send(offer.source, ["op": "handoff.cancel", "ticket": ticket]) { _ in }
+            offer.reply(nil, reason)
+        }
         guard let item = pending.removeValue(forKey: ticket) else { return }
         item.timeout.cancel()
         send(item.target, ["op": "handoff.cancel", "ticket": ticket]) { _ in }
@@ -105,6 +165,9 @@ final class HandoffCoordinator {
     }
 
     func leaving(_ tab: Tab) {
+        for (ticket, item) in Array(offered) where item.source === tab {
+            cancel(ticket, reason: "Handoff page closed or navigated")
+        }
         for (ticket, item) in Array(pending) where item.source === tab || item.target === tab {
             cancel(ticket, reason: "Handoff page closed or navigated")
         }
