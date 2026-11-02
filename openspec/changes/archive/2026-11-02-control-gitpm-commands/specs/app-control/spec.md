@@ -26,4 +26,3 @@ Tilr SHALL statically link the gitpm UniFFI library, support asynchronous servic
 - **WHEN** a gitpm command fails
 - **THEN** Control returns a structured JSON error containing its gitpm code, kind and message
 - **AND** unknown commands and invalid arguments return clear errors before mutation
-
