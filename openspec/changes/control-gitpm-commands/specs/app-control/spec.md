@@ -7,7 +7,7 @@ Tilr SHALL statically link the gitpm UniFFI library, support asynchronous servic
 - **WHEN** plugin-manager configuration reloads
 - **THEN** the manager uses the configured workspace (default `<config>/plugins`) and catalog (default `https://pkg.tilr.dev`)
 - **AND** a status read does not open or create a workspace or acquire a mutation lock
-- **AND** install/update/rollback/restore/fork/auth operations requiring Git run preflight and return a `git` error with Command Line Tools guidance if Git is unavailable, without a system stub installation popup
+- **AND** operations requiring Git, including install/update/rollback/restore/fork/auth and author repository inspection/editing, run preflight and return a `git` error with Command Line Tools guidance if Git is unavailable, without a system stub installation popup
 
 #### Scenario: Migrate legacy plugin distribution at launch
 - **WHEN** the application starts with installed plugins in its configured workspace

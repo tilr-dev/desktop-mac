@@ -97,7 +97,7 @@ extension PluginManagerService {
         }
         func args(_ allowed: String = "") throws -> CommandArguments { try .init(arguments, allowed: allowed) }
         // Preflight only commands that actually invoke Git. Do not run Apple's Git stub.
-        let gitCommands: Set<String> = ["install", "installFromCatalog", "download", "downloadFromCatalog", "check", "update", "updateAll", "updateAllPlan", "rollback", "restore", "uninstall", "uninstallPlan", "uninstallRefusal", "fork", "forkPackages", "forkSource", "authCheck", "init", "commit", "setRemote", "catalogUpdate", "catalogRegister"]
+        let gitCommands: Set<String> = ["install", "installFromCatalog", "download", "downloadFromCatalog", "check", "update", "updateAll", "updateAllPlan", "rollback", "restore", "uninstall", "uninstallPlan", "uninstallRefusal", "fork", "forkPackages", "forkSource", "authCheck", "init", "commit", "setRemote", "catalogUpdate", "catalogRegister", "repositoryPackages", "editRepositoryDependency"]
         switch command {
         case "open":
             _ = try args(); body = { _ = try $0.openManager(); return NSNull() }
@@ -219,7 +219,13 @@ extension PluginManagerService {
             body = { _ in try Gitpm.setRemote(directory: directory, url: url); return NSNull() }
         case "repositoryPackages":
             let directory = try args("directory").string("directory")
-            body = { _ in try json(Gitpm.repositoryPackages(directory: directory, root: nil)) }
+            body = { service in
+                // The FFI's optional root enriches membership, but requires state.json.
+                // Author repositories must also be inspectable before a workspace exists.
+                let state = URL(fileURLWithPath: service.settings.root).appendingPathComponent("state.json").path
+                let root = FileManager.default.fileExists(atPath: state) ? service.settings.root : nil
+                return try json(Gitpm.repositoryPackages(directory: directory, root: root))
+            }
         case "editDependency", "editRepositoryDependency":
             let a = try args(command == "editDependency" ? "id edit" : "directory package edit"), edit = try a.dependencyEdit()
             let directory = command == "editRepositoryDependency" ? try a.string("directory") : ""

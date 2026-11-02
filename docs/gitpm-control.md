@@ -61,7 +61,7 @@ separate operations (for example `updateAllPlan` or `catalogRegister`).
 | `init` | `directory`, `name`, `multi?`, `release?` (default true) |
 | `commit` | `directory`, `version`, `package?` |
 | `setRemote` | `directory`, `url` |
-| `repositoryPackages` | `directory` |
+| `repositoryPackages` | `directory`; installed membership uses the configured workspace when it exists |
 | `editDependency` | `id`, `edit` |
 | `editRepositoryDependency` | `directory`, `package`, `edit` (free FFI dependency edit) |
 | `catalogUpdate` | `sourcesFile`, `location?`, `customSsh?` |

@@ -44,7 +44,7 @@ def stage_app(stage, binary):
 
 
 class App:
-    def __init__(self, binary, config, control):
+    def __init__(self, binary, config, control, git_path=None):
         self.control = control
         self.request_id = 0
         self.log = b''
@@ -55,7 +55,7 @@ class App:
             self.process = subprocess.Popen(
                 [str(binary), '--config', str(config), '--no-updates'],
                 stdin=subprocess.DEVNULL, stdout=slave, stderr=slave,
-                env={**os.environ, 'GIT_AUTHOR_NAME': 'Tilr Control test',
+                env={**os.environ, **({} if git_path is None else {'PATH': git_path}), 'GIT_AUTHOR_NAME': 'Tilr Control test',
                      'GIT_AUTHOR_EMAIL': 'control@example.invalid',
                      'GIT_COMMITTER_NAME': 'Tilr Control test',
                      'GIT_COMMITTER_EMAIL': 'control@example.invalid',
@@ -138,6 +138,7 @@ class App:
         assert isinstance(error.get('message'), str) and error['message'], reply
         if code is not None:
             assert error['code'] == code, reply
+        return error
 
 
 def package_state(app, enabled):
@@ -202,6 +203,16 @@ def main():
             f'plugin_manager: {{ workspace: {json.dumps(str(workspace))}, '
             f'catalog: {json.dumps(str(catalog))} }}\n'
             f'apps:\n  - {{ name: default, site: {json.dumps(str(page))} }}\n')
+        # Deterministically deny Git lookup and require the app's preflight guidance,
+        # rather than entering a library Git subprocess (or Apple's installation stub).
+        with App(executable, config, control, git_path='') as app:
+            for command, arguments in [
+                    ('repositoryPackages', {'directory': str(source)}),
+                    ('editRepositoryDependency', {'directory': str(source), 'package': PACKAGE_ID,
+                                                   'edit': {'type': 'remove', 'dependency': MISSING_ID}})]:
+                error = app.failure(command, arguments, code='git')
+                assert 'xcode-select --install' in error['message'], error
+            assert not workspace.exists(), 'Git preflight created a workspace'
         with App(executable, config, control) as app:
             status = app.request('', cmd='plugin-manager')
             assert status['ok'] and status['plugins'] == [] and status['open'] is False, status
@@ -243,6 +254,8 @@ def main():
             linked = app.success('link', {'package': str(source)})
             assert linked['id'] == PACKAGE_ID, linked
             package_state(app, True)
+            packages = app.success('repositoryPackages', {'directory': str(source)})
+            assert any(p['id'] == PACKAGE_ID and p['installed'] for p in packages), packages
             app.success('disable', {'id': PACKAGE_ID})
             package_state(app, False)
         # A new app process must see the stored disabled state, then persist enable.
