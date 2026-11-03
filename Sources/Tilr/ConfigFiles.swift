@@ -42,10 +42,11 @@ struct ConfigFiles {
 
     /// FSEvents can contain duplicate paths, nested paths, and the watched root itself.
     func changedNames(_ paths: [String]) -> [String] {
-        let root = directory.standardizedFileURL.path
+        let root = directory.resolvingSymlinksInPath().path
         return Set(paths.compactMap { path -> String? in
             let url = URL(fileURLWithPath: path).standardizedFileURL
-            guard url.deletingLastPathComponent().path == root else { return nil }
+            // Resolve the existing parent so deleted files still match a symlinked root.
+            guard url.deletingLastPathComponent().resolvingSymlinksInPath().path == root else { return nil }
             let name = url.lastPathComponent
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue { return nil }

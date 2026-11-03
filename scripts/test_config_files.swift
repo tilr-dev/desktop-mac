@@ -46,6 +46,20 @@ import Foundation
                                        root.appendingPathComponent("unreadable..yml").path,
                                        nested.path, nested.appendingPathComponent("child.yml").path])
         expect(names == ["deleted.yml", "test.yml", "unreadable..yml"])
+        let linkedRoot = root.appendingPathComponent("config-link")
+        try FileManager.default.createSymbolicLink(at: linkedRoot, withDestinationURL: root)
+        let linkedFiles = ConfigFiles(directory: linkedRoot)
+        let resolvedRoot = root.resolvingSymlinksInPath()
+        let resolvedPaths = [resolvedRoot.appendingPathComponent("config.yml").path,
+                             resolvedRoot.appendingPathComponent("test.yml").path,
+                             resolvedRoot.appendingPathComponent("deleted.yml").path,
+                             resolvedRoot.path, nested.resolvingSymlinksInPath().path,
+                             nested.appendingPathComponent("child.yml").resolvingSymlinksInPath().path]
+        expect(linkedFiles.changedNames(resolvedPaths) == ["config.yml", "deleted.yml", "test.yml"],
+               "Resolved watcher paths must match a symlinked config directory")
+        expect(files.changedNames([linkedRoot.appendingPathComponent("config.yml").path,
+                                   linkedRoot.appendingPathComponent("deleted.yml").path]) == ["config.yml", "deleted.yml"],
+               "Symlinked watcher paths must match the real config directory, including deleted files")
         print("config file validation and IO tests passed")
     }
 }
