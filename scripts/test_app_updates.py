@@ -32,6 +32,7 @@ let package = Package(name: "AppUpdateTests", platforms: [.macOS(.v14)],
         tests = sources / 'UpdateTests'
         tests.mkdir(exist_ok=True)
         shutil.copyfile(ROOT / 'scripts/test_app_updates.swift', tests / 'UpdateTests.swift')
+        shutil.copyfile(ROOT / 'scripts/TestSupport.swift', tests / 'TestSupport.swift')
         shutil.copyfile(ROOT / 'Sources/Tilr/About.swift', tests / 'About.swift')
         scratch = ROOT / '.build/app-update-tests'
         command = ['swift', 'build', '--disable-sandbox', '--build-system', 'native',

@@ -319,7 +319,7 @@ manage the production service.
 
 ```sh
 python3 -m unittest discover -s scripts -p 'test_*.py'
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/TestSupport.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
 /tmp/tilrd-installation-tests
 ```
 
