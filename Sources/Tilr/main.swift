@@ -260,9 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await probeWindows()
             do { _ = try await tab.nativePlugins.request(service: "browser", body: ["action": "probe"]) }
             catch {
-                print("native browser probe FAILED:", error.localizedDescription)
-                Instance.terminating()
-                exit(EXIT_FAILURE)
+                ProbeCheck("probe-browser", cleanup: { Instance.terminating() }).fail(error.localizedDescription)
             }
             await probeReloadHistory()
             await probePagePlumbing()
@@ -511,9 +509,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Exercise real WebKit navigation, including installing into an empty folder.
     @MainActor
     func probeReloadHistory() async {
+        let probe = ProbeCheck("probe-reload-history", cleanup: { Instance.terminating() })
         guard Site.devURL == nil else { return }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-history-\(UUID().uuidString)")
-        try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        probe.attempt { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true) }
         defer { try? FileManager.default.removeItem(at: root) }
         let app = Site.App(name: "history-probe", root: root)
         let tab = Tab(app: app, control: config.control, browser: config.browser, native: config.nativePlugins, sshAgent: config.sshAgent,
@@ -523,45 +522,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if tab.isLoaded { return }
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
-            preconditionFailure("Reload history probe timed out")
+            probe.fail("Reload history probe timed out")
         }
         func cleanHistory() {
-            precondition(!tab.webView.canGoBack && !tab.webView.canGoForward, "Reload added navigation history")
+            probe(!tab.webView.canGoBack && !tab.webView.canGoForward, "Reload added navigation history")
         }
         tab.loadIfNeeded()
         tab.watcher = nil // Drive changes explicitly so each assertion observes one navigation.
         await loaded()
         let placeholder = tab.webView
         let index = root.appendingPathComponent("index.html")
-        try! "<html><body>first</body></html>".write(to: index, atomically: true, encoding: .utf8)
+        probe.attempt { try "<html><body>first</body></html>".write(to: index, atomically: true, encoding: .utf8) }
         tab.siteChanged([index.path])
         await loaded()
-        precondition(tab.webView !== placeholder, "Placeholder history survived installation")
-        precondition(placeholder.acceptsFirstMouse(for: nil) && tab.webView.acceptsFirstMouse(for: nil),
+        probe(tab.webView !== placeholder, "Placeholder history survived installation")
+        probe(placeholder.acceptsFirstMouse(for: nil) && tab.webView.acceptsFirstMouse(for: nil),
                      "A page view does not take the first click in an inactive window")
         cleanHistory()
         let page = tab.webView
         _ = try? await page.evaluateJavaScript("localStorage.setItem('reload-probe', 'saved'); window.probeMarker = true")
-        try! "<html><body>second</body></html>".write(to: index, atomically: true, encoding: .utf8)
+        probe.attempt { try "<html><body>second</body></html>".write(to: index, atomically: true, encoding: .utf8) }
         tab.siteChanged([index.path])
         await loaded()
-        precondition(tab.webView === page, "Index edit unnecessarily replaced WebView")
+        probe(tab.webView === page, "Index edit unnecessarily replaced WebView")
         let fresh = try? await page.evaluateJavaScript("document.body.textContent === 'second' && window.probeMarker === undefined && localStorage.getItem('reload-probe') === 'saved'") as? Bool
-        precondition(fresh == true, "Index edit did not fully reload or lost storage")
+        probe(fresh == true, "Index edit did not fully reload or lost storage")
         cleanHistory()
         tab.reload()
         await loaded()
         cleanHistory()
-        try! FileManager.default.removeItem(at: index)
+        probe.attempt { try FileManager.default.removeItem(at: index) }
         tab.siteChanged([index.path])
         await loaded()
-        precondition(tab.webView !== page, "Removed index kept app history")
+        probe(tab.webView !== page, "Removed index kept app history")
         cleanHistory()
-        try! "<html><body>third</body></html>".write(to: index, atomically: true, encoding: .utf8)
+        probe.attempt { try "<html><body>third</body></html>".write(to: index, atomically: true, encoding: .utf8) }
         tab.siteChanged([index.path])
         await loaded()
         let saved = try? await tab.webView.evaluateJavaScript("localStorage.getItem('reload-probe')") as? String
-        precondition(saved == "saved", "Replacing WebView lost persistent storage")
+        probe(saved == "saved", "Replacing WebView lost persistent storage")
         _ = try? await tab.webView.evaluateJavaScript("localStorage.removeItem('reload-probe')")
         cleanHistory()
         print("reload history: index edit, manual reload, placeholder transitions, persistent storage, first click on a replaced view: ok")
@@ -575,21 +574,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// settings handed to the browser plugin.
     @MainActor
     func probePagePlumbing() async {
+        let probe = ProbeCheck("probe-page-plumbing", cleanup: { Instance.terminating() })
         guard Site.devURL == nil else { return print("skipped (dev server)") }
-        /// Release builds drop a precondition's message: say it, then fail.
         func check(_ ok: Bool, _ message: @autoclosure () -> String) {
-            guard !ok else { return }
-            print("page plumbing: FAILED", message())
-            Instance.terminating()
-            exit(EXIT_FAILURE)
+            probe(ok, message())
         }
         let files = FileManager.default
         let root = files.temporaryDirectory.appendingPathComponent("tilr-plumbing-\(UUID().uuidString)")
-        try! files.createDirectory(at: root.appendingPathComponent("dir"), withIntermediateDirectories: true)
+        probe.attempt { try files.createDirectory(at: root.appendingPathComponent("dir"), withIntermediateDirectories: true) }
         defer { try? files.removeItem(at: root) }
         for (name, text) in [("index.html", "<html><body>root</body></html>"), ("dir/index.html", "dir"), ("a.js", "1"), ("b.css", "x{}"),
                              ("c.xml", "<x/>"), ("d.xyz", "?")] {
-            try! text.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            probe.attempt { try text.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8) }
         }
         let tab = Tab(app: Site.App(name: "plumbing-probe", root: root), control: config.control, browser: config.browser,
                       native: config.nativePlugins, sshAgent: config.sshAgent, watchLatency: config.watch.latency,
@@ -627,7 +623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Reloads while the last one still loads its many files: WebKit stops their tasks, which
         // must not be answered after that.
         let assets = (0..<40).map { "<script src=\"/a.js?\($0)\"></script><link rel=stylesheet href=\"/b.css?\($0)\">" }.joined()
-        try! "<html><body>root\(assets)</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        probe.attempt { try "<html><body>root\(assets)</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8) }
         for _ in 0..<3 { tab.reload() }
         await loaded()
         tab.reload()
@@ -721,6 +717,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// with `--snapshot PATH`, saves pictures of the top corners of the page.
     @MainActor
     func probeWeb(_ tab: Tab) async {
+        let probe = ProbeCheck("probe-web", cleanup: { Instance.terminating() })
         probeWindowGeometry()
         let webView = tab.webView
         let args = CommandLine.arguments
@@ -743,7 +740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         print("page:", webView.url?.absoluteString ?? "none")
         if webView.url?.lastPathComponent == "placeholder.html" {
             let welcome = await js("document.querySelector('h1')?.textContent ?? ''")
-            precondition(welcome.contains("Tilr"), "Bundled welcome page failed to load")
+            probe(welcome.contains("Tilr"), "Bundled welcome page failed to load")
             print("bundled welcome page: ok")
             await snapshot("welcome")
             return
@@ -792,12 +789,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             const ok = bytes.length >= 5 && bytes.charCodeAt(4) === 0x0c;
             return 'ready ' + JSON.stringify(r) + ' identities ' + (ok ? 'ok, ' + bytes.length + ' bytes' : 'FAILED ' + JSON.stringify(a));
             """, contentWorld: .page) as? String
-        print("ssh agent:", agent ?? "FAILED js error")
+        probe(agent != nil && agent?.contains("FAILED") == false, "ssh agent: \(agent ?? "js error")")
+        print("ssh agent:", agent ?? "")
     }
 
     /// Observe activation requests without stealing focus from the person running the probe.
     @MainActor
     func probeBackgroundFocus(_ page: Tab) {
+        let probe = ProbeCheck("probe-background-focus", cleanup: { Instance.terminating() })
         let method = class_getInstanceMethod(NSApplication.self, #selector(NSApplication.activate(ignoringOtherApps:)))!
         var activations = 0
         let observe: @convention(block) (NSApplication, Bool) -> Void = { _, _ in activations += 1 }
@@ -811,38 +810,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             imp_removeBlock(replacement)
         }
         focus(page)
-        precondition(activations == 0, "window focus requested application activation")
-        precondition(current === page, "background focus did not select the host")
+        probe(activations == 0, "window focus requested application activation")
+        probe(current === page, "background focus did not select the host")
         print("native windows: background focus preserves application activation")
     }
 
     /// Exercise the same dispatcher used by socket requests against real native windows.
     @MainActor
     func probeShellControl() async {
-        guard let control, let initial = shell, let page = initial.current else { preconditionFailure("no Control host") }
+        let probe = ProbeCheck("probe-shell-control", cleanup: { Instance.terminating() })
+        guard let control, let initial = shell, let page = initial.current else { probe.fail("no Control host") }
         do {
             let count = shells.count
             let rect: [String: Any] = ["x": 90, "y": 120, "width": 540, "height": 380]
             let opened = try await control.run("shell", ["op": "open", "app": page.app.name, "frame": rect])
-            guard let id = opened["host"] as? String, let host = shells.first(where: { $0.hostID.uuidString == id }) else { preconditionFailure("open did not return a host") }
-            precondition(shells.count == count + 1 && host !== initial && host.current !== page)
-            precondition(host.window.frame == NSRect(x: 90, y: 120, width: 540, height: 380))
+            guard let id = opened["host"] as? String, let host = shells.first(where: { $0.hostID.uuidString == id }) else { probe.fail("open did not return a host") }
+            probe(shells.count == count + 1 && host !== initial && host.current !== page)
+            probe(host.window.frame == NSRect(x: 90, y: 120, width: 540, height: 380))
             let listed = try await control.run("shell", ["op": "list"])["windows"] as! [[String: Any]]
-            precondition(listed.count == count + 1)
-            precondition(listed.contains { $0["host"] as? String == id && $0["app"] as? String == page.app.name && $0["space"] is [UInt64] && $0["key"] is Bool && $0["frame"] is [String: Any] })
+            probe(listed.count == count + 1)
+            probe(listed.contains { $0["host"] as? String == id && $0["app"] as? String == page.app.name && $0["space"] is [UInt64] && $0["key"] is Bool && $0["frame"] is [String: Any] })
             _ = try await control.run("shell", ["op": "focus", "host": id])
-            precondition(current === host.current)
+            probe(current === host.current)
             let catalog = try await control.run("apps", [:])["apps"] as! [[String: Any]]
             let ids = catalog.first { $0["name"] as? String == page.app.name }?["hosts"] as! [String]
-            precondition(ids.contains(id) && ids.contains(initial.hostID.uuidString))
+            probe(ids.contains(id) && ids.contains(initial.hostID.uuidString))
             _ = try await control.run("eval", ["host": id, "js": "globalThis.__controlHostProbe = 781"])
             let isolated = try await control.run("eval", ["host": initial.hostID.uuidString, "js": "typeof globalThis.__controlHostProbe"])
-            precondition(isolated["value"] as? String == "undefined")
+            probe(isolated["value"] as? String == "undefined")
             let routed = try await control.run("eval", ["app": page.app.name, "js": "globalThis.__controlHostProbe"])
-            precondition((routed["value"] as? NSNumber)?.intValue == 781)
+            probe((routed["value"] as? NSNumber)?.intValue == 781)
             let before = initial.window.frame
             _ = try await control.run("shell", ["op": "move", "host": id, "frame": ["x": 110, "y": 130, "width": 560, "height": 400]])
-            precondition(host.window.frame == NSRect(x: 110, y: 130, width: 560, height: 400) && initial.window.frame == before)
+            probe(host.window.frame == NSRect(x: 110, y: 130, width: 560, height: 400) && initial.window.frame == before)
             for (cmd, request): (String, [String: Any]) in [
                 ("apps", ["host": "missing"]), ("plugin-manager", ["host": "missing"]),
                 ("eval", ["host": id, "app": "not-this-app", "js": "1"]),
@@ -850,20 +850,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ("shell", ["op": "open", "app": page.app.name, "frame": ["x": 0, "y": 0, "width": -1, "height": 10]]),
                 ("shell", ["op": "move", "host": id, "frame": ["x": true, "y": 0, "width": 10, "height": 10]])
             ] {
-                do { _ = try await control.run(cmd, request); preconditionFailure("invalid request succeeded: \(cmd)") }
-                catch { precondition(!error.localizedDescription.isEmpty) }
+                do { _ = try await control.run(cmd, request); probe.fail("invalid request succeeded: \(cmd)") }
+                catch { probe(!error.localizedDescription.isEmpty) }
             }
-            precondition(shells.count == count + 1)
+            probe(shells.count == count + 1)
             _ = try await control.run("shell", ["op": "close", "host": id])
-            precondition(shells.count == count && shells.contains { $0 === initial })
+            probe(shells.count == count && shells.contains { $0 === initial })
             focus(page)
             print("shell control: open/list/focus/move/close, host isolation, app routing and invalid requests: ok")
-        } catch { preconditionFailure("shell control: \(error)") }
+        } catch { probe.fail("shell control: \(error)") }
     }
 
     /// Read identity from a real main page after event-based navigation completion.
     @MainActor
     func probeHostIdentity(_ host: Shell, primary: Bool, reload: Bool = false) async {
+        let probe = ProbeCheck("probe-host-identity", cleanup: { Instance.terminating() })
         let page = host.current!
         if reload {
             // This later document-start script must already see the native identity.
@@ -873,7 +874,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             page.reload()
         }
         await page.firstLoad(within: config.control.loadTimeout)
-        precondition(page.isLoaded, "host identity probe page failed to load")
+        probe(page.isLoaded, "host identity probe page failed to load")
         let valid = try? await page.webView.evaluateJavaScript("""
             (() => {
               const identity = window.__tilrHost;
@@ -885,36 +886,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 && (\(reload ? "true" : "false") ? window.__tilrHostAtStart === identity : true);
             })()
             """) as? Bool
-        precondition(valid == true, "runtime host identity is missing, mutable or inconsistent")
+        probe(valid == true, "runtime host identity is missing, mutable or inconsistent")
     }
 
     /// Integration probe: real duplicate pages, independent hosts and durable restoration.
     @MainActor
     func probeWindows() async {
-        guard let first = shell, let page = first.current else { preconditionFailure("no initial host") }
+        let probe = ProbeCheck("probe-windows", cleanup: { Instance.terminating() })
+        guard let first = shell, let page = first.current else { probe.fail("no initial host") }
         probeBackgroundFocus(page)
         await probeHostIdentity(first, primary: true)
         await probeHostIdentity(first, primary: true, reload: true)
-        precondition(!page.container.isHidden, "initial host page is hidden")
+        probe(!page.container.isHidden, "initial host page is hidden")
         var screenState = WindowRecord(first)
         screenState.screen = 1
         screenState.frame = WindowRecord.Frame(NSRect(x: 100, y: 100, width: 500, height: 300))
         let left = NSRect(x: 0, y: 0, width: 1024, height: 768)
         let right = NSRect(x: 1024, y: 0, width: 1024, height: 768)
         let moved = screenState.restoredFrame(displays: [(id: 1, frame: right), (id: 2, frame: left)], fallback: left)
-        precondition(right.contains(moved), "rearranged displays lost saved screen identity")
+        probe(right.contains(moved), "rearranged displays lost saved screen identity")
         let fallback = screenState.restoredFrame(displays: [(id: 2, frame: right)], fallback: right)
-        precondition(right.contains(fallback), "disconnected screen produced an unreachable host")
+        probe(right.contains(fallback), "disconnected screen produced an unreachable host")
         let original = shells
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("tilr-windows-\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: url) }
         newWindow()
         let second = shell!
-        precondition(!second.current!.container.isHidden, "new host page is hidden")
-        precondition(second.hostID != first.hostID && second.current !== page)
+        probe(!second.current!.container.isHidden, "new host page is hidden")
+        probe(second.hostID != first.hostID && second.current !== page)
         await probeHostIdentity(second, primary: false)
-        precondition((second.window.tabbedWindows?.count ?? 0) <= 1 && (first.window.tabbedWindows?.count ?? 0) <= 1, "native hosts became tabs")
-        precondition(second.current!.webView.configuration.websiteDataStore === page.webView.configuration.websiteDataStore)
+        probe((second.window.tabbedWindows?.count ?? 0) <= 1 && (first.window.tabbedWindows?.count ?? 0) <= 1, "native hosts became tabs")
+        probe(second.current!.webView.configuration.websiteDataStore === page.webView.configuration.websiteDataStore)
         let firstFrame = first.window.frame
         let firstMode = first.mode
         let firstOnTop = first.onTop
@@ -925,38 +927,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         second.set(.frameless)
         if !second.onTop { second.toggleOnTop() }
         second.toggleAllSpaces()
-        precondition(first.window.frame == firstFrame && first.mode == firstMode && first.onTop == firstOnTop)
-        precondition(second.window.frame == frame && second.mode == .frameless && second.onTop)
+        probe(first.window.frame == firstFrame && first.mode == firstMode && first.onTop == firstOnTop)
+        probe(second.window.frame == frame && second.mode == .frameless && second.onTop)
         focus(second.current!)
-        precondition(current === second.current && windowForApp(page.app.name) === second)
-        precondition(appMenuItems.contains { $0.state == .on && $0.representedObject as? String == page.app.name })
-        precondition(hostMenuItem?.title.contains(second.hostID.uuidString) == true)
+        probe(current === second.current && windowForApp(page.app.name) === second)
+        probe(appMenuItems.contains { $0.state == .on && $0.representedObject as? String == page.app.name })
+        probe(hostMenuItem?.title.contains(second.hostID.uuidString) == true)
         // The palette command uses the same dispatcher as all configured command rows.
-        guard let command = palette.commands.first(where: { $0.action == .newWindow }) else { preconditionFailure("no New Window palette command") }
+        guard let command = palette.commands.first(where: { $0.action == .newWindow }) else { probe.fail("no New Window palette command") }
         palette.run(command)
         let third = shell!
-        precondition(third !== second && third !== first)
+        probe(third !== second && third !== first)
         let state = WindowWorkspace(key: second.hostID, windows: [WindowRecord(second), WindowRecord(third)])
         state.write(to: url)
-        guard let saved = WindowWorkspace.read(from: url), saved.windows.count == 2 else { preconditionFailure("workspace roundtrip") }
+        guard let saved = WindowWorkspace.read(from: url), saved.windows.count == 2 else { probe.fail("workspace roundtrip") }
         await probeWindowAgentClose(second)
-        precondition(shells.contains { $0 === first } && shells.contains { $0 === third })
+        probe(shells.contains { $0 === first } && shells.contains { $0 === third })
         third.window.close()
-        precondition(shells.count == original.count)
+        probe(shells.count == original.count)
         restoreWindows(saved)
         guard let restored = shells.first(where: { $0.hostID == saved.windows[0].host }),
-              let restoredThird = shells.first(where: { $0.hostID == saved.windows[1].host }) else { preconditionFailure("restore window set") }
-        precondition(shells.count == original.count + 2 && shell === restored)
-        precondition(restored.window.frame == frame && restored.mode == .frameless && restored.onTop && restored.allSpaces)
-        precondition(!restored.current!.container.isHidden, "restored host page is hidden")
-        precondition(restored.current !== page && restored.current!.webView !== page.webView)
-        precondition(restoredThird.current !== restored.current)
+              let restoredThird = shells.first(where: { $0.hostID == saved.windows[1].host }) else { probe.fail("restore window set") }
+        probe(shells.count == original.count + 2 && shell === restored)
+        probe(restored.window.frame == frame && restored.mode == .frameless && restored.onTop && restored.allSpaces)
+        probe(!restored.current!.container.isHidden, "restored host page is hidden")
+        probe(restored.current !== page && restored.current!.webView !== page.webView)
+        probe(restoredThird.current !== restored.current)
         await probeHostIdentity(restored, primary: false)
         await probeHostIdentity(restoredThird, primary: false)
         let storedMode = config.window.mode
         config.window.mode = .fullscreen
         syncTabs()
-        precondition(restored.mode == .frameless && restored.window.frame == frame, "config reset a live host")
+        probe(restored.mode == .frameless && restored.window.frame == frame, "config reset a live host")
         config.window.mode = storedMode
         restored.window.close()
         restoredThird.window.close()
@@ -965,7 +967,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let count = shells.count
             let opened = windowForApp(other.name)!
             focus(opened.current!)
-            precondition(current?.app.name == other.name && windowForApp(other.name) === opened)
+            probe(current?.app.name == other.name && windowForApp(other.name) === opened)
             if shells.count > count { opened.window.close() }
             focus(page)
         }
@@ -975,17 +977,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Exercise the native-fullscreen delegate contract without depending on desktop activation.
     @MainActor
     func probeNativeFullscreen(_ host: Shell, desktop: NSRect) async {
+        let probe = ProbeCheck("probe-native-fullscreen", cleanup: { Instance.terminating() })
         host.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: host.window))
         host.window.setFrame((host.window.screen ?? NSScreen.main!).frame, display: true)
         host.windowDidEnterFullScreen(Notification(name: NSWindow.didEnterFullScreenNotification, object: host.window))
         let state = WindowRecord(host)
-        precondition(state.mode == .fullscreen && state.frame.rect == desktop, "native fullscreen lost presentation or desktop frame")
+        probe(state.mode == .fullscreen && state.frame.rect == desktop, "native fullscreen lost presentation or desktop frame")
         host.window.setFrame(desktop, display: true)
         host.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: host.window))
         let restored = openWindow(host.current!.app, state: state)
-        precondition(restored.mode == .fullscreen && restored.savedFrame == desktop)
+        probe(restored.mode == .fullscreen && restored.savedFrame == desktop)
         restored.set(.window)
-        precondition(restored.window.frame == desktop, "restored fullscreen lost desktop geometry")
+        probe(restored.window.frame == desktop, "restored fullscreen lost desktop geometry")
         restored.window.close()
         focus(host.current!)
     }
@@ -993,9 +996,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A real stream must release its socket when its host closes, while other hosts survive.
     @MainActor
     func probeWindowAgentClose(_ host: Shell) async {
+        let probe = ProbeCheck("probe-window-agent-close", cleanup: { Instance.terminating() })
         let path = "/tmp/tilr-agent-\(UUID().uuidString).sock"
         let listener = socket(AF_UNIX, SOCK_STREAM, 0)
-        precondition(listener >= 0)
+        probe(listener >= 0)
         defer { Darwin.close(listener); unlink(path) }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -1008,43 +1012,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        precondition(bound == 0 && listen(listener, 1) == 0)
+        probe(bound == 0 && listen(listener, 1) == 0)
         let agent = host.current!.agent
         agent.settings.socket = path
         await withCheckedContinuation { (ready: CheckedContinuation<Void, Never>) in
             agent.send = { detail in
                 guard detail["id"] as? String == "window-close" else { return }
-                precondition(detail["type"] as? String == "open", "agent fixture did not connect")
+                probe(detail["type"] as? String == "open", "agent fixture did not connect")
                 ready.resume()
             }
             agent.handle(["op": "open", "id": "window-close"])
         }
         let peer = accept(listener, nil, nil)
-        precondition(peer >= 0 && agent.connectionCount == 1)
+        probe(peer >= 0 && agent.connectionCount == 1)
         defer { Darwin.close(peer) }
         host.window.close()
-        precondition(agent.connectionCount == 0, "closed host retained agent connections")
+        probe(agent.connectionCount == 0, "closed host retained agent connections")
         let eof = await withCheckedContinuation { (closed: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global().async {
                 var byte: UInt8 = 0
                 closed.resume(returning: Darwin.read(peer, &byte, 1) == 0)
             }
         }
-        precondition(eof, "closed host retained its agent socket")
+        probe(eof, "closed host retained its agent socket")
     }
 
     /// Regression checks for desktop geometry and the frameless drag / resize boundary.
     func probeWindowGeometry() {
+        let probe = ProbeCheck("probe-window-geometry", cleanup: { Instance.terminating() })
         let originalMode = shell.mode
-        /// Release builds drop a precondition's message: say it with the numbers, then fail.
         func check(_ ok: Bool, _ step: String, _ expected: NSRect? = nil) {
             guard !ok else { return }
             let screen = NSScreen.main
-            print("window geometry: FAILED \(step): expected \(expected.map { "\($0)" } ?? "-") actual \(shell.window.frame)",
-                  "screen \(screen.map { "\($0.frame)" } ?? "none") visible \(screen.map { "\($0.visibleFrame)" } ?? "none")",
-                  "fullScreen \(shell.window.styleMask.contains(.fullScreen)) mode \(shell.mode)")
-            Instance.terminating()
-            exit(EXIT_FAILURE)
+            probe.fail("\(step): expected \(expected.map { "\($0)" } ?? "-") actual \(shell.window.frame) " +
+                       "screen \(screen.map { "\($0.frame)" } ?? "none") visible \(screen.map { "\($0.visibleFrame)" } ?? "none") " +
+                       "fullScreen \(shell.window.styleMask.contains(.fullScreen)) mode \(shell.mode)")
         }
         /// A mode switch changes the content view's frame: the current page follows it.
         func set(_ mode: Mode) {
@@ -1095,6 +1097,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `--probe`, window part: reports the fullscreen frame and whether a Space move sticks, then quits.
     @MainActor
     func probeSpaces() async {
+        let probe = ProbeCheck("probe-spaces", cleanup: { Instance.terminating() })
         let window = shell.window
         guard Spaces.available, Spaces.moveBackend != "unavailable" else {
             print("space move: unavailable")
@@ -1104,10 +1107,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let (all, index) = shell.desktops()
         print("Spaces probe bundle:", Bundle.main.bundleIdentifier ?? "none", "Dock All Desktops:", Shell.assignedToAllDesktops)
         guard Spaces.of(window).count == 1 else {
-            print("space move: FAILED precondition: window belongs to multiple/no desktops; use ./run.sh --test --probe to isolate Dock assignment")
             control?.stop()
-            Instance.terminating()
-            exit(EXIT_FAILURE)
+            probe.fail("window belongs to multiple/no desktops; use ./run.sh --test --probe to isolate Dock assignment")
         }
         print("screen frame:", (window.screen ?? NSScreen.main!).frame)
         print("window frame:", window.frame)
@@ -1127,13 +1128,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("\(label): ok ->", Spaces.of(window))
             } catch {
                 failures.append(error.localizedDescription)
-                print("\(label): FAILED:", error.localizedDescription)
             }
         }
         if !failures.isEmpty {
             control?.stop()
-            Instance.terminating()
-            exit(EXIT_FAILURE)
+            probe.fail(failures.joined(separator: "; "))
         }
         NSApp.terminate(nil)
     }

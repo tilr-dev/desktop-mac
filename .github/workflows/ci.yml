@@ -163,7 +163,7 @@ jobs:
 
       - name: Server protocol integration tests
         run: |
-          swiftc Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
+          swiftc Sources/Tilr/ServerInstallation.swift scripts/TestSupport.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
           "$RUNNER_TEMP/test-server-installation"
 
       - name: App update preference integration tests

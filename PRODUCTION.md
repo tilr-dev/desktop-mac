@@ -118,8 +118,9 @@ Secrets (Settings → Environments), provisioned by Dan:
 `fetch_server.py` resolves the latest stable tilrd GitHub Release (release
 candidates are prereleases and are skipped) and reads `PROTOCOL_VERSION` from its
 released `tilr-proto` source. A protocol other than `TilrServerProtocolVersion` in
-`Info.plist` stops the release: the application must be updated for the new
-protocol first. The selected version and protocol are recorded in
+`Info.plist` stops the application release: update `TilrServerProtocolVersion`
+to match the released server protocol before packaging the app. The selected
+version and protocol are recorded in
 `build/server-releases/selected.json`, so both architectures bundle the same release.
 
 The bundled pair is only an offline starting point. Tilr installs it when no tilrd
@@ -127,6 +128,16 @@ is installed and at every launch, including the first launch after a Sparkle
 update, runs the installed `tilrd update` using the channel in `server.toml`. A new
 tilrd release therefore reaches users without a Tilr release, and no pin update or
 bot pull request exists. PR CI does not acquire the server.
+
+When changing the server protocol from N-1 to N, first release stable tilrd N
+that also accepts clients using protocol N-1, exactly one previous protocol
+version. Do not bump tilrd's `PROTOCOL_VERSION` until that N-1 support is in place.
+Then build and release Tilr.app with `TilrServerProtocolVersion` N against that
+stable tilrd N. Tilr silently runs `tilrd update` at launch, and the server protocol
+is only known after installation (the CDN manifest does not include it). The N-1
+support keeps installed apps working when they update tilrd before updating
+Tilr.app. This is a release prerequisite for a future protocol bump; it does not
+describe backward compatibility already implemented in tilrd.
 
 Desktop release tools do not publish server feeds or server update binaries.
 Installed apps delegate server updates to `tilrd update`.
@@ -308,7 +319,7 @@ manage the production service.
 
 ```sh
 python3 -m unittest discover -s scripts -p 'test_*.py'
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/TestSupport.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
 /tmp/tilrd-installation-tests
 ```
 

@@ -6,9 +6,10 @@ extension AppDelegate {
     /// deterministically; no clock delay or animation settling is used as synchronization.
     @MainActor
     func probeHandoff() async {
-        guard let first = shells.first, let source = first.current else { preconditionFailure("handoff: no source") }
+        let probe = ProbeCheck("probe-handoff", cleanup: { Instance.terminating() })
+        guard let first = shells.first, let source = first.current else { probe.fail("handoff: no source") }
         let second = openWindow(source.app)
-        guard let target = second.current else { preconditionFailure("handoff: no target") }
+        guard let target = second.current else { probe.fail("handoff: no target") }
         defer { if shells.contains(where: { $0 === second }) { second.window.close() } }
         func js(_ tab: Tab, _ body: String, _ args: [String: Any] = [:]) async throws -> Any {
             try await withCheckedThrowingContinuation { continuation in
@@ -51,7 +52,7 @@ extension AppDelegate {
                 const list = await webkit.messageHandlers.tilrHandoff.postMessage({op:'shell.list'});
                 return list.windows.some(row => row.host === to) && list.windows.some(row => row.host === window.__tilrHost.host);
                 """, ["to": second.hostID.uuidString]) as? Bool
-            precondition(listed == true, "handoff picker could not list native hosts through Control socket")
+            probe(listed == true, "handoff picker could not list native hosts through Control socket")
             for tab in [source, target] {
                 _ = try await js(tab, """
                     window.tilr.root.get('windows').register('handoff-probe', {
@@ -65,7 +66,7 @@ extension AppDelegate {
                     """)
             }
             guard let id = try await js(source, "return window.tilr.root.get('layout').open({type:'handoff-probe',config:{content:'portable content',pane:'stable-session'}})") as? String else {
-                preconditionFailure("handoff: no probe id")
+                probe.fail("handoff: no probe id")
             }
             _ = try await js(source, "return await window.tilr.root.get('layout').handoff(id, to)", ["id": id, "to": second.hostID.uuidString])
             let gone = try await js(source, "return !window.tilr.root.get('layout').get(id)", ["id": id]) as? Bool
@@ -73,13 +74,13 @@ extension AppDelegate {
                 const row = window.tilr.root.get('layout').get(id);
                 return row?.id === id && row.config.content === 'portable content' && row.config.pane === 'stable-session';
                 """, ["id": id]) as? Bool
-            precondition(gone == true && restored == true, "handoff did not preserve identity and content")
+            probe(gone == true && restored == true, "handoff did not preserve identity and content")
             _ = try await js(target, "return await window.tilr.root.get('layout').handoff(id, to)", ["id": id, "to": first.hostID.uuidString])
             let invalid = try await js(source, """
                 try { await window.tilr.root.get('layout').handoff(id, 'missing'); return false; }
                 catch { return !!window.tilr.root.get('layout').get(id); }
                 """, ["id": id]) as? Bool
-            precondition(invalid == true, "invalid handoff lost source")
+            probe(invalid == true, "invalid handoff lost source")
 
             // Exercise the drag ticket through the real native relay, with only WebKit's text fallback.
             let dragText = try await js(source, """
@@ -97,7 +98,7 @@ extension AppDelegate {
                 await webkit.messageHandlers.tilrHandoff.postMessage({op:'shell.list'});
                 return dataTransfer.getData('text/plain');
                 """, ["id": id]) as? String
-            guard let dragText, dragText.hasPrefix("tilr-window:") else { preconditionFailure("drag did not encode a ticket") }
+            guard let dragText, dragText.hasPrefix("tilr-window:") else { probe.fail("drag did not encode a ticket") }
             _ = try await js(target, """
                 const canvas = document.querySelector('.tilr-canvas'); const box = canvas.getBoundingClientRect();
                 const dataTransfer = new DataTransfer(); dataTransfer.setData('text/plain', text);
@@ -114,7 +115,7 @@ extension AppDelegate {
                   observer.observe(document.body, {subtree:true, childList:true, attributes:true});
                 });
                 """, ["id": id]) as? Bool
-            precondition(dragGone == true && positioned == true, "drag handoff lost source or drop coordinates")
+            probe(dragGone == true && positioned == true, "drag handoff lost source or drop coordinates")
             _ = try await js(target, "return await window.tilr.root.get('layout').handoff(id, to)", ["id": id, "to": first.hostID.uuidString])
 
             for closes in [false, true] {
@@ -139,24 +140,24 @@ extension AppDelegate {
                         """, ["id": id, "to": second.hostID.uuidString])
                 }
                 guard let ticket = try await js(target, "return await window.__handoffSeen") as? String else {
-                    preconditionFailure("handoff: target never received offer")
+                    probe.fail("handoff: target never received offer")
                 }
                 if closes { second.window.close() }
                 else { handoffs.cancel(ticket, reason: "Handoff timed out") }
                 let failure = try await moving.value as? String
-                precondition(failure?.contains(closes ? "closed" : "timed out") == true, "handoff cancellation did not reject")
+                probe(failure?.contains(closes ? "closed" : "timed out") == true, "handoff cancellation did not reject")
                 let alive = try await js(source, "return !!window.tilr.root.get('layout').get(id)", ["id": id]) as? Bool
-                precondition(alive == true, "handoff rollback lost source")
+                probe(alive == true, "handoff rollback lost source")
                 if !closes {
                     let cleaned = try await js(target, "return !window.tilr.root.get('layout').get(id)", ["id": id]) as? Bool
                     let late = try await js(target, """
                         try { await window.__handoffPost(window.__handoffHeld); return false; } catch { return true; }
                         """) as? Bool
-                    precondition(cleaned == true && late == true, "handoff kept provisional window or accepted late ack")
+                    probe(cleaned == true && late == true, "handoff kept provisional window or accepted late ack")
                 }
             }
             _ = try await js(source, "window.tilr.root.get('layout').close(id); return true", ["id": id])
             print("layout handoff: real-page move, drag text fallback/position, identity/content, invalid host, expiration, late ack and closed target: ok")
-        } catch { preconditionFailure("layout handoff probe: \(error)") }
+        } catch { probe.fail("layout handoff probe: \(error)") }
     }
 }
