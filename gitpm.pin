@@ -1,4 +1,4 @@
 # The gitpm (github.com/tilr-dev/gitpm) release CI and releases install:
 # release tag, full commit SHA, and SHA-256 of the universal Apple archive.
 # Local source builds use ../git/gitpm (or GITPM_DIR); isolated checks use the commit.
-v0.6.0 498f79ecfc31140f2f0399950d7e47a92b2e8d07 06d94b98c7b5670fb1bbc524901944ddabe832cd383e9d07044e5f3b4a58b108
+v0.6.1-rc.1 b73f184fe693e91cea05ae7213eacdf19209b124 4563577e293032c33badb76bd14d05d2ef698eb23293f3c87cde8d7924089c8a

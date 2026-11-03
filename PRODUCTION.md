@@ -63,9 +63,9 @@ at build time, whose protocol must equal `TilrServerProtocolVersion` in `Info.pl
    that its GitHub Release is a published prerelease for RC or a regular release
    for stable, and that it has no assets. `ci_release.py publish` validates both
    completed receipts, manifest-selected DMG paths and SHA-256 values, channel,
-   public key and matching plugin inventories before any CDN writes. For stable it rechecks
-   that the build exceeds all published stable and beta builds; beta retains verified
-   partial-publication resume. It prepares both
+   public key and matching plugin inventories before any CDN writes. Stable and beta
+   support verified partial-publication resume with the same build and identical bytes.
+   It prepares both
    feeds, then uses the existing immutable publisher with appcast last and public
    feed readback. The same app artifacts go to beta for RC or stable for a pushed
    stable tag, without an approval prompt. No delta patches: the runner has no DMG history.
@@ -73,14 +73,21 @@ at build time, whose protocol must equal `TilrServerProtocolVersion` in `Info.pl
    `ci_release.py github` validates both manifests again and attaches their unchanged
    DMGs. The title becomes `Tilr X.Y.Z-rc.N (<build>)` for RC or
    `Tilr X.Y.Z (<build>)` for stable; the body, tag and prerelease status remain
-   unchanged. Existing stable assets or a build not newer than a stable feed stop
+   unchanged. Existing release assets, a newer published build or conflicting bytes stop
    before CDN uploads, feed changes or GitHub Release changes.
    Only this job has `contents: write` on `GITHUB_TOKEN`; the shared workflow uses
    a GitHub App token for candidate tags and GitHub Releases. No publication step creates or
    moves an existing tag, deletes a release, or replaces existing assets.
    If publication fails partway through, completed CDN uploads or GitHub assets
-   remain published. Inspect the failure before releasing again; a new fix push
-   produces a fresh candidate and build instead of overwriting published files.
+   remain published. For partial stable publication with no GitHub DMGs attached,
+   use **Re-run failed jobs** to repeat the `publish` job with the same build and
+   artifact bytes; no new patch release is needed. This completes missing CDN/feed
+   publication and attaches both DMGs while preserving matching published files.
+   A failure after one GitHub DMG was attached still stops on existing assets.
+   **Re-run all jobs** on the tag reruns `app`, allocating the highest currently
+   published build across stable and beta plus one and rebuilding, signing and
+   notarizing fresh artifacts. After partial CDN publication this produces N+1,
+   rather than completing build N; existing GitHub assets still stop publication.
 
 `scripts/ci-apple-keychain.sh` imports the Apple keys into a temporary keychain (notarytool
 profile `tilr-ci` from an App Store Connect API key) and removes it at the end of the job.
@@ -111,8 +118,9 @@ Secrets (Settings → Environments), provisioned by Dan:
 `fetch_server.py` resolves the latest stable tilrd GitHub Release (release
 candidates are prereleases and are skipped) and reads `PROTOCOL_VERSION` from its
 released `tilr-proto` source. A protocol other than `TilrServerProtocolVersion` in
-`Info.plist` stops the release: the application must be updated for the new
-protocol first. The selected version and protocol are recorded in
+`Info.plist` stops the application release: update `TilrServerProtocolVersion`
+to match the released server protocol before packaging the app. The selected
+version and protocol are recorded in
 `build/server-releases/selected.json`, so both architectures bundle the same release.
 
 The bundled pair is only an offline starting point. Tilr installs it when no tilrd
@@ -120,6 +128,16 @@ is installed and at every launch, including the first launch after a Sparkle
 update, runs the installed `tilrd update` using the channel in `server.toml`. A new
 tilrd release therefore reaches users without a Tilr release, and no pin update or
 bot pull request exists. PR CI does not acquire the server.
+
+When changing the server protocol from N-1 to N, first release stable tilrd N
+that also accepts clients using protocol N-1, exactly one previous protocol
+version. Do not bump tilrd's `PROTOCOL_VERSION` until that N-1 support is in place.
+Then build and release Tilr.app with `TilrServerProtocolVersion` N against that
+stable tilrd N. Tilr silently runs `tilrd update` at launch, and the server protocol
+is only known after installation (the CDN manifest does not include it). The N-1
+support keeps installed apps working when they update tilrd before updating
+Tilr.app. This is a release prerequisite for a future protocol bump; it does not
+describe backward compatibility already implemented in tilrd.
 
 Desktop release tools do not publish server feeds or server update binaries.
 Installed apps delegate server updates to `tilrd update`.
@@ -280,12 +298,17 @@ staged binaries. Closing Tilr leaves terminal sessions running.
 ### Removal
 
 `local_server.enabled: false` disables application integration and leaves the
-shared daemon running. Remove Local Server is available only for a daemon whose
-path matches the application installation marker. It delegates startup removal
-to `tilr service uninstall`, removes the installed pair and marker, and preserves
-default daemon state, token and logs. The ordinary service command leaves the
-running daemon and panes until it exits; launchd forgets its definition at login.
-A pre-existing installation is left untouched.
+shared daemon running. Remove Local Server asks **Remove the local server?**
+for an application-installed pair with a matching installation marker. **Cancel**
+leaves the installation unchanged; **Remove** delegates startup removal to
+`tilr service uninstall`, removes the installed pair and marker, and preserves
+default daemon state, token and logs. The dialog explains that the running daemon
+remains until it exits and state, token and logs are kept. For an independently
+installed daemon, **Remove tilrd?** asks for consent: **No** keeps the installation
+unchanged; **Yes** removes its startup registration and selected executable,
+keeping independently installed terminal clients. Removing startup registration
+leaves the running daemon and panes until it exits; launchd forgets its definition
+at login.
 
 The server plugin receives credentials only through its trusted top-level
 `tilr://` bridge; remote profiles/defaults are preserved. External site folders
@@ -296,7 +319,7 @@ manage the production service.
 
 ```sh
 python3 -m unittest discover -s scripts -p 'test_*.py'
-swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
+swiftc -module-cache-path .build/ModuleCache Sources/Tilr/ServerInstallation.swift scripts/TestSupport.swift scripts/test_server_installation.swift -o /tmp/tilrd-installation-tests
 /tmp/tilrd-installation-tests
 ```
 

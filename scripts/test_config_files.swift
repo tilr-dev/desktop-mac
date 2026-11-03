@@ -7,8 +7,8 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: root) }
         let files = ConfigFiles(directory: root)
         func rejects(_ action: () throws -> Void) {
-            do { try action(); fatalError("Expected config file rejection") }
-            catch { precondition(!error.localizedDescription.isEmpty) }
+            do { try action(); fail("Expected config file rejection") }
+            catch { expect(!error.localizedDescription.isEmpty) }
         }
         for name in ["", ".", "..", "../x", "x/y", "x\\y", "x..y", "x\0y"] {
             rejects { try ConfigFiles.validate(name) }
@@ -19,15 +19,15 @@ import Foundation
         for name in ["config.yml", "default.yml", "CONFIG.YML", "Default.yml"] {
             try ConfigFiles.validate(name)
             rejects { try files.write(name, text: "forbidden") }
-            precondition(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
+            expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
         }
-        let missing = try files.read("missing.yml"); precondition(missing == nil)
+        let missing = try files.read("missing.yml"); expect(missing == nil)
         try files.write("test.yml", text: "a: 1")
-        let first = try files.read("test.yml"); precondition(first == "a: 1")
+        let first = try files.read("test.yml"); expect(first == "a: 1")
         try files.write("test.yml", text: "Unicode: 日本語\n")
-        let second = try files.read("test.yml"); precondition(second == "Unicode: 日本語\n")
+        let second = try files.read("test.yml"); expect(second == "Unicode: 日本語\n")
         try "settings".write(to: root.appendingPathComponent("config.yml"), atomically: true, encoding: .utf8)
-        let settings = try files.read("config.yml"); precondition(settings == "settings")
+        let settings = try files.read("config.yml"); expect(settings == "settings")
         let nested = root.appendingPathComponent("nested")
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false)
         rejects { _ = try files.read("nested") }
@@ -45,7 +45,7 @@ import Foundation
                                        root.appendingPathComponent("deleted.yml").path,
                                        root.appendingPathComponent("unreadable..yml").path,
                                        nested.path, nested.appendingPathComponent("child.yml").path])
-        precondition(names == ["deleted.yml", "test.yml", "unreadable..yml"])
+        expect(names == ["deleted.yml", "test.yml", "unreadable..yml"])
         print("config file validation and IO tests passed")
     }
 }

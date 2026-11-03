@@ -59,13 +59,13 @@ final class Page: NSObject, WKURLSchemeHandler, WKNavigationDelegate {
             const path = await config.postMessage({op:'read', name:'../x'}).then(() => '', e => String(e));
             return {ok:write.ok, read, missing:missing === null, denied, path};
             """) as! [String: Any]
-        precondition(result["ok"] as? Bool == true)
-        precondition(result["read"] as? String == "a: 1")
-        precondition(result["missing"] as? Bool == true)
-        precondition((result["denied"] as? String)?.contains("read-only") == true)
-        precondition((result["path"] as? String)?.contains("filename") == true)
+        expect(result["ok"] as? Bool == true)
+        expect(result["read"] as? String == "a: 1")
+        expect(result["missing"] as? Bool == true)
+        expect((result["denied"] as? String)?.contains("read-only") == true)
+        expect((result["path"] as? String)?.contains("filename") == true)
         let text = try String(contentsOf: root.appendingPathComponent("test.yml"), encoding: .utf8)
-        precondition(text == "a: 1")
+        expect(text == "a: 1")
         let subframe = try await evaluate(view, """
             return await new Promise(resolve => {
                 window.addEventListener('message', event => resolve(event.data), {once:true});
@@ -74,7 +74,7 @@ final class Page: NSObject, WKURLSchemeHandler, WKNavigationDelegate {
                 document.body.appendChild(frame);
             });
             """) as? String
-        precondition(subframe?.contains("restricted") == true)
+        expect(subframe?.contains("restricted") == true)
         let watchStarted = Date()
         var watcher: FolderWatcher?
         await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
@@ -87,13 +87,13 @@ final class Page: NSObject, WKURLSchemeHandler, WKNavigationDelegate {
             // Register first, then drive a real editor-style atomic save, waiting on its event.
             try! "external".write(to: root.appendingPathComponent("external.yml"), atomically: true, encoding: .utf8)
         }
-        precondition(Date().timeIntervalSince(watchStarted) < 1, "Default config watch must report within one second")
+        expect(Date().timeIntervalSince(watchStarted) < 1, "Default config watch must report within one second")
         // The same handler remains installed on a different top-level origin.
         await page.load(view, url: URL(string: "tilr://foreign")!)
         let error = try await evaluate(view, """
             return await webkit.messageHandlers.tilrConfig.postMessage({op:'read',name:'test.yml'}).then(() => '', e => String(e));
             """) as? String
-        precondition(error?.contains("restricted") == true)
+        expect(error?.contains("restricted") == true)
         withExtendedLifetime(tab) {}
         configuration.userContentController.removeScriptMessageHandler(forName: ConfigBridge.name, contentWorld: .page)
         print("trusted config WebKit bridge tests passed")

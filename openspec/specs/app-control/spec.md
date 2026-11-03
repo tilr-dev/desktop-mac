@@ -33,19 +33,31 @@ Tilr SHALL capture console output only when `control.console_capture` is enabled
 - **AND** console reads return time/type/text entries oldest first and optionally clear them after retrieval
 
 ### Requirement: Plugin manager control and Git errors
-Tilr SHALL statically link the gitpm UniFFI library, support asynchronous service calls with structured `kind`/`message` errors, and provide read-only plugin-manager status through Control without a plugin-manager UI or page bridge.
+Tilr SHALL statically link the gitpm UniFFI library, support asynchronous service calls with structured `kind`/`message` errors, and expose every gitpm FFI command through Control on the configured plugin workspace, without a plugin-manager UI or page bridge. The existing `plugin-manager` status request SHALL remain read-only.
 
 #### Scenario: Manage web plugins
 - **WHEN** plugin-manager configuration reloads
 - **THEN** the manager uses the configured workspace (default `<config>/plugins`) and catalog (default `https://pkg.tilr.dev`)
 - **AND** a status read does not open or create a workspace or acquire a mutation lock
-- **AND** install/update/rollback/restore/fork/auth operations requiring Git run preflight and return a `git` error with Command Line Tools guidance if Git is unavailable, without a system stub installation popup
+- **AND** operations requiring Git, including install/update/rollback/restore/fork/auth and author repository inspection/editing, run preflight and return a `git` error with Command Line Tools guidance if Git is unavailable, without a system stub installation popup
 
 #### Scenario: Migrate legacy plugin distribution at launch
 - **WHEN** the application starts with installed plugins in its configured workspace
 - **THEN** it invokes gitpm syncDist once so dist contains only active plugins, including migration from workspaces written by gitpm 0.4 or earlier
 - **AND** the outcome is logged, synchronization failure does not abort launch, repeating the migration is safe, and unmanaged files remain untouched
 - **AND** missing or empty workspaces are read without creating them, and probes exercise temporary workspaces instead of migrating the configured one
+
+#### Scenario: Invoke embedded gitpm through Control
+- **WHEN** a client sends `cmd: "gitpm"` with a command name and JSON arguments
+- **THEN** the app executes that command through its embedded pinned gitpm library; workspace operations use the plugin-manager workspace and returns its JSON result with the request identifier
+- **AND** all commands use the same service queue as existing plugin-manager operations, so mutations cannot race with them
+- **AND** every FFI command is available, including workspace initialization, commit, remote configuration and catalog operations
+- **AND** callers cannot redirect a workspace operation to another workspace; author operations accept the FFI directory argument for their source repository
+
+#### Scenario: Report gitpm command errors
+- **WHEN** a gitpm command fails
+- **THEN** Control returns a structured JSON error containing its gitpm code, kind and message
+- **AND** unknown commands and invalid arguments return clear errors before mutation
 
 ### Requirement: SSH agent forwarding bridge
 Tilr SHALL provide page-owned SSH agent streams through `tilrAgent`, forwarding agent requests rather than storing private keys.
@@ -93,3 +105,29 @@ Control SHALL provide `shell` operations list, open, close, focus and move for n
 - **THEN** the existing window is closed, focused without activating the application, or placed at the required frame; other hosts are unaffected
 - **AND** missing or invalid arguments return errors without creating or modifying a window
 - **AND** moving a native fullscreen window reports that it must leave fullscreen first; moving a screen-filling desktop window switches it to window mode
+
+### Requirement: Native layout handoff relay
+The shell SHALL relay revisioned one-use handoff offers between trusted loaded pages of the same application, bind acknowledgements to the target page, commit successful transfers and cancel on error, expiration or page departure. The bridge SHALL expose only Control socket `shell list` for choosing a target.
+
+#### Scenario: Real-page transfer
+- **WHEN** a trusted page sends `handoff.offer {ticket, payload, targetHost}` and the target restores `handoff.accept {ticket, payload}` and acknowledges it
+- **THEN** the source receives `handoff.commit {ticket}` and the target retains the restored window
+
+#### Scenario: Probe waits for runtime initialization
+- **WHEN** either page finishes navigation before its asynchronous runtime boot completes
+- **THEN** the handoff probe waits for runtime publication and the layout service on both pages before moving a window
+- **AND** a navigation failure or readiness deadline fails the probe explicitly instead of continuing with an unready page
+- **AND** the standalone handoff probe uses a composed runtime site; the general native GUI probe remains usable with the legacy site
+
+#### Scenario: Page disappears
+- **WHEN** the target closes or navigates before acknowledgement
+- **THEN** the relay sends `handoff.cancel` to surviving pages, rejects the initiating call and rejects late acknowledgements
+
+#### Scenario: Untrusted origin or other application
+- **WHEN** an embedded page, foreign origin or another application's host attempts a transfer
+- **THEN** the relay rejects it without dispatching the payload
+
+#### Scenario: Commit completion lease
+- **WHEN** both commit event callbacks finish but the source has not confirmed its shared-store decision with `handoff.finalized`
+- **THEN** the relay retains the pending lease and cancels provisional windows on page departure or expiration
+- **AND** it never replies to an already resolved offer a second time

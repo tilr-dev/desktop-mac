@@ -19,9 +19,13 @@ final class Tab {
 }
 
 @main struct LocalServerLifecycleTests {
-    @MainActor static func main() async throws {
+    @MainActor static func main() async {
+        do { try await run() } catch { fail("Unexpected error: \(error)") }
+    }
+
+    @MainActor static func run() async throws {
+        _ = NSApplication.shared
         let fm = FileManager.default
-        func expect(_ condition: Bool, line: UInt = #line) { precondition(condition, "line \(line)") }
         let state = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TILR_HOST_FIXTURE"]!)
         func write(_ name: String, _ text: String) throws {
             try Data(text.utf8).write(to: state.appendingPathComponent(name))
@@ -61,13 +65,30 @@ final class Tab {
         try write("token", "shared-token\n")
         let (home, daemon) = try makeHome("ordinary")
         var notices: [String] = []
+        var removalAnswer = NSApplication.ModalResponse.alertFirstButtonReturn
+        var removalQuestions = 0
+        var removalFinished: CheckedContinuation<Void, Never>?
         let host = LocalServerHost(homeDirectory: home, receiveNotice: {
-            precondition(Thread.isMainThread, "Local Server notices must run on the main thread")
+            expect(Thread.isMainThread, "Local Server notices must run on the main thread")
             notices.append($0)
+        }, runAlert: { alert in
+            expect(Thread.isMainThread)
+            if alert.messageText == "Remove the local server?" {
+                removalQuestions += 1
+                expect(alert.buttons.map(\.title) == ["Cancel", "Remove"])
+                expect(alert.buttons[1].hasDestructiveAction)
+                expect(alert.informativeText.contains("until it exits"))
+                expect(alert.informativeText.contains("state, token and logs"))
+                return removalAnswer
+            }
+            expect(alert.messageText == "Local Tilr Server: Not installed")
+            removalFinished?.resume()
+            removalFinished = nil
+            return .alertFirstButtonReturn
         }, resolveRunningExecutable: { daemon })
         var reconnects = 0
         host.didUpdate = {
-            precondition(Thread.isMainThread, "Local Server UI updates must run on the main thread")
+            expect(Thread.isMainThread, "Local Server UI updates must run on the main thread")
             reconnects += 1
         }
         let preferences = UserDefaults(suiteName: "dev.tilr.host-fixture.\(UUID().uuidString)")!
@@ -146,7 +167,7 @@ final class Tab {
         oldHost.start(settings: settings, origins: ["tilr://app"], allowed: true)
         do {
             _ = try await credentials(oldHost)
-            fatalError("Expected incompatible protocol")
+            fail("Expected incompatible protocol")
         } catch {
             expect(error.localizedDescription.contains("tilrd speaks protocol 0 and this Tilr supports protocol 1: update tilrd in Local Server."))
         }
@@ -167,7 +188,7 @@ final class Tab {
         newerHost.start(settings: settings, origins: ["tilr://app"], allowed: true)
         do {
             _ = try await credentials(newerHost)
-            fatalError("Expected a newer protocol")
+            fail("Expected a newer protocol")
         } catch {
             expect(error.localizedDescription.contains("tilrd speaks protocol 2 and this Tilr supports protocol 1: update Tilr."))
         }
@@ -189,12 +210,47 @@ final class Tab {
         expect(upgradeNotices.last?.contains("tilrd speaks protocol 2 and this Tilr supports protocol 1: update Tilr.") == true)
         do {
             _ = try await credentials(upgradeHost)
-            fatalError("Expected a newer protocol after the launch update")
+            fail("Expected a newer protocol after the launch update")
         } catch {
             expect(error.localizedDescription.contains("update Tilr."))
         }
         try fm.removeItem(at: state.appendingPathComponent("upgrade-protocol"))
         try fm.removeItem(at: state.appendingPathComponent("newer"))
         print("local server daemon updates and protocol recovery passed")
+
+        // The matching marker must not bypass the Local Server confirmation.
+        let bin = daemon.deletingLastPathComponent()
+        let marker = bin.appendingPathComponent(".tilr-app-installed")
+        try Data(daemon.path.utf8).write(to: marker)
+        let cli = bin.appendingPathComponent("tilr")
+        try fm.copyItem(at: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/tilr"), to: cli)
+        try write("registered", "registered")
+        let snapshot = try [daemon, cli, marker, state.appendingPathComponent("registered"),
+                            state.appendingPathComponent("running"), state.appendingPathComponent("token")]
+            .map { ($0, try Data(contentsOf: $0)) }
+        let commandsBeforeCancel = updates()
+        let credentialsBeforeCancel = try await credentials(host)
+        host.confirmRemove()
+        expect(removalQuestions == 1)
+        // Uninstall marks the host busy synchronously, before its asynchronous work.
+        expect(!host.busy)
+        for (url, data) in snapshot { expect(try Data(contentsOf: url) == data) }
+        expect(updates() == commandsBeforeCancel)
+        expect(try await credentials(host) == credentialsBeforeCancel)
+        expect(!host.busy)
+        for (url, data) in snapshot { expect(try Data(contentsOf: url) == data) }
+        expect(updates() == commandsBeforeCancel)
+
+        removalAnswer = .alertSecondButtonReturn
+        await withCheckedContinuation { continuation in
+            removalFinished = continuation
+            host.confirmRemove()
+        }
+        expect(removalQuestions == 2)
+        for url in [daemon, cli, marker, state.appendingPathComponent("registered")] {
+            expect(!fm.fileExists(atPath: url.path))
+        }
+        for (url, data) in snapshot.suffix(2) { expect(try Data(contentsOf: url) == data) }
+        print("local server removal confirmation passed")
     }
 }

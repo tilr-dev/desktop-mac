@@ -3,7 +3,7 @@ import Gitpm
 
 // The plugin manager in the app: `plugin_manager:` of the config → PluginManagerService
 // (Sources/Gitpm, the Rust library gitpm, ../git/gitpm). No UI and no page bridge
-// yet; Tilr Control `plugin-manager` reads the state, `--probe` checks the library on a
+// here; Tilr Control `plugin-manager` reads state and `gitpm` invokes the library. `--probe` uses a
 // temporary workspace.
 
 extension Config.PluginManagerSettings {
@@ -43,24 +43,27 @@ extension AppDelegate {
         return result
     }
 
-    /// One launch-time migration. A separate service keeps the captured launch settings
-    /// stable across config reloads and releases its mutation lock after synchronization.
-    /// Empty/missing workspaces are read without creating them. Probes call this only on fixtures.
+    /// A fixture entry point for the same migration used by the app-owned service.
     @discardableResult
     static func syncPluginDist(_ settings: PluginManagerService.Settings) async -> Bool {
         let pm = PluginManagerService(settings: settings, label: "dev.tilr.plugin-manager.dist-sync")
-        var succeeded = true
-        do {
-            guard !(try await pm.readInstalled(root: settings.root)).isEmpty else { return true }
-            let sync = try await pm.syncDist()
-            print("plugin manager: dist synced: \(sync.deployed.count) deployed \(sync.deployed), \(sync.removed.count) removed \(sync.removed),",
-                  "\(sync.unmanaged.count) unmanaged \(sync.unmanaged), \(sync.skipped.count) skipped \(sync.skipped.map { "\($0.id): \($0.reason)" })")
-        } catch {
-            succeeded = false
-            print("plugin manager: dist sync failed:", PluginManagerFailure.from(error))
-        }
+        let succeeded = await syncPluginDist(pm)
         await pm.close()
         return succeeded
+    }
+
+    /// Synchronize on the app-owned queue so Control and migration never compete for its lock.
+    @discardableResult
+    static func syncPluginDist(_ pm: PluginManagerService) async -> Bool {
+        do {
+            guard let sync = try await pm.syncDistIfInstalled() else { return true }
+            print("plugin manager: dist synced: \(sync.deployed.count) deployed \(sync.deployed), \(sync.removed.count) removed \(sync.removed),",
+                  "\(sync.unmanaged.count) unmanaged \(sync.unmanaged), \(sync.skipped.count) skipped \(sync.skipped.map { "\($0.id): \($0.reason)" })")
+            return true
+        } catch {
+            print("plugin manager: dist sync failed:", PluginManagerFailure.from(error))
+            return false
+        }
     }
 
     // MARK: Probe
@@ -75,9 +78,7 @@ extension AppDelegate {
         let started = Date()
         func check(_ ok: Bool, _ message: @autoclosure () -> String) {
             guard !ok else { return }
-            print("plugin manager: FAILED", message())
-            Instance.terminating()
-            exit(EXIT_FAILURE)
+            ProbeCheck("probe-plugin-manager", cleanup: { Instance.terminating() }).fail(message())
         }
         let files = FileManager.default
         let base = files.temporaryDirectory.appendingPathComponent("tilr-gitpm-probe-\(UUID().uuidString)")
@@ -216,9 +217,7 @@ extension AppDelegate {
             }
             guard provider(try await pm.list()) == Self.probeID("base") else { throw ProbeReplacementFailure.state }
         } catch {
-            print("plugin manager: FAILED replacement round trip:", error)
-            Instance.terminating()
-            exit(EXIT_FAILURE)
+            ProbeCheck("probe-plugin-manager", cleanup: { Instance.terminating() }).fail("replacement round trip: \(error)")
         }
     }
 

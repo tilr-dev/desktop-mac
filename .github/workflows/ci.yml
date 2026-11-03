@@ -42,6 +42,9 @@ jobs:
       - name: Probe
         run: perl -e 'alarm 600; exec @ARGV' ./run.sh --test --probe 2>&1 | tee probe.log
 
+      - name: Gitpm Control socket integration
+        run: python3 scripts/test_gitpm_control.py --skip-build --configuration release
+
       # ReportCrash writes the .ips a while after the crash: wait for it, print the faulting thread.
       - name: Crash report
         if: failure()
@@ -160,7 +163,7 @@ jobs:
 
       - name: Server protocol integration tests
         run: |
-          swiftc Sources/Tilr/ServerInstallation.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
+          swiftc Sources/Tilr/ServerInstallation.swift scripts/TestSupport.swift scripts/test_server_installation.swift -o "$RUNNER_TEMP/test-server-installation"
           "$RUNNER_TEMP/test-server-installation"
 
       - name: App update preference integration tests

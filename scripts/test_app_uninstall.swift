@@ -1,7 +1,11 @@
 import Foundation
 
 @main struct UninstallTests {
-    static func main() async throws {
+    static func main() async {
+        do { try await run() } catch { fail("Unexpected error: \(error)") }
+    }
+
+    @MainActor static func run() async throws {
         let fm = FileManager.default
         let temp = fm.temporaryDirectory.appendingPathComponent("tilr-uninstall-\(UUID().uuidString)")
         try fm.createDirectory(at: temp, withIntermediateDirectories: true)
@@ -32,14 +36,14 @@ import Foundation
                 installation.selection.found = true
                 installation.selection.binary = server
                 let removal = try installation.remove()
-                precondition(removal == .removed)
+                expect(removal == .removed)
             }
             var questions = 0
             var stopped = false
             var preferencesCleaned = false
             var trashed = false
             let uninstall = AppUninstall(bundle: app, dataDirectories: [data], trash: { url in
-                precondition(stopped && preferencesCleaned && !fm.fileExists(atPath: data.path))
+                expect(stopped && preferencesCleaned && !fm.fileExists(atPath: data.path))
                 if scenario == "trash-error" { throw Failure.expected }
                 try fm.moveItem(at: url, to: base.appendingPathComponent("Trash.app"))
                 trashed = true
@@ -48,25 +52,25 @@ import Foundation
                 try await uninstall.run(removeServer: {
                     _ = try installation.remove(confirmExternal: { questions += 1; return scenario == "external-yes" })
                 }, stop: { stopped = true }, cleanPreferences: { preferencesCleaned = true })
-                precondition(scenario != "service-error" && scenario != "trash-error")
+                expect(scenario != "service-error" && scenario != "trash-error")
             } catch {
-                precondition(scenario == "service-error" || scenario == "trash-error")
+                expect(scenario == "service-error" || scenario == "trash-error")
             }
-            precondition(questions == (owned ? 0 : 1))
+            expect(questions == (owned ? 0 : 1))
             let token = try String(contentsOf: state.appendingPathComponent("token"), encoding: .utf8)
-            precondition(token == "original")
+            expect(token == "original")
             if scenario == "service-error" {
-                precondition(!stopped && !preferencesCleaned && !trashed)
-                precondition(fm.fileExists(atPath: data.path) && fm.fileExists(atPath: server.path))
+                expect(!stopped && !preferencesCleaned && !trashed)
+                expect(fm.fileExists(atPath: data.path) && fm.fileExists(atPath: server.path))
             } else {
-                precondition(stopped && preferencesCleaned && !fm.fileExists(atPath: data.path))
-                precondition(trashed == (scenario != "trash-error"))
-                precondition(fm.fileExists(atPath: server.path) == (scenario == "external-no"))
-                precondition(fm.fileExists(atPath: client.path) == !owned)
+                expect(stopped && preferencesCleaned && !fm.fileExists(atPath: data.path))
+                expect(trashed == (scenario != "trash-error"))
+                expect(fm.fileExists(atPath: server.path) == (scenario == "external-no"))
+                expect(fm.fileExists(atPath: client.path) == !owned)
             }
-            precondition(commands.isEmpty == (scenario == "external-no"))
-            if scenario == "owned-removed" { precondition(commands.count == 1) }
-            precondition(fm.fileExists(atPath: app.path) == !trashed)
+            expect(commands.isEmpty == (scenario == "external-no"))
+            if scenario == "owned-removed" { expect(commands.count == 1) }
+            expect(fm.fileExists(atPath: app.path) == !trashed)
         }
         print("application uninstall tests passed")
     }
