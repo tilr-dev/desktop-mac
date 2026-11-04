@@ -214,7 +214,7 @@ final class NativePluginSession: @unchecked Sendable {
             do {
                 let library = try NativePluginLibrary.open(id: id, directory: URL(fileURLWithPath: Config.resolve(settings.directory)), allowThirdParty: settings.allowThirdParty)
                 let manifest = library.manifest
-                let reserved = Set(["tilrNative", ConsoleRelay.name, AgentHost.name, LocalServerBridge.name])
+                let reserved = Set(["tilrNative", ConsoleRelay.name, AgentHost.name, LocalServerBridge.name, ConfigBridge.name])
                 guard !manifest.bridges.keys.contains(where: { bridges[$0] != nil || reserved.contains($0) }),
                       !manifest.services.contains(where: { services[$0] != nil }),
                       manifest.events.allSatisfy({ $0.hasPrefix("tilr-") && $0 != "tilr-native" }) else {
