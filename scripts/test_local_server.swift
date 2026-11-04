@@ -19,10 +19,13 @@ final class Tab {
 }
 
 @main struct LocalServerLifecycleTests {
-    @MainActor static func main() async throws {
+    @MainActor static func main() async {
+        do { try await run() } catch { fail("Unexpected error: \(error)") }
+    }
+
+    @MainActor static func run() async throws {
         _ = NSApplication.shared
         let fm = FileManager.default
-        func expect(_ condition: Bool, line: UInt = #line) { precondition(condition, "line \(line)") }
         let state = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TILR_HOST_FIXTURE"]!)
         func write(_ name: String, _ text: String) throws {
             try Data(text.utf8).write(to: state.appendingPathComponent(name))
@@ -66,10 +69,10 @@ final class Tab {
         var removalQuestions = 0
         var removalFinished: CheckedContinuation<Void, Never>?
         let host = LocalServerHost(homeDirectory: home, receiveNotice: {
-            precondition(Thread.isMainThread, "Local Server notices must run on the main thread")
+            expect(Thread.isMainThread, "Local Server notices must run on the main thread")
             notices.append($0)
         }, runAlert: { alert in
-            precondition(Thread.isMainThread)
+            expect(Thread.isMainThread)
             if alert.messageText == "Remove the local server?" {
                 removalQuestions += 1
                 expect(alert.buttons.map(\.title) == ["Cancel", "Remove"])
@@ -85,7 +88,7 @@ final class Tab {
         }, resolveRunningExecutable: { daemon })
         var reconnects = 0
         host.didUpdate = {
-            precondition(Thread.isMainThread, "Local Server UI updates must run on the main thread")
+            expect(Thread.isMainThread, "Local Server UI updates must run on the main thread")
             reconnects += 1
         }
         let preferences = UserDefaults(suiteName: "dev.tilr.host-fixture.\(UUID().uuidString)")!
@@ -164,7 +167,7 @@ final class Tab {
         oldHost.start(settings: settings, origins: ["tilr://app"], allowed: true)
         do {
             _ = try await credentials(oldHost)
-            fatalError("Expected incompatible protocol")
+            fail("Expected incompatible protocol")
         } catch {
             expect(error.localizedDescription.contains("tilrd speaks protocol 0 and this Tilr supports protocol 1: update tilrd in Local Server."))
         }
@@ -185,7 +188,7 @@ final class Tab {
         newerHost.start(settings: settings, origins: ["tilr://app"], allowed: true)
         do {
             _ = try await credentials(newerHost)
-            fatalError("Expected a newer protocol")
+            fail("Expected a newer protocol")
         } catch {
             expect(error.localizedDescription.contains("tilrd speaks protocol 2 and this Tilr supports protocol 1: update Tilr."))
         }
@@ -207,7 +210,7 @@ final class Tab {
         expect(upgradeNotices.last?.contains("tilrd speaks protocol 2 and this Tilr supports protocol 1: update Tilr.") == true)
         do {
             _ = try await credentials(upgradeHost)
-            fatalError("Expected a newer protocol after the launch update")
+            fail("Expected a newer protocol after the launch update")
         } catch {
             expect(error.localizedDescription.contains("update Tilr."))
         }

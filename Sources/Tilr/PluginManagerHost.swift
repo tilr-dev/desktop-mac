@@ -78,9 +78,7 @@ extension AppDelegate {
         let started = Date()
         func check(_ ok: Bool, _ message: @autoclosure () -> String) {
             guard !ok else { return }
-            print("plugin manager: FAILED", message())
-            Instance.terminating()
-            exit(EXIT_FAILURE)
+            ProbeCheck("probe-plugin-manager", cleanup: { Instance.terminating() }).fail(message())
         }
         let files = FileManager.default
         let base = files.temporaryDirectory.appendingPathComponent("tilr-gitpm-probe-\(UUID().uuidString)")
@@ -219,9 +217,7 @@ extension AppDelegate {
             }
             guard provider(try await pm.list()) == Self.probeID("base") else { throw ProbeReplacementFailure.state }
         } catch {
-            print("plugin manager: FAILED replacement round trip:", error)
-            Instance.terminating()
-            exit(EXIT_FAILURE)
+            ProbeCheck("probe-plugin-manager", cleanup: { Instance.terminating() }).fail("replacement round trip: \(error)")
         }
     }
 

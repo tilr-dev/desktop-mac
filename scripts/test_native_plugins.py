@@ -120,7 +120,7 @@ def main():
                      '--probe-handoff', '--url', 'tilr://default/handoff-probe-missing.html'],
                     capture_output=True, text=True, timeout=120)
                 diagnostic = 'source: navigation failed:'
-                if failed.returncode == 0 or diagnostic not in failed.stdout + failed.stderr:
+                if failed.returncode != 1 or 'probe-handoff: FAIL ' not in failed.stderr or diagnostic not in failed.stderr:
                     raise AssertionError(f'Expected explicit source navigation failure: {failed.stdout}\n{failed.stderr}')
                 print('layout handoff: source navigation failure is explicit: ok')
 
