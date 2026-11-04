@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Native layout drag handoff relay
-The shell SHALL support drag-initiated layout handoff by parking a valid `handoff.offer {ticket, payload}` without `targetHost` until a receiving page claims it with `handoff.accept {ticket, position}`. The relay MUST bind the offer to its source page, validate the receiving page and coordinates, and use the existing acknowledged handoff transaction after selecting a target. Unclaimed offers SHALL expire ten seconds after registration, preserving the source window on failure.
+The shell SHALL park untargeted `handoff.offer` tickets until a valid `handoff.accept` selects another current page of the same app and finite layout coordinates. It MUST bind tickets to their source and use acknowledged handoff after selection. Compatibility offers SHALL expire after ten seconds; native pointer offers SHALL remain valid for the held gesture, with the transaction deadline starting on target selection.
 
 #### Scenario: Park an offer until a drop
 - **WHEN** a loaded current source page offers a fresh ticket with its host identity, window identity and a valid positive integer revision, without a target host
@@ -47,3 +47,25 @@ The shell SHALL support drag-initiated layout handoff by parking a valid `handof
 - **WHEN** the source closes or navigates while its offer is parked
 - **THEN** the relay cancels it with `Handoff page closed or navigated` and rejects the pending offer reply
 - **AND** a later drop cannot claim the consumed ticket
+
+### Requirement: Native pointer drag takeover
+The shell SHALL preserve local header drag until the pointer exits the source native frame, then prepare and snapshot its panel and track the image above other windows. Release over another eligible page SHALL initiate acknowledged handoff. Escape, release elsewhere, snapshot failure or source departure MUST retain the source and remove tracking resources. Asynchronous callbacks SHALL belong to the current gesture.
+
+#### Scenario: Exit and snapshot
+- **WHEN** a held pointer first leaves the source native frame
+- **THEN** native tracking asks the source page to end local movement, snapshots the prepared panel and follows the screen pointer with the original grab offset
+- **AND** movement within the source frame before exit creates no handoff offer or floating snapshot
+
+#### Scenario: Drop during asynchronous preparation
+- **WHEN** the pointer is released over an eligible destination before preparation or snapshot completion
+- **THEN** the release position is retained and handoff runs once preparation succeeds
+- **AND** a failed snapshot cancels the gesture and restores the source
+
+#### Scenario: Cancel and page departure
+- **WHEN** Escape is pressed, the pointer is released outside eligible Tilr content, or the source page leaves
+- **THEN** tracking monitors and the floating snapshot are removed and the source is retained
+- **AND** late snapshot or preparation replies cannot resurrect that gesture or affect a subsequent one
+
+#### Scenario: Long native gesture
+- **WHEN** a native gesture remains held beyond the compatibility offer lifetime
+- **THEN** it remains eligible for drop without extending any running handoff transaction deadline

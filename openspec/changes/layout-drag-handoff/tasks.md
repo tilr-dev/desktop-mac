@@ -5,3 +5,9 @@
 - [x] Cancel unclaimed offers on drag end, source cancellation, expiration, or source departure.
 - [x] Exercise drag text fallback and drop coordinates through the native handoff probe.
 - [x] Document the drag relay with additive requirements and scenarios.
+
+## Native pointer takeover
+
+- [x] Preserve local drag until native frame exit.
+- [x] Capture and track the panel snapshot, including cancellation and asynchronous release.
+- [x] Cover native takeover and cross-host transaction with deterministic integration checks.

@@ -27,6 +27,169 @@ final class HandoffCoordinator {
         let timeout: DispatchWorkItem
     }
 
+    /// One gesture owns its callbacks and monitors; a released gesture may still await its snapshot.
+    private final class PointerDrag {
+        let id: String
+        let source: Tab
+        var taken = false
+        var ticket: String?
+        var panel: NSPanel?
+        var offset = NSPoint.zero
+        var point = NSEvent.mouseLocation
+        var release: (Tab, NSPoint)?
+        var ready = false
+        var local: Any?
+        var global: Any?
+        init(id: String, source: Tab) { self.id = id; self.source = source }
+        func stopTracking() {
+            if let local { NSEvent.removeMonitor(local) }; local = nil
+            if let global { NSEvent.removeMonitor(global) }; global = nil
+            panel?.orderOut(nil); panel = nil
+        }
+        deinit { stopTracking() }
+    }
+    private var pointer: PointerDrag?
+    // Snapshot injection lets the integration probe hold completion across drop/cancellation.
+    var capturePanel: (WKWebView, WKSnapshotConfiguration, @escaping (NSImage?, Error?) -> Void) -> Void = {
+        view, config, complete in view.takeSnapshot(with: config, completionHandler: complete)
+    }
+    var pointerStatus: (taken: Bool, ready: Bool, showing: Bool)? {
+        pointer.map { ($0.taken, $0.ready, $0.panel != nil) }
+    }
+    func cancelPointer() { endPointer("Drag cancelled") }
+
+    private func endPointer(_ reason: String) {
+        guard let drag = pointer else { return }
+        pointer = nil
+        drag.stopTracking()
+        if drag.taken { send(drag.source, ["op": "handoff.pointercancel", "ticket": drag.id]) { _ in } }
+        if let ticket = drag.ticket { cancel(ticket, reason: reason) }
+    }
+
+    /// Shared by AppKit monitors and the integration probe. Points use AppKit screen coordinates.
+    func pointerMoved(to point: NSPoint) {
+        guard let drag = pointer, drag.release == nil else { return }
+        drag.point = point
+        if !drag.taken {
+            guard let shell = shells().first(where: { $0.current === drag.source }) else {
+                endPointer("Handoff page closed or navigated"); return
+            }
+            guard !shell.window.frame.contains(point) else { return }
+            drag.taken = true
+            send(drag.source, ["op": "handoff.pointertakeover", "ticket": drag.id]) { [weak self, weak drag] error in
+                guard let self, let drag, self.pointer === drag else { return }
+                if let error { self.endPointer(error) }
+            }
+        }
+        positionSnapshot(drag)
+    }
+
+    private func positionSnapshot(_ drag: PointerDrag) {
+        guard let panel = drag.panel else { return }
+        panel.setFrameOrigin(NSPoint(x: drag.point.x - drag.offset.x,
+                                     y: drag.point.y + drag.offset.y - panel.frame.height))
+    }
+
+    /// Frontmost visible native content wins; another application's window blocks the drop.
+    private func pointerTarget(at point: NSPoint) -> Tab? {
+        let number = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: pointer?.panel?.windowNumber ?? 0)
+        guard let shell = shells().first(where: { $0.window.windowNumber == number }),
+              let tab = shell.current, tab !== pointer?.source, tab.isLoaded,
+              tab.app.name == pointer?.source.app.name else { return nil }
+        let local = tab.webView.convert(shell.window.convertPoint(fromScreen: point), from: nil)
+        return tab.webView.bounds.contains(local) ? tab : nil
+    }
+
+    func pointerReleased(at point: NSPoint) {
+        guard let drag = pointer else { return }
+        guard drag.taken, let target = pointerTarget(at: point) else { endPointer("Drag cancelled"); return }
+        drag.point = point
+        drag.release = (target, point)
+        drag.stopTracking()
+        completePointer(drag)
+    }
+
+    private func completePointer(_ drag: PointerDrag) {
+        guard pointer === drag, drag.ready, let ticket = drag.ticket, let (target, point) = drag.release,
+              let window = target.webView.window else { return }
+        pointer = nil
+        let view = target.webView
+        let local = view.convert(window.convertPoint(fromScreen: point), from: nil)
+        let zoom = view.pageZoom
+        let x = local.x / zoom
+        let y = (view.isFlipped ? local.y : view.bounds.height - local.y) / zoom
+        view.callAsyncJavaScript("""
+            const canvas = document.querySelector('.tilr-canvas');
+            if (!canvas) throw new Error('Drop layout is unavailable');
+            const box = canvas.getBoundingClientRect();
+            if (x < box.left || x > box.right || y < box.top || y > box.bottom) throw new Error('Drop outside layout');
+            return await webkit.messageHandlers.tilrHandoff.postMessage({op:'handoff.accept', ticket, position:{x:x-box.x,y:y-box.y}});
+            """, arguments: ["x": x, "y": y, "ticket": ticket], in: nil, in: .page) { [weak self] result in
+                if case .failure(let error) = result { self?.cancel(ticket, reason: error.localizedDescription) }
+            }
+    }
+
+    private func prepareSnapshot(_ drag: PointerDrag, body: [String: Any]) {
+        guard let rect = body["snapshot"] as? [String: Any], let offset = body["offset"] as? [String: Any],
+              let x = rect["x"] as? Double, let y = rect["y"] as? Double,
+              let width = rect["width"] as? Double, let height = rect["height"] as? Double,
+              let ox = offset["x"] as? Double, let oy = offset["y"] as? Double,
+              [x, y, width, height, ox, oy].allSatisfy({ $0.isFinite }), width > 0, height > 0 else {
+            endPointer("Invalid snapshot rectangle"); return
+        }
+        let view = drag.source.webView
+        let zoom = view.pageZoom
+        let config = WKSnapshotConfiguration()
+        config.rect = CGRect(x: x * zoom, y: y * zoom, width: width * zoom, height: height * zoom)
+        drag.offset = NSPoint(x: ox * zoom, y: oy * zoom)
+        capturePanel(view, config) { [weak self, weak drag] image, error in
+            guard let self, let drag, self.pointer === drag else { return }
+            guard let image, error == nil else { self.endPointer(error?.localizedDescription ?? "Panel snapshot failed"); return }
+            drag.ready = true
+            if drag.release == nil {
+                let panel = NSPanel(contentRect: NSRect(origin: .zero, size: config.rect.size),
+                                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+                panel.isReleasedWhenClosed = false
+                panel.level = .floating
+                panel.ignoresMouseEvents = true
+                panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                panel.hasShadow = true
+                panel.alphaValue = 0.85
+                let content = NSImageView(frame: NSRect(origin: .zero, size: config.rect.size))
+                content.image = image
+                content.imageScaling = .scaleAxesIndependently
+                panel.contentView = content
+                drag.panel = panel
+                self.positionSnapshot(drag)
+                panel.orderFrontRegardless()
+            }
+            self.completePointer(drag)
+        }
+    }
+
+    private func armPointer(id: String, source: Tab) {
+        endPointer("Another header drag started")
+        let drag = PointerDrag(id: id, source: source)
+        pointer = drag
+        let mask: NSEvent.EventTypeMask = [.leftMouseDragged, .leftMouseUp, .keyDown]
+        drag.local = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self, weak drag] event in
+            guard let self, let drag, self.pointer === drag else { return event }
+            if event.type == .keyDown {
+                if event.keyCode == 53 { self.cancelPointer(); return nil }
+                return event
+            }
+            if event.type == .leftMouseDragged { self.pointerMoved(to: NSEvent.mouseLocation) }
+            let taken = drag.taken
+            if event.type == .leftMouseUp { self.pointerReleased(at: NSEvent.mouseLocation) }
+            return taken ? nil : event
+        }
+        drag.global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self, weak drag] event in
+            guard let self, let drag, self.pointer === drag else { return }
+            if event.type == .leftMouseDragged { self.pointerMoved(to: NSEvent.mouseLocation) }
+            if event.type == .leftMouseUp { self.pointerReleased(at: NSEvent.mouseLocation) }
+        }
+    }
+
     func receive(_ body: [String: Any], from tab: Tab, reply: @escaping (Any?, String?) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         guard let op = body["op"] as? String else { reply(nil, "Missing handoff operation"); return }
@@ -40,6 +203,15 @@ final class HandoffCoordinator {
             return
         }
         guard let ticket = body["ticket"] as? String, !ticket.isEmpty else { reply(nil, "Missing handoff ticket"); return }
+        if op == "handoff.pointerarm" {
+            guard shells().contains(where: { $0.current === tab }), tab.isLoaded else { reply(nil, "Source page is unavailable"); return }
+            armPointer(id: ticket, source: tab)
+            reply(["accepted": true], nil); return
+        }
+        if op == "handoff.pointerend" {
+            if let drag = pointer, drag.id == ticket, drag.source === tab { endPointer("Drag cancelled") }
+            reply(["accepted": true], nil); return
+        }
         if op == "handoff.accept" {
             guard let offer = offered[ticket],
                   let target = shells().first(where: { $0.current === tab }),
@@ -83,8 +255,17 @@ final class HandoffCoordinator {
             }
             guard let host = body["targetHost"] as? String else {
                 let timeout = DispatchWorkItem { [weak self] in self?.cancel(ticket, reason: "Handoff timed out") }
-                offered[ticket] = Offered(source: tab, body: body, reply: reply, timeout: timeout)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+                if let gesture = body["nativeDrag"] as? String {
+                    guard let drag = pointer, drag.id == gesture, drag.source === tab, drag.taken, drag.ticket == nil else {
+                        reply(nil, "Native drag is no longer active"); return
+                    }
+                    drag.ticket = ticket
+                    offered[ticket] = Offered(source: tab, body: body, reply: reply, timeout: timeout)
+                    prepareSnapshot(drag, body: body)
+                } else {
+                    offered[ticket] = Offered(source: tab, body: body, reply: reply, timeout: timeout)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+                }
                 return
             }
             used.insert(ticket)
@@ -151,6 +332,7 @@ final class HandoffCoordinator {
     /// The production expiration path is also callable by the probe without waiting for time.
     func cancel(_ ticket: String, reason: String) {
         dispatchPrecondition(condition: .onQueue(.main))
+        if pointer?.ticket == ticket { endPointer(reason); return }
         if let offer = offered.removeValue(forKey: ticket) {
             used.insert(ticket)
             offer.timeout.cancel()
@@ -165,6 +347,7 @@ final class HandoffCoordinator {
     }
 
     func leaving(_ tab: Tab) {
+        if pointer?.source === tab || pointer?.release?.0 === tab { endPointer("Handoff page closed or navigated") }
         for (ticket, item) in Array(offered) where item.source === tab {
             cancel(ticket, reason: "Handoff page closed or navigated")
         }

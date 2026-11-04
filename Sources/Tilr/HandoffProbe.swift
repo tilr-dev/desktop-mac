@@ -48,6 +48,7 @@ extension AppDelegate {
                     return true;
                     """, ["role": role, "timeout": config.control.loadTimeout * 1000])
             }
+            print("handoff: checking host discovery")
             let listed = try await js(source, """
                 const list = await webkit.messageHandlers.tilrHandoff.postMessage({op:'shell.list'});
                 return list.windows.some(row => row.host === to) && list.windows.some(row => row.host === window.__tilrHost.host);
@@ -81,6 +82,100 @@ extension AppDelegate {
                 catch { return !!window.tilr.root.get('layout').get(id); }
                 """, ["id": id]) as? Bool
             probe(invalid == true, "invalid handoff lost source")
+
+            print("handoff: checking native pointer takeover")
+            // Drive production pointer transitions and hold only the asynchronous snapshot reply.
+            // A held capture makes release/cancel ordering deterministic without clock delays.
+            first.set(.window); second.set(.window)
+            let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1400, height: 900)
+            first.window.setFrame(NSRect(x: screen.minX + 20, y: screen.minY + 40, width: 500, height: 500), display: true)
+            second.window.setFrame(NSRect(x: screen.minX + 550, y: screen.minY + 40, width: 500, height: 500), display: true)
+            second.window.orderFrontRegardless()
+            typealias HeldCapture = (WKWebView, WKSnapshotConfiguration, (NSImage?, Error?) -> Void)
+            let capturePanel = handoffs.capturePanel
+            defer { handoffs.capturePanel = capturePanel; handoffs.cancelPointer() }
+            func armPointer() async throws -> HeldCapture {
+                _ = try await js(source, """
+                    const layout = window.tilr.root.get('layout');
+                    layout.float(id, {x:50,y:50,width:300,height:240});
+                    await new Promise(resolve => {
+                      const ready = () => {
+                        const element = document.querySelector('[data-window="' + id + '"]');
+                        return element?.dataset.mode === 'float' && element.style.left === '50px' && element.style.width === '300px';
+                      };
+                      if (ready()) { resolve(); return; }
+                      const observer = new MutationObserver(() => { if (ready()) { observer.disconnect(); resolve(); } });
+                      observer.observe(document.body,{subtree:true,childList:true,attributes:true});
+                    });
+                    const header = document.querySelector('[data-window="' + id + '"] [data-window-drag]');
+                    const box = header.getBoundingClientRect();
+                    header.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,cancelable:true,button:0,clientX:box.x+20,clientY:box.y+8}));
+                    window.__pointerDone = new Promise(resolve => {
+                      const check = () => { if (!layout.get(id)) { observer.disconnect(); resolve(true); } };
+                      const observer = new MutationObserver(check); observer.observe(document.body,{subtree:true,childList:true}); check();
+                    });
+                    await webkit.messageHandlers.tilrHandoff.postMessage({op:'shell.list'});
+                    return true;
+                    """, ["id": id])
+                handoffs.pointerMoved(to: NSPoint(x: first.window.frame.midX, y: first.window.frame.midY))
+                probe(handoffs.pointerStatus?.taken == false, "inside-frame movement took native ownership")
+                return await withCheckedContinuation { continuation in
+                    handoffs.capturePanel = { view, config, complete in continuation.resume(returning: (view, config, complete)) }
+                    handoffs.pointerMoved(to: NSPoint(x: first.window.frame.maxX + 10, y: first.window.frame.midY))
+                }
+            }
+            let cancelledCapture = try await armPointer()
+            handoffs.cancelPointer()
+            cancelledCapture.2(NSImage(size: NSSize(width: 300, height: 240)), nil)
+            probe(handoffs.pointerStatus == nil, "late snapshot resurrected a cancelled pointer session")
+            func sourceUsable() async throws -> Bool {
+                return (try await js(source, """
+                const layout = window.tilr.root.get('layout');
+                const usable = () => layout.get(id) && !layout.frozen(id);
+                if (!usable()) await new Promise(resolve => {
+                  const observer = new MutationObserver(() => { if (usable()) { observer.disconnect(); resolve(); } });
+                  observer.observe(document.body,{subtree:true,attributes:true});
+                });
+                return usable();
+                """, ["id": id]) as? Bool) == true
+            }
+            probe(try await sourceUsable(), "cancelled native drag lost or froze its source")
+            let visibleCapture = try await armPointer()
+            // A previous gesture's completion cannot change the new gesture.
+            cancelledCapture.2(NSImage(size: NSSize(width: 300, height: 240)), nil)
+            probe(handoffs.pointerStatus?.ready == false, "stale capture changed a newer gesture")
+            let visibleSnapshot: Bool = await withCheckedContinuation { continuation in
+                capturePanel(visibleCapture.0, visibleCapture.1) { image, error in
+                    visibleCapture.2(image, error)
+                    continuation.resume(returning: image != nil && error == nil)
+                }
+            }
+            probe(visibleSnapshot && handoffs.pointerStatus?.showing == true, "snapshot did not create a floating panel")
+            handoffs.pointerMoved(to: NSPoint(x: first.window.frame.maxX + 50, y: first.window.frame.midY))
+            handoffs.pointerReleased(at: NSPoint(x: -10000, y: -10000))
+            probe(handoffs.pointerStatus == nil, "outside release retained native tracking")
+            probe(try await sourceUsable(), "outside release lost or froze its source")
+            let releasedCapture = try await armPointer()
+            let targetPoint = try await js(target, "const box=document.querySelector('.tilr-canvas').getBoundingClientRect(); return {x:box.x+70,y:box.y+90};") as? [String: Double]
+            guard let targetPoint, let tx = targetPoint["x"], let ty = targetPoint["y"] else { probe.fail("no target canvas") }
+            let local = NSPoint(x: tx * target.webView.pageZoom,
+                                y: target.webView.isFlipped ? ty * target.webView.pageZoom : target.webView.bounds.height - ty * target.webView.pageZoom)
+            let release = second.window.convertPoint(toScreen: target.webView.convert(local, to: nil))
+            handoffs.pointerReleased(at: release)
+            probe(handoffs.pointerStatus?.taken == true && handoffs.pointerStatus?.showing == false, "early release did not retain pending capture")
+            let captured: Bool = await withCheckedContinuation { continuation in
+                capturePanel(releasedCapture.0, releasedCapture.1) { image, error in
+                    releasedCapture.2(image, error)
+                    continuation.resume(returning: image != nil && error == nil)
+                }
+            }
+            probe(captured, "real panel snapshot failed")
+            let pointerGone = try await js(source, "return await window.__pointerDone") as? Bool
+            let pointerPositioned = try await js(target, "const row=window.tilr.root.get('layout').get(id);return row?.rect.x===70 && row?.rect.y===90;", ["id": id]) as? Bool
+            probe(pointerGone == true && pointerPositioned == true && handoffs.pointerStatus == nil,
+                  "native pointer handoff lost identity, coordinates or cleanup")
+            handoffs.capturePanel = capturePanel
+            _ = try await js(target, "return await window.tilr.root.get('layout').handoff(id, to)", ["id": id, "to": first.hostID.uuidString])
 
             // Exercise the drag ticket through the real native relay, with only WebKit's text fallback.
             let dragText = try await js(source, """
@@ -157,7 +252,7 @@ extension AppDelegate {
                 }
             }
             _ = try await js(source, "window.tilr.root.get('layout').close(id); return true", ["id": id])
-            print("layout handoff: real-page move, drag text fallback/position, identity/content, invalid host, expiration, late ack and closed target: ok")
+            print("layout handoff: real-page move, native pointer snapshot/early release/cancel, drag text fallback/position, identity/content, invalid host, expiration, late ack and closed target: ok")
         } catch { probe.fail("layout handoff probe: \(error)") }
     }
 }
