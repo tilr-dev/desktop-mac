@@ -1,3 +1,4 @@
+import BrowserProbeSupport
 import AppKit
 import TilrPluginViews
 import WebKit

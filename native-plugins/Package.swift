@@ -10,12 +10,14 @@ let package = Package(
     ],
     dependencies: [.package(path: "SDK")],
     targets: [
+        .target(name: "BrowserProbeSupport"),
         .target(name: "BrowserWebKit", dependencies: [
+            "BrowserProbeSupport",
             .product(name: "TilrPluginABI", package: "SDK"),
             .product(name: "TilrPluginViews", package: "SDK"),
         ]),
         .target(name: "NativeAudio", dependencies: [.product(name: "TilrPluginABI", package: "SDK")]),
         .testTarget(name: "NativeAudioTests", dependencies: ["NativeAudio", .product(name: "TilrPluginABI", package: "SDK")]),
-        .testTarget(name: "BrowserWebKitTests", dependencies: ["BrowserWebKit"]),
+        .testTarget(name: "BrowserProbeSupportTests", dependencies: ["BrowserProbeSupport"]),
     ]
 )

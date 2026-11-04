@@ -1,5 +1,5 @@
 import XCTest
-@testable import BrowserWebKit
+@testable import BrowserProbeSupport
 
 final class ProbeReportsTests: XCTestCase {
     @MainActor

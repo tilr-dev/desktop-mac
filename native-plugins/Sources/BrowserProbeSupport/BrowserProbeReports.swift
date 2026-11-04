@@ -2,20 +2,21 @@ import Foundation
 
 /// State reports observed by the native browser probe, separate from view lifetime.
 @MainActor
-final class BrowserProbeReports {
-    var events: [[String: Any]] = []
+package final class BrowserProbeReports {
+    package init() {}
+    package var events: [[String: Any]] = []
     private var onReport: (([String: Any]) -> Void)?
 
-    func receive(_ detail: [String: Any]) {
+    package func receive(_ detail: [String: Any]) {
         events.append(detail)
         onReport?(detail)
     }
 
-    func last(_ id: String) -> [String: Any]? {
+    package func last(_ id: String) -> [String: Any]? {
         events.last { $0["id"] as? String == id && $0["type"] == nil }
     }
 
-    func discardedReport(_ id: String, timeout: TimeInterval) async -> [String: Any]? {
+    package func discardedReport(_ id: String, timeout: TimeInterval) async -> [String: Any]? {
         func matches(_ detail: [String: Any]) -> Bool {
             detail["id"] as? String == id && detail["type"] == nil && detail["discarded"] as? Bool == true
         }
