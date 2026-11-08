@@ -1,5 +1,6 @@
 import AppKit
 import ImageIO
+import Gitpm
 import Network
 import UniformTypeIdentifiers
 import WebKit
@@ -7,10 +8,8 @@ import WebKit
 /// Tilr Control: how an agent (or `tilr ctl`, or `tilr mcp`) drives the running app. A server on
 /// a unix socket (`control.socket` in the config), one JSON object per line each way:
 ///
-///   { "cmd": "apps" }                               the apps (tabs) and which one is current
-///   { "cmd": "switch", "app": "Notes" }             show that app (at once; "slide": true slides
-///                                                   towards its place in the list, like switch.jump,
-///                                                   and answers "slide": true when a slide started)
+///   { "cmd": "apps" }                               the app catalog and the key window’s application
+///   { "cmd": "switch", "app": "Notes" }             focus an app window or open one; legacy slide is ignored
 ///   { "cmd": "reload" }                             reload the page
 ///   { "cmd": "snapshot", "path": "~/x.png" }        a picture of the page, as the window shows it
 ///   { "cmd": "console", "clear": false }            the page's console.* and errors, oldest first
@@ -35,37 +34,59 @@ import WebKit
 ///   { "cmd": "plugin-manager" }                     read-only: { workspace, catalog, open, git: "ok" or why not,
 ///                                                   plugins: [{ id, source, version, commit, enabled, previous?, forkOf? }] }
 ///                                                   (state.json, the workspace is not opened; error: { kind, message })
+///   { "cmd": "gitpm", "command": "list", "args": {} }  embedded gitpm; { result: JSON }, or
+///                                                   error: { code, kind, message, id?, lostWork, plugins }
+///                                                   See docs/gitpm-control.md for all commands and arguments.
 ///
 /// `call` runs a method of a service of the page's cordis root (`window.tilr.root.get(service)`):
 /// `plugins.list / toggle / reload`, `layout.list / open / close / float / tile`,
 /// `windows.list`, and whatever other plugins provide. That is the whole control surface: a
 /// plugin that provides a service is driven the same way, with nothing added here.
 ///
-/// Every command takes `"app"` (an app's name; the current one by default) and `"id"` (echoed).
+/// Native windows: `{ "cmd": "shell", "op": "list" }` returns `windows` with host, app,
+/// frame {x,y,width,height}, screen ID (or null), key and space (Space IDs).
+/// `open` takes app and optional frame and always creates a new host; `close` and `focus`
+/// require host; `move` requires host and frame. Frames are AppKit screen points (bottom-left
+/// origin), with finite coordinates and positive sizes. Move leaves desktop fullscreen for
+/// window mode; native fullscreen must be exited first. Focus does not activate Tilr.
+/// Every command takes `"host"` (stable native UUID), `"app"` and `"id"` (echoed).
+/// Host selects an exact page; unknown hosts and mismatching apps fail. Without host, app
+/// selects its most recently key window (or opens one); omitted app uses the key host.
+/// Instance-wide commands validate host without changing scope. `apps` includes host IDs.
 /// The reply is `{ "id", "ok": true, …result }` or `{ "id", "ok": false, "error": "…" }`. Values
 /// cross as JSON: a result the page cannot stringify comes back as a string.
 final class ControlServer {
     let path: String
+    private let shells: () -> [Shell]
+    private let openWindow: (Site.App, NSRect?) -> Shell
     private let tabs: () -> [Tab]
     private let current: () -> Tab?
-    /// Shows a tab: at once, or with the switch slide when the Bool is true. Returns whether a
-    /// slide started (not for the current tab, nor with switch.duration 0).
+    private let apps: () -> [Site.App]
+    private let resolve: (String) -> Tab?
+    /// Focus a native host; legacy slide selection remains accepted without animation.
     private let select: (Tab, Bool) -> Bool
     /// `control.load_timeout`: seconds a command waits for an app's first page load.
     private let loadTimeout: () -> Double
     private let debug: DebugMode
     /// `plugin-manager`: the plugin manager's state (PluginManagerHost.swift).
+    private let gitpm: (String, [String: Any]) async throws -> Any
     private let pluginManager: () async throws -> [String: Any]
     private var listener: NWListener?
 
-    init(path: String, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab, Bool) -> Bool,
-         loadTimeout: @escaping () -> Double, debug: DebugMode, pluginManager: @escaping () async throws -> [String: Any]) {
+    init(path: String, shells: @escaping () -> [Shell], openWindow: @escaping (Site.App, NSRect?) -> Shell, tabs: @escaping () -> [Tab], current: @escaping () -> Tab?, select: @escaping (Tab, Bool) -> Bool,
+         apps: @escaping () -> [Site.App], resolve: @escaping (String) -> Tab?,
+         loadTimeout: @escaping () -> Double, debug: DebugMode, gitpm: @escaping (String, [String: Any]) async throws -> Any, pluginManager: @escaping () async throws -> [String: Any]) {
+        self.shells = shells
+        self.openWindow = openWindow
         self.path = path
         self.tabs = tabs
         self.current = current
+        self.apps = apps
+        self.resolve = resolve
         self.select = select
         self.loadTimeout = loadTimeout
         self.debug = debug
+        self.gitpm = gitpm
         self.pluginManager = pluginManager
     }
 
@@ -164,6 +185,8 @@ final class ControlServer {
         Task { @MainActor in
             do {
                 send(try await self.run(cmd, request), ok: true)
+            } catch let failure as PluginManagerFailure {
+                send(["error": failure.controlJSON], ok: false)
             } catch {
                 send(["error": Self.describe(error)], ok: false)
             }
@@ -183,18 +206,30 @@ final class ControlServer {
     }
 
     @MainActor
-    private func run(_ cmd: String, _ request: [String: Any]) async throws -> [String: Any] {
+    func run(_ cmd: String, _ request: [String: Any]) async throws -> [String: Any] {
+        // Validate explicit addressing even for instance-wide commands.
+        let selected: Shell?
+        if let value = request["host"] {
+            guard let id = value as? String, let host = shells().first(where: { $0.hostID.uuidString.caseInsensitiveCompare(id) == .orderedSame }) else {
+                throw Failure(message: "unknown host: \(value)")
+            }
+            if let app = request["app"] as? String, host.current?.app.name != app {
+                throw Failure(message: "host \(host.hostID) does not show app \(app)")
+            }
+            selected = host
+        } else { selected = nil }
         func tab() throws -> Tab {
+            if let selected, let tab = selected.current { return tab }
             if let name = request["app"] as? String {
-                guard let tab = tabs().first(where: { $0.app.name == name }) else {
-                    throw Failure(message: "no app \"\(name)\"; the apps: \(tabs().map(\.app.name).joined(separator: ", "))")
+                guard let tab = resolve(name) else {
+                    throw Failure(message: "no app \"\(name)\"; the apps: \(apps().map(\.name).joined(separator: ", "))")
                 }
                 return tab
             }
             guard let tab = current() else { throw Failure(message: "no app") }
             return tab
         }
-        /// The tab with its page: one not loaded yet (switch.preload) loads now, and the command
+        /// The selected host page loads if needed, and the command
         /// waits up to control.load_timeout for a load under way (a page that failed to load
         /// does not wait).
         func page() async throws -> Tab {
@@ -204,14 +239,18 @@ final class ControlServer {
             return tab
         }
         switch cmd {
+        case "shell":
+            return try shellCommand(request, selected: selected)
         case "apps":
-            return ["apps": tabs().map { tab -> [String: Any] in
-                ["name": tab.app.name, "site": tab.app.root.path, "url": tab.webView.url?.absoluteString ?? "", "current": tab === current(),
-                 "loaded": tab.started]
+            return ["apps": apps().map { app -> [String: Any] in
+                let tab = current().flatMap { $0.app.name == app.name ? $0 : nil } ?? tabs().first { $0.app.name == app.name }
+                return ["name": app.name, "site": app.root.path, "url": tab?.webView.url?.absoluteString ?? "",
+                        "current": current()?.app.name == app.name, "loaded": tab?.started ?? false,
+                        "hosts": shells().filter { $0.current?.app.name == app.name }.map { $0.hostID.uuidString }]
             }]
         case "switch":
             let tab = try tab()
-            // A slide that did not happen (the current app, switch.duration 0) answers like a plain switch.
+            // Legacy clients may still send slide; native host selection is immediate.
             let slid = select(tab, request["slide"] as? Bool ?? false)
             return slid ? ["app": tab.app.name, "slide": true] : ["app": tab.app.name]
         case "reload":
@@ -262,10 +301,74 @@ final class ControlServer {
             return try await page().nativePlugins.request(service: service, body: request["request"] as? [String: Any] ?? [:])
         case "browser":
             return try await page().nativePlugins.request(service: "browser", body: request)
+        case "gitpm":
+            guard Set(request.keys).isSubset(of: ["cmd", "id", "host", "app", "command", "args"]) else {
+                throw PluginManagerFailure(kind: "invalid_argument", message: "gitpm: unexpected request fields")
+            }
+            guard let command = request["command"] as? String else {
+                throw PluginManagerFailure(kind: "invalid_argument", message: "gitpm: command is required")
+            }
+            let arguments: [String: Any]
+            if let value = request["args"] {
+                guard let object = value as? [String: Any] else {
+                    throw PluginManagerFailure(kind: "invalid_argument", message: "gitpm: args must be an object")
+                }
+                arguments = object
+            } else { arguments = [:] }
+            return ["result": try await gitpm(command, arguments)]
         case "plugin-manager":
             return try await pluginManager()
         default:
-            throw Failure(message: "unknown cmd \"\(cmd)\"; one of apps, switch, reload, snapshot, console, eval, call, debug, browser, plugin-manager")
+            throw Failure(message: "unknown cmd \"\(cmd)\"; one of shell, apps, switch, reload, snapshot, console, eval, call, debug, browser, plugin-manager, gitpm")
+        }
+    }
+
+    @MainActor
+    private func shellCommand(_ request: [String: Any], selected: Shell?) throws -> [String: Any] {
+        func describe(_ host: Shell) -> [String: Any] {
+            let frame = host.window.frame
+            return ["host": host.hostID.uuidString, "app": host.current?.app.name ?? "",
+                    "frame": ["x": frame.origin.x, "y": frame.origin.y, "width": frame.width, "height": frame.height],
+                    "screen": host.window.screen.flatMap(WindowRecord.screenID).map { $0 as Any } ?? NSNull(),
+                    "key": host.window.isKeyWindow, "space": Spaces.of(host.window)]
+        }
+        func frame() throws -> NSRect {
+            guard let values = request["frame"] as? [String: Any] else { throw Failure(message: "shell: frame is required") }
+            func number(_ key: String) throws -> Double {
+                guard let n = values[key] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite else {
+                    throw Failure(message: "shell: frame.\(key) must be a finite number")
+                }
+                return n.doubleValue
+            }
+            let rect = try NSRect(x: number("x"), y: number("y"), width: number("width"), height: number("height"))
+            guard rect.size.width > 0, rect.size.height > 0 else { throw Failure(message: "shell: frame size must be positive") }
+            return rect
+        }
+        func move(_ host: Shell, _ frame: NSRect) throws {
+            guard !host.window.styleMask.contains(.fullScreen) else { throw Failure(message: "shell: leave native fullscreen before moving the window") }
+            if host.mode == .fullscreen { host.set(.window) }
+            host.window.setFrame(frame, display: true)
+            host.stateChanged?()
+        }
+        switch request["op"] as? String {
+        case "list": return ["windows": shells().map(describe)]
+        case "open":
+            guard selected == nil else { throw Failure(message: "shell open: host is not accepted") }
+            guard let name = request["app"] as? String, let app = apps().first(where: { $0.name == name }) else {
+                throw Failure(message: "shell open: a configured app is required")
+            }
+            let geometry = try request["frame"].map { _ in try frame() }
+            let host = openWindow(app, geometry)
+            return describe(host)
+        case "close", "focus", "move":
+            guard let host = selected else { throw Failure(message: "shell: host is required") }
+            switch request["op"] as? String {
+            case "close": host.window.close(); return ["host": host.hostID.uuidString]
+            case "focus": if let tab = host.current { _ = select(tab, false) }
+            default: try move(host, frame())
+            }
+            return describe(host)
+        default: throw Failure(message: "shell: op must be list, open, close, focus or move")
         }
     }
 

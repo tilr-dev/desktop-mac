@@ -1,34 +1,37 @@
 import AppKit
 import WebKit
 
-/// One app inside the shell's window: a web view showing the app's folder as `tilr://<name>/`
-/// (see Site), or the dev server, plus the folder watcher that reloads it. The Shell keeps the
-/// tabs and shows one at a time; there is no tab bar, switching is by shortcut.
+/// The app's page. A click in an inactive Tilr window reaches the page at once (a drag of a
+/// layout window's header starts on that first press) instead of only activating the window:
+/// WebKit's own `acceptsFirstMouse` says yes only over a selection or a scroller.
+final class PageWebView: WKWebView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// One native window’s full application page, bridges, session and folder watcher.
 final class Tab: NSObject, WKNavigationDelegate {
     private(set) var app: Site.App
     let site: SiteSchemeHandler
     private(set) var webView: WKWebView
-    /// What the Shell stacks, shows, hides and slides: a plain layer-backed view the web view
-    /// fills. A slide moves this view's layer, never a view frame, so WebKit sees no geometry
-    /// change (no per-frame view-frame update to the WebContent process).
+    /// The host content container, filled by the page web view.
     let container = NSView()
     /// Separately installed native providers, scoped to this app/tab.
     var nativePlugins: NativePluginSession!
     /// The page's connections to the user's SSH agent (Agent.swift): gone with the page.
     let agent: AgentHost
     private let localServer = LocalServerBridge()
+    private let configBridge = ConfigBridge()
+    let handoffBridge = HandoffBridge()
     private let performanceBridge = PerformanceBridge()
     var watcher: FolderWatcher?
     /// `watch.latency`: seconds FSEvents gathers the folder's changes.
     private let watchLatency: Double
     /// The page has been asked to load (`loadIfNeeded`): until then the web view is blank,
-    /// the folder unwatched and the native providers not started (`switch.preload`).
+    /// the folder unwatched and the native providers not started.
     private(set) var started = false
 
     /// A page finished loading.
     var didLoad: ((Tab) -> Void)?
-    /// A page failed to load (`didFail`, `didFailProvisionalNavigation`).
-    var didFailLoad: ((Tab) -> Void)?
 
     struct ConsoleEntry {
         /// Seconds since 1970.
@@ -56,6 +59,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     private(set) var loadEnded = false {
         didSet { if loadEnded { wake() } }
     }
+    private(set) var loadError: String?
     /// `firstLoad` callers, resumed when the load ends (loaded or failed) or their time is up.
     private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
@@ -84,7 +88,8 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// `web`: how the page renders (`web.high_refresh_rate`).
     /// `collector`: debug mode's script (Debug.swift), nil while off.
     init(app: Site.App, control: Config.Control?, browser: Config.Browser, native: Config.NativePlugins, sshAgent: Config.SSHAgent,
-         watchLatency: Double, inspectable: Bool, web: Config.Web, collector: String? = nil) {
+         watchLatency: Double, inspectable: Bool, web: Config.Web, collector: String? = nil,
+         hostID: UUID = UUID(), primaryHost: Bool = true) {
         self.app = app
         self.watchLatency = watchLatency
         let catchesConsole = control?.consoleCapture == true
@@ -103,6 +108,12 @@ final class Tab: NSObject, WKNavigationDelegate {
             highRefreshRate = false
         }
         let controller = configuration.userContentController
+        controller.addUserScript(WKUserScript(source: """
+            Object.defineProperty(window, '__tilrHost', {
+              value: Object.freeze({ host: '\(hostID.uuidString)', primary: \(primaryHost ? "true" : "false") }),
+              writable: false, configurable: false
+            });
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         if catchesConsole, let control {
             controller.addUserScript(WKUserScript(source: ConsoleRelay.script(entryMax: control.consoleEntryMax),
                                                   injectionTime: .atDocumentStart, forMainFrameOnly: false))
@@ -110,12 +121,16 @@ final class Tab: NSObject, WKNavigationDelegate {
         }
         if let collector { controller.addUserScript(WKUserScript(source: collector, injectionTime: .atDocumentStart, forMainFrameOnly: true)) }
         controller.add(agent, name: AgentHost.name)
+        controller.addScriptMessageHandler(configBridge, contentWorld: .page, name: ConfigBridge.name)
         controller.addScriptMessageHandler(localServer, contentWorld: .page, name: LocalServerBridge.name)
+        controller.addScriptMessageHandler(handoffBridge, contentWorld: .page, name: HandoffBridge.name)
         controller.addScriptMessageHandler(performanceBridge, contentWorld: .page, name: PerformanceBridge.name)
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = PageWebView(frame: .zero, configuration: configuration)
         super.init()
         relay.tab = self
         localServer.tab = self
+        configBridge.tab = self
+        handoffBridge.tab = self
         performanceBridge.tab = self
         nativePlugins = NativePluginSession(tab: self, settings: native, browser: browser, inspectable: inspectable,
                                            highRefreshRate: web.highRefreshRate)
@@ -152,7 +167,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     }
 
     /// Loads the page the first time: starts the native providers, watches the folder and
-    /// navigates. The tab being selected, `switch.preload`, or a control command needs the page.
+    /// navigates. A native host or a control command needs the page.
     func loadIfNeeded() {
         guard !started else { return }
         started = true
@@ -186,6 +201,7 @@ final class Tab: NSObject, WKNavigationDelegate {
     private func navigate() {
         isLoaded = false
         loadEnded = false
+        loadError = nil
         let url = pageURL
         if webView.url == url {
             webView.reloadFromOrigin()
@@ -204,9 +220,10 @@ final class Tab: NSObject, WKNavigationDelegate {
         old.stopLoading()
         nativePlugins.pageDidNavigate()
         agent.closeAll()
+        handoffBridge.coordinator?.leaving(self)
         performanceBridge.reset()
         isLoaded = false
-        let next = WKWebView(frame: old.frame, configuration: old.configuration)
+        let next = PageWebView(frame: old.frame, configuration: old.configuration)
         next.navigationDelegate = self
         next.underPageBackgroundColor = old.underPageBackgroundColor
         next.isInspectable = old.isInspectable
@@ -268,7 +285,10 @@ final class Tab: NSObject, WKNavigationDelegate {
     /// Dispatches a CustomEvent on the page's `window` (what the web views report through).
     func send(event: String, detail: [String: Any]) {
         guard started, let json = Self.json(detail) else { return }
-        webView.callAsyncJavaScript(Self.dispatch, arguments: ["name": event, "detail": json], in: nil, in: .page) { [weak self] result in
+        let configEvent = event == "tilr:config"
+        if configEvent && (webView.url?.scheme != "tilr" || webView.url?.host != app.origin.host) { return }
+        let source = configEvent ? "if (location.protocol !== 'tilr:' || location.hostname !== host) return; " + Self.dispatch : Self.dispatch
+        webView.callAsyncJavaScript(source, arguments: ["name": event, "detail": json, "host": app.origin.host ?? ""], in: nil, in: .page) { [weak self] result in
             if case .failure(let error) = result, let self { print("\(app.name) \(event):", error.localizedDescription) }
         }
     }
@@ -307,27 +327,29 @@ final class Tab: NSObject, WKNavigationDelegate {
         loadEnded = false
         nativePlugins.pageDidNavigate()
         agent.closeAll()
+        handoffBridge.coordinator?.leaving(self)
         performanceBridge.reset()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         isLoaded = !webView.isLoading
-        loadFailed()
+        loadFailed(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         isLoaded = !webView.isLoading && webView.url != nil
-        loadFailed()
+        loadFailed(error)
     }
 
     /// A navigation failed: unless another one is already under way, the load has ended.
-    private func loadFailed() {
+    private func loadFailed(_ error: Error) {
         guard !webView.isLoading else { return }
+        loadError = error.localizedDescription
         loadEnded = true
-        didFailLoad?(self)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        handoffBridge.coordinator?.leaving(self)
         isLoaded = false
     }
 

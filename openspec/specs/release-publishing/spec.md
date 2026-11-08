@@ -9,8 +9,8 @@ Define verified immutable app/server publication, update compatibility, delta ge
 Release tools SHALL use existing authorized CI credentials without printing secrets, storing them in Git, creating replacement certificates to bypass restrictions or changing blanket key permissions.
 
 #### Scenario: Check release access
-- **WHEN** release_all.py --check runs in the CI build job
-- **THEN** it verifies required build tools, the configured identity/private key, notarization profile, temporary real signing and disk-image creation without creating a release or requiring the Sparkle private key
+- **WHEN** the CI build job runs release_all.py to package a release
+- **THEN** it first verifies required build tools, the configured identity/private key, notarization profile, temporary real signing and disk-image creation before packaging, without requiring the Sparkle private key
 - **AND** the CI publisher uses scoped Sparkle/R2 access without Apple signing private keys, notarization login, compilation or image creation
 - **AND** release configuration comes from the runner environment; no local setup command or local credentials configuration file is required
 - **AND** all app architectures share the Sparkle public key, separate from Developer ID credentials; CDN access uses R2 S3 keys through the AWS CLI
@@ -154,7 +154,7 @@ The Release workflow SHALL run automatically on pushes to release/** and stable 
 #### Scenario: Keep the marketing version numeric
 - **WHEN** an RC is built with version X.Y.Z and RC number N
 - **THEN** CFBundleShortVersionString and both DMG names use X.Y.Z without an RC suffix
-- **AND** the RC suffix appears only in the Git tag and GitHub pre-release metadata
+- **AND** the full version from the tag, including any RC suffix, is preserved separately in the bundle TilrReleaseTag and appcast item title; Sparkle shortVersionString remains numeric
 
 #### Scenario: Serialize candidate runs
 - **WHEN** another release push arrives while an RC or stable build is active
@@ -162,10 +162,10 @@ The Release workflow SHALL run automatically on pushes to release/** and stable 
 - **AND** multiple pushes arriving faster than a release build are not supported
 
 ### Requirement: Stable publication preflight
-Stable CI publication SHALL stop before any CDN upload, feed change or GitHub Release mutation if the stable release already has assets or the selected build is not newer than published builds. Both completed receipts SHALL be validated before any publication, and GitHub DMG paths SHALL come from their validated manifests.
+Stable CI publication SHALL stop before any CDN upload, feed change or GitHub Release mutation if the stable release already has assets or the selected build is older than a published build or conflicts with the bytes already published for that build. The same build with the same verified bytes SHALL be resumable after partial publication. Both completed receipts SHALL be validated before any publication, and GitHub DMG paths SHALL come from their validated manifests.
 
 #### Scenario: Stable release already published
-- **WHEN** the stable GitHub Release already has DMGs or the selected build is not newer than a stable appcast entry
+- **WHEN** the stable GitHub Release already has DMGs or the selected build is older than a published appcast entry or has different bytes at an existing immutable download URL
 - **THEN** the run fails without changing CDN objects, appcasts, tags or the GitHub Release
 
 #### Scenario: Invalid completed artifact
@@ -177,3 +177,39 @@ Stable CI publication SHALL stop before any CDN upload, feed change or GitHub Re
 - **WHEN** both completed stable artifacts pass preflight
 - **THEN** both feeds are prepared before publication and immutable downloads are uploaded and publicly verified before appcast.xml is changed and downloaded back for comparison
 - **AND** the regular GitHub Release receives both unchanged DMGs after successful CDN publication, without prerelease conversion, tag creation or replacement assets
+
+#### Scenario: Resume partial stable publication
+- **WHEN** publication fails between architectures or after CDN publication before GitHub DMG upload
+- **AND** the publish job is repeated using the same completed build and identical bytes while the GitHub Release has no assets
+- **THEN** publication verifies and preserves existing immutable downloads and matching appcasts, completes any missing architecture and attaches both unchanged DMGs to the GitHub Release
+- **AND** a newer published build or conflicting bytes stops the repeated job before any CDN, appcast or GitHub Release mutation
+
+### Requirement: Release identity in the update panel
+The About / Check for Updates panel SHALL show the full tagged version for installed and available releases independently of Sparkle's numeric version and build comparison.
+
+#### Scenario: Display a release candidate
+- **WHEN** a release built from vX.Y.Z-rc.N is installed or offered by the beta appcast
+- **THEN** Installed or Available respectively shows X.Y.Z-rc.N (build B)
+- **AND** Installed reads TilrReleaseTag from the signed bundle and Available reads the appcast title Tilr X.Y.Z-rc.N
+- **AND** packaging derives this metadata from the tag rather than the selected update channel
+
+#### Scenario: Display a stable or older release
+- **WHEN** a stable vX.Y.Z release is installed or offered
+- **THEN** the panel shows X.Y.Z (build B), without an RC suffix
+- **WHEN** the bundle lacks TilrReleaseTag or the appcast lacks a recognized release title
+- **THEN** the panel falls back to CFBundleShortVersionString or sparkle:shortVersionString respectively
+
+#### Scenario: Compare builds independently of release display
+- **WHEN** an installed X.Y.Z-rc.N at build B checks a stable X.Y.Z at a greater build
+- **THEN** Sparkle offers the stable build as an update
+- **WHEN** no newer build is available
+- **THEN** the panel retains the up-to-date status while displaying the full available version
+- **AND** CFBundleShortVersionString, CFBundleVersion, DMG naming and Sparkle comparison fields retain their existing numeric formats
+
+#### Scenario: Carry verified tag identity through packaging and publication
+- **WHEN** CI verifies a stable or RC tag
+- **THEN** its full version without the leading v is passed with --release-tag through release_all.py to release.py and stored in the completed release receipt
+- **AND** omitted --release-tag defaults to the numeric version; an explicit value must match that version with an optional positive -rc.N suffix
+- **WHEN** a resumed build or publication requests a different release tag from its completed artifact
+- **THEN** it stops before publishing that artifact
+- **AND** publication verifies that the bundle release tag and generated appcast title match the receipt

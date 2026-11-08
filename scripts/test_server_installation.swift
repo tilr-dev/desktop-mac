@@ -2,14 +2,17 @@ import Foundation
 import Darwin
 
 @main struct InstallationTests {
-    static func main() throws {
+    static func main() {
+        do { try run() } catch { fail("Unexpected error: \(error)") }
+    }
+
+    static func run() throws {
         let fm = FileManager.default
         let temp = fm.temporaryDirectory.appendingPathComponent("tilr-install-test-\(UUID().uuidString)")
         try fm.createDirectory(at: temp, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: temp) }
-        func expect(_ condition: Bool, line: UInt = #line) { precondition(condition, "line \(line)") }
         func rejects(_ body: () throws -> Void) {
-            do { try body(); fatalError("Expected refusal") } catch {}
+            do { try body(); fail("Expected refusal") } catch {}
         }
         func executable(_ url: URL, _ script: String) throws {
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -121,7 +124,7 @@ import Darwin
         expect(!fm.fileExists(atPath: absent.plist.path))
         expect(!fm.fileExists(atPath: absent.root.appendingPathComponent("state").path))
         expect(!fm.fileExists(atPath: absent.root.appendingPathComponent("app-managed.json").path))
-        let credentials = try absent.waitReady(version: installed.serverVersion, startupTimeout: 1, retryInterval: 1, wait: { _ in fatalError("Already ready") })
+        let credentials = try absent.waitReady(version: installed.serverVersion, startupTimeout: 1, retryInterval: 1, wait: { _ in fail("Already ready") })
         let cliToken = try absent.command(absent.root.appendingPathComponent("tilr"), ["--socket", absent.socketPath, "token"])
         expect(credentials["token"] == cliToken.text)
         let before = try Data(contentsOf: absent.binary)
@@ -138,19 +141,19 @@ import Darwin
         let updateRoot = base(updater)
         let externalUpdater = updateRoot.appendingPathComponent("external/tilrd")
         let updateVersion = updateRoot.appendingPathComponent("installed-version")
+        let updateConfig = updateRoot.appendingPathComponent("server.toml")
         let updateFailure = updateRoot.appendingPathComponent("fail-update")
         let updateLog = updateRoot.appendingPathComponent("update-commands")
         try Data("0.9.0-old\n".utf8).write(to: updateVersion)
         try executable(externalUpdater, """
         if [ "$1" = --version ]; then echo "tilrd $(cat '\(updateVersion.path)') (macos-aarch64)"; exit; fi
         echo "$0 $*" >> '\(updateLog.path)'
-        test "$#" = 3
+        test "$#" = 1
         test "$1" = update
-        test "$2" = --channel
         if [ -f '\(updateFailure.path)' ]; then echo 'download rejected by daemon' >&2; exit 7; fi
-        case "$3" in
-        stable) echo 0.9.1-stable > '\(updateVersion.path)' ;;
-        beta) echo 1.1.0-rc.2 > '\(updateVersion.path)' ;;
+        case "$(cat '\(updateConfig.path)' 2>/dev/null || true)" in
+        ''|'update_channel = "stable"') echo 0.9.1-stable > '\(updateVersion.path)' ;;
+        'update_channel = "beta"') echo 1.1.0-rc.2 > '\(updateVersion.path)' ;;
         *) exit 9 ;;
         esac
         """)
@@ -162,8 +165,8 @@ import Darwin
         let updateCredentials = try updater.credentials()
         try Data().write(to: updateFailure)
         do {
-            _ = try updater.update(channel: "stable")
-            fatalError("Expected daemon update failure")
+            _ = try updater.update()
+            fail("Expected daemon update failure")
         } catch {
             expect(error.localizedDescription.contains("download rejected by daemon"))
         }
@@ -173,11 +176,12 @@ import Darwin
         try fm.removeItem(at: updateFailure)
         let beforeUpdateCommands = commands(updater)
         // Successful updates report the actual installed version, whatever the bundle holds.
-        let stableVersion = try updater.update(channel: "stable")
+        let stableVersion = try updater.update()
         expect(stableVersion == "0.9.1-stable")
-        expect(try updater.update(channel: "beta") == "1.1.0-rc.2")
+        try Data("update_channel = \"beta\"\n".utf8).write(to: updateConfig)
+        expect(try updater.update() == "1.1.0-rc.2")
         let updateCommands = try String(contentsOf: updateLog, encoding: .utf8).split(separator: "\n").map(String.init)
-        expect(updateCommands == ["\(externalUpdater.path) update --channel stable", "\(externalUpdater.path) update --channel stable", "\(externalUpdater.path) update --channel beta"])
+        expect(updateCommands == ["\(externalUpdater.path) update", "\(externalUpdater.path) update", "\(externalUpdater.path) update"])
         expect(commands(updater) == beforeUpdateCommands)
         expect(try Data(contentsOf: externalUpdater) == externalBytes)
         expect(!fm.fileExists(atPath: updater.receipt.path))
@@ -224,7 +228,7 @@ import Darwin
         expect(linked.installedByApp)
         let staleLock = linked.root.appendingPathComponent(".tilr-app-install.lock")
         try Data().write(to: staleLock)
-        expect(try linked.remove(confirmExternal: { fatalError("Owned pair must not ask") }) == .removed)
+        expect(try linked.remove(confirmExternal: { fail("Owned pair must not ask") }) == .removed)
         expect(!fm.fileExists(atPath: staleLock.path))
         expect(!fm.fileExists(atPath: linked.root.appendingPathComponent("tilr").path))
         expect(!fm.fileExists(atPath: linked.installationMarker.path))
@@ -233,7 +237,7 @@ import Darwin
         expect(!linked.isInstalled)
         expect(linked.selection.binary == nil)
         let afterRemoval = commands(linked)
-        expect(try linked.remove(confirmExternal: { fatalError("Removed pair must not ask") }) == .notInstalled)
+        expect(try linked.remove(confirmExternal: { fail("Removed pair must not ask") }) == .notInstalled)
         expect(commands(linked) == afterRemoval)
         // Discovery for uninstall with disabled integration never starts a service.
         let disabled = try fixture("disabled-removal")
@@ -285,8 +289,8 @@ import Darwin
         expect(incompatible.binary == incompatibleExecutable)
         do {
             _ = try incompatible.waitReady(version: nil, startupTimeout: 1, retryInterval: 1,
-                                           wait: { _ in fatalError("Protocol failures must not wait") })
-            fatalError("Expected protocol failure")
+                                           wait: { _ in fail("Protocol failures must not wait") })
+            fail("Expected protocol failure")
         } catch {
             expect(error.localizedDescription.contains("incompatible protocol"))
             expect(error.localizedDescription.localizedCaseInsensitiveContains("update tilrd"))
@@ -311,7 +315,7 @@ import Darwin
         handoff.runner = { _, _ in .init(status: 1, text: "socket peer belongs to a different user") }
         rejects {
             _ = try handoff.waitReady(version: nil, startupTimeout: 2, retryInterval: 1,
-                                     wait: { _ in fatalError("Peer failures must not wait") })
+                                     wait: { _ in fail("Peer failures must not wait") })
         }
         // Existing tilr alone is not silently overwritten.
         let clientOnly = try fixture("client-only")
@@ -322,7 +326,7 @@ import Darwin
         var time = Date(timeIntervalSince1970: 0)
         do {
             _ = try running.waitReady(version: "3.0.0", startupTimeout: 2, retryInterval: 1, now: { time }, wait: { time.addTimeInterval($0) })
-            fatalError("Expected mismatch")
+            fail("Expected mismatch")
         } catch {
             expect(error.localizedDescription.contains("2.0.0-new") && error.localizedDescription.contains("3.0.0"))
         }

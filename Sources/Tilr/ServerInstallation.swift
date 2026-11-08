@@ -418,11 +418,10 @@ struct ServerInstallation {
     }
 
     /// Delegate all download and publication work to the selected ordinary daemon.
-    func update(channel: String) throws -> String {
-        guard ["stable", "beta"].contains(channel) else { throw Failure("Invalid tilrd update channel") }
+    func update() throws -> String {
         _ = try installedVersion()
-        progress?("Updating tilrd (\(channel))…")
-        let response = try command(binary, ["update", "--channel", channel])
+        progress?("Updating tilrd…")
+        let response = try command(binary, ["update"])
         guard response.status == 0 else { throw Failure("tilrd update failed: \(response.text)") }
         return try installedVersion()
     }

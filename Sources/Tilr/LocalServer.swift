@@ -9,18 +9,20 @@ final class LocalServerHost: NSObject {
 
     private let resolveRunningExecutable: (() throws -> URL?)?
     private let receiveNotice: ((String) -> Void)?
-    var updateChannel: () -> String = { "stable" }
+    private let runAlert: (NSAlert) -> NSApplication.ModalResponse
     init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
          receiveNotice: ((String) -> Void)? = nil,
+         runAlert: @escaping (NSAlert) -> NSApplication.ModalResponse = { $0.runModal() },
          resolveRunningExecutable: (() throws -> URL?)? = nil) {
         self.resolveRunningExecutable = resolveRunningExecutable
         self.homeDirectory = homeDirectory
         self.receiveNotice = receiveNotice
+        self.runAlert = runAlert
         super.init()
     }
     private(set) var status = "Local server is not enabled in this instance."
     private var starting = false
-    private var busy = false
+    private(set) var busy = false
     private var result: Result<[String: String]?, Error> = .success(nil)
     private var waiting: [(Result<[String: String]?, Error>) -> Void] = []
     private var installation: ServerInstallation?
@@ -222,17 +224,16 @@ final class LocalServerHost: NSObject {
         notice(status)
     }
 
-    /// The selected daemon installs the latest tilrd and tilr of the channel read now, then
+    /// The selected daemon reads its configured channel and installs the latest tilrd and tilr, then
     /// the application waits for the version it reports. Pages reconnect only on a change.
     @MainActor private func runUpdate(_ installation: ServerInstallation, _ settings: Config.LocalServer) async throws {
-        let channel = updateChannel()
-        status = "Updating tilrd (\(channel))…"
+        status = "Updating tilrd…"
         var updater = installation
         updater.timeout = settings.updateTimeout
         let previous = runningVersion
         let wasReady: Bool
         if case .success(.some) = result { wasReady = true } else { wasReady = false }
-        let version = try await Self.background { try updater.update(channel: channel) }
+        let version = try await Self.background { try updater.update() }
         let credentials: [String: String]
         do {
             credentials = try await Self.background {
@@ -300,12 +301,20 @@ final class LocalServerHost: NSObject {
             }
         }
         buttons.forEach { alert.addButton(withTitle: $0.0) }
-        let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let index = runAlert(alert).rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         if buttons.indices.contains(index) { buttons[index].1() }
     }
 
-    private func confirmRemove() {
+    func confirmRemove() {
         guard let installation else { return }
+        if installation.installedByApp {
+            let alert = NSAlert()
+            alert.messageText = "Remove the local server?"
+            alert.informativeText = "This removes the installed executables and startup registration. The running server remains until it exits. Existing state, token and logs are kept."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Remove").hasDestructiveAction = true
+            guard runAlert(alert) == .alertSecondButtonReturn else { return }
+        }
         uninstall(installation, userInitiated: true)
     }
 

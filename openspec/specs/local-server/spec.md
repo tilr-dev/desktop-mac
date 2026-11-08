@@ -19,11 +19,11 @@ Tilr SHALL bundle unchanged signed/notarized tilrd and tilr executables from the
 - **THEN** the bundled tilrd and tilr are installed into ~/.local/bin without network access or build tools, after verifying both signatures and that both report the same version
 - **AND** tilr service install starts the ordinary service and a persistent marker records that the application installed it
 - **AND** a durable pair-installation journal recovers interruptions before or between executable publication and ownership marker creation
-- **AND** application and daemon versions remain independent; daemon updates use the Receive RC versions preference to select stable or beta
+- **AND** application and daemon versions remain independent; daemon updates use the channel configured in server.toml, defaulting to stable
 
 #### Scenario: Update to the latest release at launch
 - **WHEN** the application starts with local_server enabled, including the first launch after a Sparkle application update and after installing the bundled pair
-- **THEN** after the selected daemon is ready, the application runs that tilrd's update --channel stable, or update --channel beta when Receive RC versions is on, off the UI thread without asking
+- **THEN** after the selected daemon is ready, the application runs that tilrd's update command without a channel argument, off the UI thread without asking
 - **AND** the existing credentials stay usable while the command runs; after it succeeds the application waits for the reported version to be running and rechecks it
 - **AND** an already latest daemon is left running unchanged
 - **AND** an unavailable CDN or a failed command leaves the installed pair running and is shown in Local Server without an alert, so an offline launch keeps the bundled or installed version
@@ -48,7 +48,7 @@ Tilr SHALL connect to the ordinary local tilrd on port 7890 using its default st
 - **THEN** no migration of the private service or its state is performed; reinstallation is required
 
 ### Requirement: Explicit server update controls
-Tilr SHALL show the installed tilrd version and an Update tilrd button in Local Server and SHALL update the selected ordinary daemon by running its own update command, which installs the latest tilrd and tilr of the selected channel. The application SHALL NOT consume a server update feed, compare the daemon with the bundled version or replace installed executables to update them.
+Tilr SHALL show the installed tilrd version and an Update tilrd button in Local Server and SHALL update the selected ordinary daemon by running its own update command, which installs the latest tilrd and tilr of the channel configured in server.toml, defaulting to stable. The application SHALL NOT consume a server update feed, compare the daemon with the bundled version or replace installed executables to update them.
 
 #### Scenario: Inspect and check
 - **WHEN** Local Server opens or Refresh is selected
@@ -57,8 +57,8 @@ Tilr SHALL show the installed tilrd version and an Update tilrd button in Local 
 
 #### Scenario: Select the daemon update channel
 - **WHEN** Update tilrd is selected
-- **THEN** the selected installed tilrd runs update --channel stable when Receive RC versions is off, or update --channel beta when it is on
-- **AND** the preference is read when the action starts, including changes made during the application session
+- **THEN** the selected installed tilrd runs update without a channel argument
+- **AND** tilrd reads the channel from server.toml; Receive RC versions controls only the Sparkle feed for Tilr.app
 - **AND** the command runs off the UI thread and application file operations do not replace the daemon
 
 #### Scenario: Prompt for an older daemon
@@ -74,16 +74,22 @@ Tilr SHALL show the installed tilrd version and an Update tilrd button in Local 
 - **THEN** the application rechecks the actual installed and running versions and protocol before reporting readiness
 
 ### Requirement: Removal preserves user state
-Tilr SHALL preserve ordinary daemon user state, sessions, token and logs when local-server support is disabled or removal is requested, and SHALL use the application installation marker to distinguish an application-installed daemon from a pre-existing installation. A matching marker SHALL authorize daemon removal; an unmarked installation SHALL require explicit user consent.
+Tilr SHALL preserve ordinary daemon user state, sessions, token and logs when local-server support is disabled or removal is requested, and SHALL use the application installation marker to distinguish an application-installed daemon from a pre-existing installation. A matching marker SHALL authorize daemon removal only after the user confirms Remove Local Server; an unmarked installation SHALL require explicit user consent.
 
 #### Scenario: Disable or remove
 - **WHEN** local_server.enabled becomes false
 - **THEN** application integration stops without deleting default daemon state or claiming a pre-existing installation as application-owned
 
 #### Scenario: Remove an application-installed pair
-- **WHEN** the user selects Remove Local Server and the marker identifies the selected daemon in the application installation directory, including a symlinked directory
+- **WHEN** the user confirms removal and the marker identifies the selected daemon in the application installation directory, including a symlinked directory
 - **THEN** tilr service uninstall removes ordinary startup registration and the application removes its installed executable pair and installation metadata
 - **AND** default state, token, logs and existing running sessions remain untouched
+
+#### Scenario: Cancel removal of an application-installed pair
+- **WHEN** the user selects Remove Local Server for an application-installed pair
+- **THEN** Tilr asks “Remove the local server?” with Cancel and a destructive Remove button
+- **AND** the dialog explains that the running server remains until it exits and state, token and logs are preserved
+- **AND** choosing Cancel leaves files, startup registration, running daemon and application integration unchanged
 
 #### Scenario: Decline removal of an independently installed daemon
 - **WHEN** the user selects Remove Local Server for an installation without a matching application marker

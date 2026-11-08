@@ -85,9 +85,9 @@ public final class PluginManagerService: @unchecked Sendable {
         }
     }
 
-    private let queue: DispatchQueue
+    let queue: DispatchQueue
     // Only touched on `queue`.
-    private var settings: Settings
+    var settings: Settings
     private var manager: PackageManager?
 
     public init(settings: Settings, label: String = "dev.tilr.plugin-manager") {
@@ -111,6 +111,24 @@ public final class PluginManagerService: @unchecked Sendable {
             queue.async {
                 self.manager = nil
                 done.resume()
+            }
+        }
+    }
+
+    /// Launch migration shares the operation queue and releases its lock when it opened it.
+    /// Missing/empty workspaces remain absent; a later Control command cannot race this sync.
+    public func syncDistIfInstalled() async throws -> DistSync? {
+        try await withCheckedThrowingContinuation { done in
+            queue.async {
+                do {
+                    guard !(try Gitpm.readState(root: self.settings.root).resolved).isEmpty else {
+                        done.resume(returning: nil)
+                        return
+                    }
+                    let wasOpen = self.manager != nil
+                    defer { if !wasOpen { self.manager = nil } }
+                    done.resume(returning: try self.openManager().syncDist())
+                } catch { done.resume(throwing: PluginManagerFailure.from(error)) }
             }
         }
     }
@@ -140,17 +158,17 @@ public final class PluginManagerService: @unchecked Sendable {
     /// From a Git source (URL or local path): the latest release tag, an explicit ref, or the
     /// branch head with `.dev`.
     public func install(source: String, target: InstallTarget = .release) async throws -> InstallResult {
-        try await run(git: true) { try $0.install(source: source, target: target, package: nil) }
+        try await run(git: true) { try $0.install(source: source, target: target, package: nil, force: false) }
     }
     /// An exact catalog release (latest when `version` is nil), hashes verified.
     public func installFromCatalog(id: String, version: String? = nil) async throws -> InstallResult {
-        try await run(git: true) { try $0.installFromCatalog(id: id, version: version) }
+        try await run(git: true) { try $0.installFromCatalog(id: id, version: version, force: false) }
     }
     public func update(id: String, target: Target = .release) async throws -> RevisionChange {
-        try await run(git: true) { try $0.update(id: id, target: target) }
+        try await run(git: true) { try $0.update(id: id, target: target, detach: false) }
     }
     public func rollback(id: String) async throws -> RevisionChange { try await run(git: true) { try $0.rollback(id: id) } }
-    public func enable(id: String) async throws { try await run { _ = try $0.enable(id: id) } }
+    public func enable(id: String) async throws { try await run { _ = try $0.enable(id: id, force: false) } }
     /// `has_dependents` while other installed plugins need it, unless `force`.
     public func disable(id: String, force: Bool = false) async throws { try await run { _ = try $0.disable(id: id, force: force) } }
     /// Unregisters; the repository and its files stay on disk (`restore` brings it back).
@@ -234,7 +252,7 @@ public final class PluginManagerService: @unchecked Sendable {
         return nil
     }
 
-    private static func requireGit() throws {
+    static func requireGit() throws {
         if let problem = gitProblem() { throw PluginManagerFailure(kind: "git", message: problem) }
     }
 
@@ -246,20 +264,21 @@ public final class PluginManagerService: @unchecked Sendable {
             queue.async {
                 do {
                     if git { try Self.requireGit() }
-                    let manager: PackageManager
-                    if let open = self.manager {
-                        manager = open
-                    } else {
-                        manager = try PackageManager.open(root: self.settings.root,
-                                                         options: ManagerOptions(catalog: self.settings.catalog))
-                        self.manager = manager
-                    }
+                    let manager = try self.openManager()
                     done.resume(returning: try body(manager))
                 } catch {
                     done.resume(throwing: PluginManagerFailure.from(error))
                 }
             }
         }
+    }
+
+    // Only called on the service queue, including Control dispatch.
+    func openManager() throws -> PackageManager {
+        if let manager { return manager }
+        let opened = try PackageManager.open(root: settings.root, options: ManagerOptions(catalog: settings.catalog))
+        manager = opened
+        return opened
     }
 
     /// A blocking call that needs no workspace, on a global queue (not behind a long install).

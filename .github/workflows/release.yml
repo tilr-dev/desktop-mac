@@ -105,9 +105,10 @@ jobs:
         env:
           TILR_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
           VERSION: ${{ steps.metadata.outputs.version }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.release_tag }}
           CHANNEL: ${{ steps.metadata.outputs.channel }}
           BUILD: ${{ steps.number.outputs.build }}
-        run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL"
+        run: python3 scripts/release_all.py --version "$VERSION" --build "$BUILD" --channel "$CHANNEL" --release-tag "$RELEASE_TAG"
 
       - name: Remove the keychain
         if: always()

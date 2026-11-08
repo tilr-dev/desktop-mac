@@ -28,38 +28,63 @@ final class DeferredUpdate: NSObject {
         let updates = AppUpdates(updaterDelegate: host, preferences: preferences)
         let updater = updates.controller.updater
         // Validate Sparkle configuration without entering its scheduled runloop cycle.
-        try! updater.start()
+        do { try updater.start() } catch { fail("Updater start: \(error)") }
         let menuItem = NSMenuItem(title: "Check for Updates…",
                                   action: #selector(AppUpdates.checkForUpdates(_:)), keyEquivalent: "")
         menuItem.target = updates
         func expectMenuEnabled(_ enabled: Bool) {
             let validator = menuItem.target as? NSMenuItemValidation
-            precondition(validator != nil, "Update menu target must preserve Sparkle validation")
-            precondition(validator!.validateMenuItem(menuItem) == enabled)
+            expect(validator != nil, "Update menu target must preserve Sparkle validation")
+            expect(validator!.validateMenuItem(menuItem) == enabled)
         }
         updater.setValue(true, forKey: "canCheckForUpdates")
         expectMenuEnabled(true)
         updater.setValue(false, forKey: "canCheckForUpdates")
         expectMenuEnabled(false)
         func expectFeed(_ beta: Bool) {
-            precondition(preferences.daemonChannel == (beta ? "beta" : "stable"))
             let expected = "https://cdn.tilr.dev/mac/\(beta ? "beta/" : "")\(arch)/appcast.xml"
-            precondition(updates.controller.updater.feedURL?.absoluteString == expected,
+            expect(updates.controller.updater.feedURL?.absoluteString == expected,
                          "Sparkle feed: \(String(describing: updater.feedURL)), expected \(expected)")
         }
-        precondition(Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") == nil)
-        precondition(ProcessInfo.processInfo.environment["TILR_UPDATE_FEED"] == "https://invalid.example/ignored.xml")
-        if mode == "active" {
+        expect(Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") == nil)
+        expect(ProcessInfo.processInfo.environment["TILR_UPDATE_FEED"] == "https://invalid.example/ignored.xml")
+        if mode == "display" {
+            let about = About()
+            about.show(appUpdates: nil, pluginStatus: [])
+            let panel = NSApp.windows.first { $0.title == "About Tilr" }!
+            let stack = panel.contentView!.subviews.compactMap { $0 as? NSStackView }.first!
+            func texts() -> [String] {
+                stack.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }
+            }
+            expect(texts().contains("Installed: \(CommandLine.arguments[4]) (build 1)"))
+            for (title, expected) in [("Tilr 0.1.0-rc.2", "0.1.0-rc.2"),
+                                      ("Tilr 0.1.0", "0.1.0"), ("Legacy release", "0.1.0"),
+                                      ("", "0.1.0"), ("Tilr 9.9.9-rc.1", "0.1.0")] {
+                let item = SUAppcastItem(dictionary: ["title": title, "sparkle:version": "2",
+                    "sparkle:shortVersionString": "0.1.0", "link": "https://tilr.dev/release"])!
+                expect(item.displayVersionString == "0.1.0" && item.versionString == "2")
+                expect(SUStandardVersionComparator.default.compareVersion(item.versionString, toVersion: "1") == .orderedDescending)
+                about.updater(updater, didFindValidUpdate: item)
+                expect(texts().contains("Available: \(expected) (build 2)"))
+                let error = NSError(domain: SUSparkleErrorDomain, code: Int(SUError.noUpdateError.rawValue),
+                    userInfo: [SPULatestAppcastItemFoundKey: item, NSLocalizedDescriptionKey: "You're up to date!"])
+                about.updaterDidNotFindUpdate(updater, error: error)
+                expect(texts().contains("Available: \(expected) (build 2)"))
+                expect(texts().contains("You're up to date!"))
+            }
+            panel.close()
+            defaults.removePersistentDomain(forName: suite)
+        } else if mode == "active" {
             let previous = updates.controller!
             previous.updater.setValue(true, forKey: "sessionInProgress")
             previous.updater.setValue(DeferredUpdate(), forKey: "resumableUpdate")
             preferences.receivesRCVersions = true
-            precondition(updates.controller === previous, "An active check was interrupted")
+            expect(updates.controller === previous, "An active check was interrupted")
             previous.updater.setValue(false, forKey: "sessionInProgress")
             // Drain the observation's queued replacement, using an event, not a delay.
             DispatchQueue.main.async {
-                precondition(updates.controller !== previous)
-                precondition(updates.controller.updater.value(forKey: "resumableUpdate") == nil)
+                expect(updates.controller !== previous)
+                expect(updates.controller.updater.value(forKey: "resumableUpdate") == nil)
                 expectFeed(true)
                 updates.controller.updater.setValue(true, forKey: "canCheckForUpdates")
                 expectMenuEnabled(true)
@@ -70,38 +95,38 @@ final class DeferredUpdate: NSObject {
             }
             CFRunLoopRun()
         } else if mode == "enable" {
-            precondition(!preferences.receivesRCVersions)
+            expect(!preferences.receivesRCVersions)
             expectFeed(false)
             updates.showSettings()
             let panel = NSApp.windows.first { $0.title == "Update Settings" }!
             let stack = panel.contentView!.subviews.compactMap { $0 as? NSStackView }.first!
             let buttons = stack.arrangedSubviews.compactMap { $0 as? NSButton }
             let rc = buttons.first { $0.title == "Receive RC versions" }!
-            precondition(rc.state == .off)
+            expect(rc.state == .off)
             rc.state = .on
-            precondition(NSApp.sendAction(rc.action!, to: rc.target, from: rc))
-            precondition(preferences.receivesRCVersions)
+            expect(NSApp.sendAction(rc.action!, to: rc.target, from: rc))
+            expect(preferences.receivesRCVersions)
             expectFeed(true)
             // The adapter still advertises and forwards the host's About callbacks.
             let selector = #selector(SPUUpdaterDelegate.updater(_:didFinishUpdateCycleFor:error:))
             let delegate: SPUUpdaterDelegate = UpdateFeedDelegate(preferences: preferences, host: host)
-            precondition(delegate.responds(to: selector))
+            expect(delegate.responds(to: selector))
             delegate.updater?(updater, didFinishUpdateCycleFor: .updates, error: nil)
-            precondition(host.finished)
+            expect(host.finished)
             panel.close()
         } else if mode == "disable" {
-            precondition(preferences.receivesRCVersions, "RC preference did not survive relaunch")
+            expect(preferences.receivesRCVersions, "RC preference did not survive relaunch")
             expectFeed(true)
             updater.automaticallyDownloadsUpdates = true
             updater.setValue(DeferredUpdate(), forKey: "resumableUpdate")
             preferences.receivesRCVersions = false
-            precondition(updates.controller.updater.value(forKey: "resumableUpdate") == nil,
+            expect(updates.controller.updater.value(forKey: "resumableUpdate") == nil,
                          "Next check would resume a cached RC after disabling RC versions")
-            precondition(updates.controller.updater.automaticallyDownloadsUpdates)
-            precondition(!updates.controller.updater.automaticallyChecksForUpdates)
+            expect(updates.controller.updater.automaticallyDownloadsUpdates)
+            expect(!updates.controller.updater.automaticallyChecksForUpdates)
             expectFeed(false)
         } else {
-            precondition(!preferences.receivesRCVersions, "Stable preference did not survive relaunch")
+            expect(!preferences.receivesRCVersions, "Stable preference did not survive relaunch")
             expectFeed(false)
             defaults.removePersistentDomain(forName: suite)
         }

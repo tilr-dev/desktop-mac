@@ -1,6 +1,6 @@
 # Removing Tilr and its local server
 
-Open **Tilr → Local Server… → Remove Local Server…** to remove tilrd. If Tilr installed the server, its installation marker authorizes removal. Otherwise **Remove tilrd?** asks for consent: **No** keeps the installation and integration unchanged; **Yes** unregisters startup and removes the selected tilrd executable. Independently installed terminal clients are kept.
+Open **Tilr → Local Server… → Remove Local Server…** to remove tilrd. If Tilr installed the server, **Remove the local server?** asks for confirmation: **Cancel** leaves the executables, startup registration and running server unchanged; **Remove** deletes the installed pair and startup registration. The dialog explains that the running server remains until it exits and existing state, token and logs are kept. Otherwise **Remove tilrd?** asks for consent: **No** keeps the installation and integration unchanged; **Yes** unregisters startup and removes the selected tilrd executable. Independently installed terminal clients are kept.
 
 Choose **Tilr → Uninstall Tilr…** to remove the application. After confirmation, Tilr uses the same server policy, stops its own resources, deletes its settings, plugins, web data, caches and preferences, moves its bundle to Trash, and quits. Choosing **No** for an independently installed tilrd still uninstalls the application. Custom configuration and probe instances cannot invoke application uninstall.
 

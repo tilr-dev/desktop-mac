@@ -21,6 +21,7 @@ class CIReleaseIntegration(unittest.TestCase):
         self.env = dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}",
                         FIXTURE_ROOT=str(self.root), GITHUB_OUTPUT=str(self.root / 'output'),
                         GITHUB_REPOSITORY='tilr-dev/tilr-mac', GITHUB_SHA='a' * 40,
+                        TILR_UPDATE_PUBLIC_KEY='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
                         NOTES='First line\nSecond line with `code` and $(literal)\n')
         # The selected tag is checked against checkout HEAD, never the push event SHA.
         self.env['GITHUB_SHA'] = 'b' * 40
@@ -32,6 +33,12 @@ class CIReleaseIntegration(unittest.TestCase):
         self.executable('curl', '''import json, os, pathlib, sys
 root = pathlib.Path(os.environ['FIXTURE_ROOT'])
 args = sys.argv[1:]
+from urllib.parse import urlsplit
+remote = root / 'cdn' / urlsplit(args[-1]).path.lstrip('/')
+if remote.is_file():
+    pathlib.Path(args[args.index('-o') + 1]).write_bytes(remote.read_bytes())
+    print('200', end='')
+    sys.exit(0)
 entry = json.loads((root / 'feeds').read_text())[args[-1]]
 if entry.get('exit'):
     sys.exit(entry['exit'])
@@ -54,6 +61,9 @@ if args[0] == 'api':
 elif args[:2] == ['release', 'view']:
     print((root / 'release').read_text())
 elif args[:2] == ['release', 'upload']:
+    if (root / 'interrupt-upload').exists():
+        (root / 'interrupt-upload').unlink()
+        sys.exit('controlled interruption before GitHub upload')
     assets = {pathlib.Path(p).name: pathlib.Path(p).read_text() for p in args if p.endswith('.dmg')}
     (root / 'uploaded').write_text(json.dumps(assets))
 elif args[:2] == ['release', 'edit']:
@@ -94,6 +104,11 @@ def boundary(command, **kwargs):
         root = pathlib.Path(os.environ['FIXTURE_ROOT'])
         with (root / 'cdn-calls').open('a') as out:
             out.write(json.dumps([directory.name, '--publish' in command]) + '\\n')
+        if os.environ.get('REAL_PUBLISHER'):
+            if '--publish' in command and directory.name.endswith('x86_64') and (root / 'interrupt-arch').exists():
+                (root / 'interrupt-arch').unlink()
+                raise RuntimeError('controlled interruption between architectures')
+            return original([sys.executable, '-c', os.environ['PUBLISH_BOOTSTRAP'], *map(str, command[2:])], **kwargs)
         if '--publish' in command:
             (directory / 'published.json').write_text(json.dumps(dict(download='https://cdn.tilr.dev/' + directory.name)))
         return
@@ -102,6 +117,54 @@ release_all.subprocess.run = boundary
 sys.argv = sys.argv[1:]
 runpy.run_path(sys.argv[0], run_name='__main__')
 """
+
+    def real_publisher(self):
+        self.env.update(REAL_PUBLISHER='1', PUBLISH_BOOTSTRAP=f"""import base64, json, os, pathlib, sys
+from urllib.parse import urlsplit
+sys.path.insert(0, {str(SCRIPT.parent)!r})
+import fetch_server, publish
+root = pathlib.Path(os.environ['FIXTURE_ROOT'])
+fetch_server.check_binary = lambda *args: '0.2.1-abcdef0'
+publish.ROOT = root
+publish.sparkle_key = lambda: []
+publish.sparkle_public_key = lambda: os.environ.get('TILR_UPDATE_PUBLIC_KEY', 'public')
+def storage(url):
+    return root / 'cdn' / urlsplit(url).path.lstrip('/')
+def fetch(url, destination, headers=()):
+    path = storage(url)
+    if path.exists():
+        destination.write_bytes(path.read_bytes())
+        return True
+    entry = json.loads((root / 'feeds').read_text()).get(url)
+    if entry and entry.get('status') == '200':
+        destination.write_text(entry['body'])
+        return True
+    return False
+def put(path, key, *args):
+    destination = root / 'cdn' / key
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(path.read_bytes())
+    with (root / 'writes').open('a') as log:
+        log.write(key + '\\n')
+def run(*args, **kwargs):
+    if pathlib.Path(args[0]).name != 'generate_appcast':
+        return
+    stage = pathlib.Path(args[-1])
+    dmg = next(stage.glob('*.dmg'))
+    build = args[args.index('--versions') + 1]
+    prefix = args[args.index('--download-url-prefix') + 1]
+    sig = base64.b64encode(bytes(64)).decode()
+    (stage / 'appcast.xml').write_text(f'<rss xmlns:sparkle="{{publish.SPARKLE}}"><channel><item>'
+        f'<sparkle:version>{{build}}</sparkle:version><sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>'
+        f'<sparkle:criticalUpdate/><enclosure url="{{prefix}}{{dmg.name}}" length="{{dmg.stat().st_size}}" '
+        f'sparkle:edSignature="{{sig}}"/></item></channel></rss>')
+publish.fetch, publish.put, publish.run = fetch, put, run
+publish.main()
+""")
+
+    def cdn_snapshot(self):
+        return {str(path.relative_to(self.root)): path.read_bytes()
+                for path in (self.root / 'cdn').rglob('*') if path.is_file()}
 
     def assert_build(self, expected):
         (self.root / 'output').unlink(missing_ok=True)
@@ -156,19 +219,30 @@ runpy.run_path(sys.argv[0], run_name='__main__')
             dmg = directory / name
             dmg.write_text(f'signed notarized {arch}')
             prefix = 'beta/' if channel == 'beta' else ''
-            meta = dict(version='0.3.0', build=13, arch=arch, preview=False,
+            meta = dict(release_tag='0.3.0-rc.2' if channel == 'beta' else '0.3.0', version='0.3.0', build=13, arch=arch, preview=False,
                         dmg=name, sha256=hashlib.sha256(dmg.read_bytes()).hexdigest(),
-                        feed=f'https://cdn.tilr.dev/mac/{prefix}{arch}/appcast.xml', public_key='public')
+                        feed=f'https://cdn.tilr.dev/mac/{prefix}{arch}/appcast.xml', public_key=self.env['TILR_UPDATE_PUBLIC_KEY'])
             (directory / 'release.json').write_text(json.dumps(meta))
             contents = directory / 'Tilr.app/Contents'
             contents.mkdir(parents=True)
             (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
                 CFBundleIdentifier='dev.tilr.mac', CFBundleVersion='13', CFBundleShortVersionString='0.3.0',
-                SUPublicEDKey='public', TilrUpdateFeedSelection='preferences', TilrServerProtocolVersion=1)))
+                TilrReleaseTag=meta['release_tag'], SUPublicEDKey=meta['public_key'], TilrUpdateFeedSelection='preferences', TilrServerProtocolVersion=1)))
             helpers = contents / 'Helpers'
             helpers.mkdir()
             (helpers / 'tilrd').write_bytes(b'server')
             (helpers / 'tilr').write_bytes(b'client')
+
+    def test_different_rc_artifacts_are_rejected_before_publication(self):
+        self.assets()
+        for command in ('github', 'publish'):
+            result = self.run_helper(command, '--tag', 'v0.3.0-rc.3', '--build', '13',
+                                     '--root', str(self.root),
+                                     *(['--notes-file', str(self.root / 'notes')] if command == 'publish' else []))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('release tag differs', result.stderr)
+            self.assertFalse((self.root / 'uploaded').exists())
+            self.assertFalse((self.root / 'cdn-calls').exists())
 
     def github(self, tag='v0.3.0-rc.2'):
         return self.run_helper('github', '--tag', tag, '--build', '13', '--root', str(self.root))
@@ -183,7 +257,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         self.feed('arm64', [12], channel='beta')
         metadata = self.metadata()
         self.assertEqual(metadata.returncode, 0, metadata.stderr)
-        self.assertEqual((self.root / 'output').read_text(), 'version=0.3.0\nchannel=beta\n')
+        self.assertEqual((self.root / 'output').read_text(), 'version=0.3.0\nchannel=beta\nrelease_tag=0.3.0-rc.2\n')
         self.assertEqual((self.root / 'notes').read_text(), self.env['NOTES'])
         self.assert_build(13)
         self.assets()
@@ -212,7 +286,22 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     def test_workflow_shell_resumes_partially_published_beta(self):
         self.workflow_shell('beta', partial=True)
 
-    def workflow_shell(self, channel, partial=False):
+    def test_workflow_shell_resumes_stable_between_architectures(self):
+        self.workflow_shell('stable', interruption='arch')
+
+    def test_workflow_shell_resumes_stable_before_github_upload(self):
+        self.workflow_shell('stable', interruption='upload')
+
+    def test_partial_stable_rejects_changed_public_bytes_before_mutations(self):
+        self.workflow_shell('stable', interruption='arch', conflict='bytes')
+
+    def test_partial_stable_rejects_newer_build_before_mutations(self):
+        self.workflow_shell('stable', interruption='arch', conflict='build')
+
+    def test_partial_stable_rejects_github_assets_before_mutations(self):
+        self.workflow_shell('stable', interruption='arch', conflict='assets')
+
+    def workflow_shell(self, channel, partial=False, interruption=None, conflict=None):
         from test_release_workflow import WORKFLOW, jobs, steps, index
         workflow = jobs(WORKFLOW.read_text())
         tag = 'v0.3.0-rc.2' if channel == 'beta' else 'v0.3.0'
@@ -231,9 +320,13 @@ assert args[0] == 'scripts/release_all.py'
 assert '--publish-only' not in args and '--publish' not in args
 version, build = args[args.index('--version') + 1], args[args.index('--build') + 1]
 assert version == '0.3.0' and build == '13'
+assert args[args.index('--release-tag') + 1] == ('0.3.0-rc.2' if os.environ['EXPECTED_CHANNEL'] == 'beta' else '0.3.0')
 assert args[args.index('--channel') + 1] == os.environ['EXPECTED_CHANNEL']
 """)
-        def run_step(job, marker):
+        if interruption:
+            self.real_publisher()
+
+        def run_step(job, marker, succeeds=True):
             step = steps(workflow[job])[index(workflow[job], marker)]
             env = dict(self.env, RUNNER_TEMP=str(self.root), CI_SCRIPT=str(SCRIPT),
                        CI_BOOTSTRAP=self.bootstrap(), EXPECTED_CHANNEL=channel,
@@ -246,10 +339,15 @@ assert args[args.index('--channel') + 1] == os.environ['EXPECTED_CHANNEL']
                 script = '\n'.join(line[10:] for line in script[2:].splitlines())
             result = subprocess.run(['bash', '-eo', 'pipefail', '-c', script], cwd=self.root,
                                     env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            if succeeds:
+                self.assertEqual(result.returncode, 0, result.stderr)
+            elif succeeds is False:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('controlled interruption', result.stderr)
+            return result
         run_step('app', 'ci_release.py release')
         metadata = dict(line.split('=') for line in (self.root / 'output').read_text().splitlines())
-        self.assertEqual(metadata, dict(version='0.3.0', channel=channel))
+        self.assertEqual(metadata, dict(version='0.3.0', channel=channel, release_tag=tag[1:]))
         context.update({f'steps.metadata.outputs.{key}': value for key, value in metadata.items()})
         run_step('app', 'ci_release.py build')
         build = (self.root / 'output').read_text().splitlines()[-1].split('=')[1]
@@ -272,13 +370,61 @@ assert args[args.index('--channel') + 1] == os.environ['EXPECTED_CHANNEL']
         run_step('publish', 'ci_release.py release')
         if partial:
             self.feed('arm64', [13], channel='beta')
+        if interruption:
+            (self.root / f'interrupt-{interruption}').touch()
+            run_step('publish', 'name: Publish the app', succeeds=interruption != 'arch')
+            if interruption == 'upload':
+                run_step('publish', 'ci_release.py github', succeeds=False)
+            self.assertFalse((self.root / 'uploaded').exists())
+            self.assertFalse((self.root / 'edited').exists())
+            before = self.cdn_snapshot()
+            self.assertTrue(any('arm64/appcast.xml' in key for key in before))
+            self.assertEqual(any('x86_64/appcast.xml' in key for key in before), interruption == 'upload')
+            writes = (self.root / 'writes').read_text().splitlines()
+            artifacts = {str(path): path.read_bytes() for path in releases.rglob('*')
+                         if path.name == 'release.json' or path.suffix == '.dmg'}
+            if conflict:
+                if conflict == 'bytes':
+                    dmg = self.root / 'cdn/mac/arm64/Tilr-0.3.0-13-arm64.dmg'
+                    dmg.write_bytes(b'x' * dmg.stat().st_size)
+                    error = 'Existing feed points to a missing/different archive'
+                elif conflict == 'build':
+                    self.feed('x86_64', [16])
+                    error = 'Build 13 is not newer than the published feed'
+                else:
+                    state['assets'] = [dict(name='existing.dmg')]
+                    (self.root / 'release').write_text(json.dumps(state))
+                    error = 'already has assets'
+                before = self.cdn_snapshot()
+                result = run_step('publish', 'name: Publish the app', succeeds=None)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(error, result.stderr)
+                self.assertEqual(self.cdn_snapshot(), before)
+                self.assertEqual((self.root / 'writes').read_text().splitlines(), writes)
+                self.assertFalse((self.root / 'uploaded').exists())
+                self.assertFalse((self.root / 'edited').exists())
+                self.assertFalse(any(call[:2] in (['release', 'upload'], ['release', 'edit'])
+                                     for call in self.calls()))
+                self.assertEqual(json.loads((self.root / 'release').read_text()), state)
+                return
+            # Retry only the publish job, with the original app artifacts and build.
+            run_step('publish', 'ci_release.py release')
         run_step('publish', 'name: Publish the app')
         run_step('publish', 'ci_release.py github')
+        if interruption:
+            after = self.cdn_snapshot()
+            self.assertEqual({key: after[key] for key in before}, before)
+            added_writes = (self.root / 'writes').read_text().splitlines()[len(writes):]
+            self.assertFalse(any('/arm64/' in key for key in added_writes))
+            if interruption == 'upload':
+                self.assertEqual(added_writes, [])
+            self.assertEqual({key: Path(key).read_bytes() for key in artifacts}, artifacts)
         self.assertEqual(json.loads((self.root / 'uploaded').read_text()),
                          {f'Tilr-0.3.0-13-{a}.dmg': f'signed notarized {a}' for a in ('arm64', 'x86_64')})
         events = [json.loads(line) for line in (self.root / 'cdn-calls').read_text().splitlines()]
-        self.assertEqual(events, [[f'0.3.0-13-{a}', publish] for publish in (False, True)
-                                  for a in ('arm64', 'x86_64')])
+        if not interruption:
+            self.assertEqual(events, [[f'0.3.0-13-{a}', publish] for publish in (False, True)
+                                      for a in ('arm64', 'x86_64')])
         self.assertEqual((self.root / 'notes.txt').read_text(), self.env['NOTES'])
         title = f'Tilr {tag[1:]} (13)'
         self.assertIn(title, json.loads((self.root / 'edited').read_text()))
@@ -362,12 +508,16 @@ assert args[args.index('--channel') + 1] == os.environ['EXPECTED_CHANNEL']
     def test_stale_stable_build_stops_before_cdn_or_release_changes(self):
         self.stable()
         self.assets('stable')
+        self.real_publisher()
         for arch in ('arm64', 'x86_64'):
             self.feed(arch, [13, 16])
             result = self.publish()
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('must be greater than published build', result.stderr)
-            self.assert_no_mutation()
+            self.assertIn('newer build is already published', result.stderr)
+            self.assertEqual(self.cdn_snapshot(), {})
+            for name in ('writes', 'uploaded', 'edited'):
+                self.assertFalse((self.root / name).exists(), name)
+            self.feed(arch, status='404')
 
     def test_manifest_sha256_failure_in_second_arch_stops_all_mutations(self):
         self.stable()

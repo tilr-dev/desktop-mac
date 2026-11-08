@@ -11,7 +11,7 @@ Tilr development SHALL use Swift Package/AppKit without an Xcode project and exe
 #### Scenario: Run a check
 - **WHEN** run.sh --test or --test --probe runs
 - **THEN** it uses dev.tilr.mac.test config, its own socket/PID/storage/window and a .test bundle identifier to avoid inheriting the user's Dock Space assignment
-- **AND** probe checks page plumbing, native events, bounded console serialization, PNG snapshot, palette, app switching/sliding, lazy tabs, window frame/hit boundaries and desktop movement, then exits
+- **AND** probe checks page plumbing, native events, bounded console serialization, PNG snapshot, palette, app window switching, duplicate windows, host close and workspace restoration, window frame/hit boundaries and desktop movement, then exits
 - **AND** tests address the isolated socket through --socket or TILR_CONTROL and never restart/kill the user's Tilr without explicit authorization
 - **AND** native package development requires macOS, Python 3, Xcode/Command Line Tools with Swift 6; TypeScript/plugin development requires Node >=22.18, while plain HTML/CSS/JS requires no npm
 - **AND** scripts/build-gitpm.sh builds the static UniFFI XCFramework/generated bindings from local gitpm sources when they are newer, using cargo and rustup targets; without sources it keeps an installed pinned gitpm release; run.sh and release_all.py invoke it and generated artifacts remain gitignored
@@ -210,16 +210,68 @@ Before fetching a pull request test merge for specification authorization, the t
 - **AND** coverage includes a pending result becoming current, an immediate conflict, a stale API head becoming current, and stale results reaching the deadline
 
 ### Requirement: CI coverage for main and release branches
-The CI workflow SHALL run the mac job for pull requests targeting main or release/** and pushes to main or release/**.
+The CI workflow SHALL run the mac check for pull requests targeting main or release/**, for merge queue groups, for pushes to release/**, on manual dispatch and nightly on main. A push to main SHALL NOT start CI: the merge queue has already checked the merged result.
 
 #### Scenario: Pull request targets a release branch
 - **WHEN** a pull request targets release/0.1 or another branch matching release/**
-- **THEN** CI runs the mac job
+- **THEN** CI runs the mac check
 
 #### Scenario: Push updates a release branch
 - **WHEN** a commit is pushed to a branch matching release/**
-- **THEN** CI runs the mac job
+- **THEN** CI runs the mac check with the Intel build
 
 #### Scenario: Main retains CI coverage
-- **WHEN** a pull request targets main or a commit is pushed to main
-- **THEN** CI runs the mac job
+- **WHEN** a pull request targets main or the merge queue checks a group for main
+- **THEN** CI runs the mac check
+
+#### Scenario: Push to main does not repeat CI
+- **WHEN** the merge queue merges a group into main
+- **THEN** the push to main starts no CI run
+
+#### Scenario: Nightly run on main
+- **WHEN** the nightly schedule fires
+- **THEN** CI runs the full mac check on main, including the Intel build
+
+### Requirement: Parallel mac CI jobs with an aggregate mac check
+The CI workflow SHALL run probe, release script tests, native plugin tests, app tests and the Intel (x86_64) build as parallel jobs, and an aggregate job named mac that the main ruleset requires. The mac job SHALL run whatever the other jobs end with and SHALL fail unless each of them succeeded; only the Intel build may be skipped, and only on pull requests. The Intel build SHALL run on every event except pull requests.
+
+#### Scenario: A parallel job fails
+- **WHEN** any of the parallel jobs fails or is cancelled
+- **THEN** the mac job runs and fails
+
+#### Scenario: Pull request skips the Intel build
+- **WHEN** CI runs for a pull request and the other jobs succeed
+- **THEN** the Intel build is skipped and the mac job succeeds
+
+#### Scenario: Merge queue builds Intel
+- **WHEN** CI runs for a merge queue group, a release branch push, a manual dispatch or the nightly schedule
+- **THEN** the Intel build runs, and the mac job fails if it was skipped
+
+### Requirement: Cached SwiftPM builds in CI
+Each CI job that builds Swift packages SHALL restore SwiftPM's download cache and its `.build` directory, keyed by the job, the runner, the Swift toolchain and the `Package.resolved` files, so a pull request with a warm cache rebuilds only what changed. Nightly, manual and release branch runs SHALL save `.build` under their commit; pull requests and merge queue groups SHALL only restore it.
+
+#### Scenario: Toolchain changes
+- **WHEN** the runner image ships a different Swift toolchain
+- **THEN** the `.build` cache key changes and the job does not reuse build products of the old toolchain
+
+#### Scenario: Main moves on
+- **WHEN** the nightly run builds a newer main than the cached `.build`
+- **THEN** it saves a new `.build` cache, and later pull requests restore the newest one
+
+### Requirement: Clean test and probe failures
+Swift test scripts and application probe modes SHALL report failed checks through stderr and exit status 1, without using precondition, preconditionFailure, fatalError or assert to report a failed check.
+
+#### Scenario: Swift test check fails
+- **WHEN** a check in scripts/test_*.swift fails
+- **THEN** a shared helper writes `FAIL <file>:<line>: <message>` to stderr and exits with status 1
+- **AND** the failure does not deliberately raise a trap or produce a crash report
+
+#### Scenario: Application probe fails
+- **WHEN** any application probe detects a failed check
+- **THEN** it writes a diagnostic prefixed with its probe name to stderr and exits with status 1
+- **AND** the failure does not deliberately raise a trap or produce a crash report
+
+#### Scenario: Python runner receives a failure
+- **WHEN** a Swift test process or application probe exits unsuccessfully
+- **THEN** its Python runner reports failure and exposes the process stderr
+- **AND** local checks and CI remain unsuccessful
